@@ -105,6 +105,8 @@ Record the date, observed Call/Conference SIDs, and pass/fail results in a local
 
 ## Later milestones
 
+The final product adds outbound calls and owner keypad shortcuts that delegate the conversation to an agent using the owner's cloned voice. See [Final build — put your AI on the call](FINAL_BUILD.md) for `#1`–`#4` prompt selection, context transfer, and return-to-human behavior. Build 1 remains the two-human switchboard; manual delegation will work independently of AI detection.
+
 | Build | Deliverable |
 | --- | --- |
 | 2 | Capture clearly identified call audio with Media Streams; decode the incoming audio format correctly and write playable WAV files. |

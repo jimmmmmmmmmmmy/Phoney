@@ -2,9 +2,30 @@
 python3 scripts/server.py status
 ```
 
-# Passive Operator — Build 0
+# Passive Operator
 
 **Build 0:** call the configured Twilio number and hear **“New College Data Science Team”**. The call then ends. FastAPI serves the voice webhook through ngrok. Build 1 is a separate implementation: connect two humans in a conference, with no AI. Follow [the Build 1 plan](docs/BUILD_1.md) when Build 0 passes the phone test.
+
+**Final-build vision:** call someone through the operator, press `#1`, and let an agent using a clone of your own voice take over. `#2`, `#3`, and `#4` switch its saved prompts while the call continues. This is a modern version of being on hold: your AI representative keeps the conversation going while you step away. Outbound calls, inbound calls, voice enrollment, and returning control to the human are specified in [the final-build plan](docs/FINAL_BUILD.md). These features are planned, not yet implemented.
+
+## Final build: your AI takes the call
+
+Imagine calling a car dealership. You start the conversation, explain which car you want, and press `#1` when you want to step away. An agent that sounds like you continues the same call with the context already discussed. Instead of elevator music, the other party has your AI representative to talk to.
+
+The phone keypad becomes a prompt selector. These are proposed, configurable assignments:
+
+| Command | Agent instructions |
+| --- | --- |
+| `#1` | Continue this conversation for me using its existing context. |
+| `#2` | Handle the wait and notify me when I am needed. |
+| `#3` | Complete my saved enquiry, such as asking the dealership for an itemized quote. |
+| `#4` | Switch to another prompt I configured before the call. |
+
+Changing a prompt can route the conversation to a different agent/model while preserving your cloned voice. A proposed `#0` shortcut returns the speaking role to you and interrupts the agent. The final product supports both inbound and outbound calls routed through the operator; manual takeover works whether the other party is human or AI.
+
+Read [the final-build specification](docs/FINAL_BUILD.md) for the voice profile, handoff context, keypad routing prototype, and acceptance checks. **The current deployed build still only plays the team greeting.**
+
+## GitHub and the running server
 
 Push changes to `main` in [fictional-rotary-phone](https://github.com/jimmmmmmmmmmmy/fictional-rotary-phone) to update the code running on the server Mac automatically. While idle, the server checks signed GitHub push events every second, with a 30-second polling fallback. Each revision must install, pass tests, and become healthy before it stays active. Read [the server guide](docs/SERVER.md) for setup, teammate access, status, and recovery.
 
@@ -66,4 +87,4 @@ Private process state and logs live in `.runtime/`. The configuration helper sav
 
 This build provides the inbound greeting, request validation, local health check, automated tests, and a repeatable app/tunnel runner. It does not dial a teammate, record calls, stream audio, detect bots, or run an AI agent.
 
-The roadmap comes from [the shared Grok conversation](https://grok.com/share/bGVnYWN5_618ab7b3-9c27-4570-9709-edd7bee0bc21). Implementation decisions and acceptance checks for the next milestone are in [docs/BUILD_1.md](docs/BUILD_1.md).
+The initial roadmap comes from [the shared Grok conversation](https://grok.com/share/bGVnYWN5_618ab7b3-9c27-4570-9709-edd7bee0bc21). Implementation decisions and acceptance checks for the next milestone are in [docs/BUILD_1.md](docs/BUILD_1.md). The expanded product direction is in [docs/FINAL_BUILD.md](docs/FINAL_BUILD.md).

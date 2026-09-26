@@ -8,12 +8,33 @@ from pathlib import Path
 import re
 
 from fastapi import HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 
 
 SAFE_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
                 "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY"}
 SID = re.compile(r"CA[0-9a-fA-F]{32}\Z")
+PUBLIC_DIRECTORY = Path(__file__).parent / "public"
+RESUME_FILES = frozenset({"james-liu.pdf", "gerry-jones.pdf", "muhammed-altindal.pdf",
+                          "shane-mccarthy.pdf"})
+
+
+def html_page(filename):
+    """Serve our HTML with hashes for only the inline scripts and styles it contains."""
+    html = (Path(__file__).parent / filename).read_text()
+    scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
+    styles = re.findall(r"<style>(.*?)</style>", html, re.S)
+
+    def hashes(blocks):
+        return " ".join("'sha256-" + base64.b64encode(hashlib.sha256(
+            block.encode()).digest()).decode() + "'" for block in blocks) or "'none'"
+
+    headers = dict(SAFE_HEADERS)
+    headers["Content-Security-Policy"] = (
+        "default-src 'none'; script-src " + hashes(scripts) + "; style-src " + hashes(styles)
+        + "; connect-src 'self'; media-src 'self'; img-src 'self' data:; base-uri 'none'; "
+          "frame-ancestors 'none'; form-action 'self'")
+    return HTMLResponse(html, headers=headers)
 
 
 def register_dashboard(app, settings, manager, voicemail_store=None, recording_library=None,
@@ -29,18 +50,29 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
 
     @app.get("/dashboard", response_class=HTMLResponse)
     async def page():
-        html = (Path(__file__).parent / "dashboard.html").read_text()
-        scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
-        styles = re.findall(r"<style>(.*?)</style>", html, re.S)
-        def hashes(blocks):
-            return " ".join("'sha256-" + base64.b64encode(hashlib.sha256(
-                block.encode()).digest()).decode() + "'" for block in blocks)
-        headers = dict(SAFE_HEADERS)
-        headers["Content-Security-Policy"] = (
-            "default-src 'none'; script-src " + hashes(scripts) + "; style-src " + hashes(styles)
-            + "; connect-src 'self'; media-src 'self'; img-src 'self' data:; base-uri 'none'; "
-              "frame-ancestors 'none'; form-action 'self'")
-        return HTMLResponse(html, headers=headers)
+        return html_page("dashboard.html")
+
+    @app.get("/team")
+    async def team_page():
+        return RedirectResponse("/dashboard#team", status_code=307, headers=SAFE_HEADERS)
+
+    @app.api_route("/assets/hacking-banyons.svg", methods=["GET", "HEAD"])
+    def team_logo():
+        logo = PUBLIC_DIRECTORY / "branding" / "hacking-banyons.svg"
+        if not logo.is_file():
+            raise HTTPException(404, "Logo is unavailable", headers=SAFE_HEADERS)
+        return FileResponse(logo, media_type="image/svg+xml", headers=SAFE_HEADERS)
+
+    @app.api_route("/resumes/{filename}", methods=["GET", "HEAD"])
+    def resume_pdf(filename: str):
+        if filename not in RESUME_FILES:
+            raise HTTPException(404, "Resume is unavailable", headers=SAFE_HEADERS)
+        resume = PUBLIC_DIRECTORY / "resumes" / filename
+        if not resume.is_file():
+            raise HTTPException(404, "Resume is unavailable", headers=SAFE_HEADERS)
+        headers = {**SAFE_HEADERS, "Content-Security-Policy": "default-src 'none'; sandbox"}
+        return FileResponse(resume, media_type="application/pdf", filename=filename,
+                            headers=headers)
 
     @app.get("/api/transcripts")
     async def transcripts(call_sid: str | None = None):

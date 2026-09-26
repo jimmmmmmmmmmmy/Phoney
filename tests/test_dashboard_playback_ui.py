@@ -188,6 +188,30 @@ for(const page of ['contacts','agents','calls']){
 ''')
 
 
+def test_internal_team_links_preserve_the_player_and_return_to_the_selected_call(tmp_path):
+    run_browser_logic(tmp_path, r'''
+state.snapshot=snapshot([session(),session(OTHER)],[recording(),recording(OTHER)]);render();openCall();
+const audio=$('call-audio');audio.play();audio.currentTime=37;
+const src=audio.src,loads=audio.loads,pauses=audio.pauses,plays=audio.plays;
+for(const id of ['team-brand','team-brand-mobile','team-footer']){
+ let prevented=false;
+ $(id).events.click({preventDefault(){prevented=true;}});
+ assert.equal(prevented,true);assert.equal(state.page,'team');assert.equal(location.hash,'#team');
+ assert.equal($('team-view').hidden,false);assert.equal($('dashboard-view').hidden,true);
+ assert.equal($('page-title').textContent,'New College');
+ assert.equal($('call-audio'),audio);assert.equal(audio.src,src);assert.equal(audio.currentTime,37);
+ assert.equal(audio.paused,false);assert.equal($('audio-panel').hidden,false);
+ assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.plays,plays);
+ $('nav-calls').events.click();
+ assert.equal(state.page,'calls');assert.equal(state.detail,true);assert.equal(state.selected,SID);
+ assert.equal($('team-view').hidden,true);assert.equal($('calls-detail').hidden,false);
+ assert.equal($('call-audio'),audio);assert.equal(audio.src,src);assert.equal(audio.currentTime,37);
+ assert.equal(audio.paused,false);assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
+ assert.equal(audio.plays,plays);
+}
+''')
+
+
 def test_opening_calls_starts_with_a_collection_and_no_selected_audio(tmp_path):
     run_browser_logic(tmp_path, r'''
 assert.equal(state.detail,false);assert.equal(state.selected,null);

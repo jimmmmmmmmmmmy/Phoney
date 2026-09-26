@@ -47,10 +47,10 @@ flowchart LR
 
 Twilio Media Streams exports mono μ-law at 8 kHz. The transcript path must declare the true codec and sample rate, while the existing recorder writes decoded PCM16 WAVs. Deepgram supports the raw μ-law telephone route through `wss://api.deepgram.com/v1/listen` with `encoding=mulaw`, `sample_rate=8000`, and `channels=1`. [Twilio format](https://www.twilio.com/docs/voice/media-streams/websocket-messages), [Deepgram's Twilio integration](https://developers.deepgram.com/docs/twilio-and-deepgram-stt).
 
-| Direction label | Meaning | Limitation |
+| Dashboard label / API track | Meaning | Limitation |
 | --- | --- | --- |
-| Caller input / `inbound` | The original caller's incoming audio | Includes background voices and possible speakerphone leakage. |
-| Caller playback / `outbound` | Audio Twilio plays to that caller | Includes teammate conference audio, hold music, and prompts; not an isolated teammate microphone. |
+| Caller / `inbound` | The original caller's incoming audio | Includes background voices and possible speakerphone leakage. |
+| Receiver / `outbound` | Audio Twilio plays to that caller | Includes teammate conference audio, hold music, and prompts; not an isolated teammate microphone. |
 
 The implementation opens a separate Deepgram WebSocket for each direction, each configured as mono. Two directions therefore create two provider streams. Preserve direction labels with every segment; do not merge the two raw tracks into a single mono stream or rename playback as a verified person. See [AUDIO_QUALITY.md](AUDIO_QUALITY.md) for what VoIP can improve and why it does not change this stream's 8 kHz export.
 
@@ -103,9 +103,9 @@ JSON exports contain `schema_version`, `provider`, `model`, `sample_rate: 8000`,
 
 ### Play or download a finalized recording
 
-Select a call in the dashboard and use its audio player. **Combined** is the default: left channel is caller input, right channel is caller playback. Choose **Caller input** or **Caller playback** for one mono track. The download saves a WAV for the selected view.
+Select a call in the dashboard and use its audio player. **Both** is the default: Caller on the left, Receiver on the right. Choose **Caller** or **Receiver** for one mono track. The download saves a WAV for the selected view.
 
-During playback, the transcript highlights each finalized line whose media-time interval contains the player's current position. Seeking updates the highlight; pausing keeps the current position. Combined audio can highlight overlapping lines from both directions, while an individual track highlights only its own lines. Highlights stop at each track's recorded duration, including partial captures. These are provider segment intervals and can contain silence; word-level timing is not currently stored or inferred. Interim text is not highlighted. **Follow new text** also controls whether playback scrolls an active line into view.
+During playback, the transcript highlights each finalized line whose media-time interval contains the player's current position. Seeking updates the highlight; pausing keeps the current position. Combined audio can highlight overlapping lines from both directions, while an individual track highlights only its own lines. Highlights stop at each track's recorded duration, including partial captures. These are provider segment intervals and can contain silence; word-level timing is not currently stored or inferred. Interim text is not highlighted. Live text follows new content automatically, and playback automatically scrolls highlighted lines into view.
 
 Use an external Chrome window for the verified playback path. The in-app browser preview crashed when starting the fixture player; the Brave player path is unverified. WAV download remains available if an embedded player fails.
 

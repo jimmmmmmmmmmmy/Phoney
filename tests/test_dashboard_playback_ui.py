@@ -36,7 +36,7 @@ def test_one_native_player_is_accessible_and_never_autoplays_or_preloads_audio()
     player = parsed.players[0]
     assert player["id"] == "call-audio" and player["preload"] == "none"
     assert "controls" in player and "autoplay" not in player and "src" not in player
-    assert player["aria-label"] and player["aria-describedby"] == "audio-status audio-direction-note"
+    assert player["aria-label"] and player["aria-describedby"] == "audio-status"
     assert len(parsed.ids) == len(set(parsed.ids))
     assert {"audio-track", "audio-download", "audio-status", "recording-warning"} <= set(parsed.ids)
     assert "open" in parsed.details["recent-calls"]
@@ -238,7 +238,7 @@ assert.ok(state.transcriptRows.every(item=>!item.row.classList.contains('playing
 ''')
 
 
-def test_highlight_scrolls_only_outside_the_viewport_when_follow_text_is_checked(tmp_path):
+def test_live_text_and_playback_follow_automatically_without_a_toggle(tmp_path):
     run_browser_logic(tmp_path, r'''
 const call=session();call.segments[0].end_ms=3000;
 state.snapshot=snapshot([call],[recording()]);render();
@@ -246,7 +246,10 @@ const audio=$('call-audio'),viewport=$('transcript'),row=state.transcriptRows[0]
 viewport.rect={top:100,bottom:300};row.rect={top:150,bottom:210};viewport.scrollTop=40;
 audio.play();audio.currentTime=1.5;audio.events.timeupdate();assert.equal(viewport.scrollTop,40);
 row.rect={top:350,bottom:410};audio.events.timeupdate();assert.equal(viewport.scrollTop,158);
-$('auto-scroll').checked=false;audio.events.timeupdate();assert.equal(viewport.scrollTop,158);
+row.rect={top:150,bottom:210};audio.events.timeupdate();assert.equal(viewport.scrollTop,158);
+audio.ended=true;audio.events.ended();
+call.segments.push({id:'new',track:'outbound',start_ms:4000,end_ms:6000,text:'new text'});
+viewport.scrollHeight=250;render();assert.equal(viewport.scrollTop,250);
 ''')
 
 

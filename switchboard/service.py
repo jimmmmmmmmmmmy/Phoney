@@ -446,6 +446,11 @@ class Switchboard:
         """Drain scheduled work, excluding setup deadlines; useful in tests."""
         while self._tasks:
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
+            # ``gather`` does not suspend when every task in the snapshot has
+            # already finished, so the done callbacks that prune ``_tasks``
+            # never get a turn and this loop spins at full CPU without ever
+            # letting the event loop run. Yield once so those callbacks run.
+            await asyncio.sleep(0)
 
     async def close(self):
         async with self._lock:

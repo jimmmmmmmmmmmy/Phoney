@@ -1,6 +1,7 @@
 """Network-free lifecycle and SDK contract checks for Build 1."""
 
 import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -333,3 +334,36 @@ def test_deployment_drain_preserves_existing_session_and_rejects_new_calls():
         assert board.pending_count == 0
 
     asyncio.run(run())
+
+
+def test_wait_idle_does_not_spin_on_tasks_that_finished_before_the_call():
+    """Regression: a finished task stayed registered and ``wait_idle`` spun.
+
+    ``asyncio.gather`` does not suspend when every task in the snapshot is
+    already done, so the done callbacks that prune ``_tasks`` never got a turn.
+    The loop burned a full core, starved the event loop, and hung every test
+    that drained a board; because deploys run the suite before publishing, no
+    revision that touched the switchboard could ever reach the live server.
+
+    The drain runs in its own thread and loop so a regression fails on the join
+    timeout instead of hanging the whole session.
+    """
+
+    def drain():
+        async def run():
+            board = Switchboard(settings(), Gateway())
+            finished = asyncio.create_task(asyncio.sleep(0))
+            await finished
+            # Reproduce the exact production state: the task has completed but
+            # is still registered, and its pruning callback is only queued.
+            board._tasks.add(finished)
+            finished.add_done_callback(board._task_done)
+            await board.wait_idle()
+            assert not board._tasks
+
+        asyncio.run(run())
+
+    worker = threading.Thread(target=drain, daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive(), "wait_idle never yielded the event loop (busy spin)"

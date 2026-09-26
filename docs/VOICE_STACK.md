@@ -31,6 +31,31 @@ In this future voice pipeline, Gemini supplies dialogue reasoning and tool reque
 2. Implement `scripts/clone_voice.py` from the request below. Accept an explicit `--env-file`, a voice name, and sample paths. Load that environment with `python-dotenv`; never print API keys or full request headers.
 3. Save the returned ID as `ELEVENLABS_VOICE_ID`. If `requires_verification` is true, complete the provider's verification before using that voice. Reuse the ID on every call; never create a clone inside the media handler.
 
+Sample quality decides the clone, so it is worth getting right the first time. The provider advises roughly **1–2 minutes** of clean speech, warns that **more than 3 minutes** yields little improvement and can be *detrimental*, and states that the **combined runtime** is what matters, not the number of files. It also rates **how the audio was captured above the codec**, then advises **MP3 at 128 kbps or above**, noting that higher bitrates do not significantly improve the result. Because the model mimics *everything* it hears, the speed, inflections, breathing and any noise or artifact in the sample all carry into the clone, and each clone made from the same audio sounds slightly different, so keep the original samples rather than re-cloning to "fix" a voice.
+
+Sample validation here is deliberately narrow — `_checked_samples` in `voice_stack/tts.py` only rejects a path that is missing or empty, so a Voice Memos `.m4a` uploads as-is and no conversion tool is required.
+
+### Key permissions and voice lifetime
+
+The ElevenLabs key must carry three permissions, all granted together from the same settings page: `text_to_speech` to synthesize, `voices_write` to enroll a clone or a designed voice, and `text_to_voice` to design one. Read-only scopes pass a listing while every other action fails with HTTP 401, so a successful `--list-voices` is not evidence that the key is complete.
+
+All three are confirmed working on this account. `--say` returned audible `ulaw_8000` speech, the design endpoint returned candidate previews whose MP3 audio decoded, and `voices_write` enrolled both a `generated` voice and, from `clone_voice.py`, the owner's own `cloned` voice, each with `requires_verification` false. Both enrolled voices then spoke through the same `--say` path, which is what makes a designed voice a drop-in for a clone. `ELEVENLABS_VOICE_ID` now names the cloned owner voice rather than the stock Default voice, so it no longer carries the expiry below.
+
+An `ELEVENLABS_VOICE_ID` that names a `premade` **Default** voice stops working on **2026-12-31**. A `cloned` or `generated` voice carries no such expiry, which is the practical reason to enroll one instead of pointing at a stock voice.
+
+### Design an original voice instead
+
+Cloning needs the owner's own recordings, so it cannot be used to imitate a third party, and the provider withholds celebrity likenesses outright: the `famous` category returns nothing for this account. When a distinctive, non-owner voice is what the milestone needs, design one from a written description with `scripts/design_voice.py`. A design call returns a set of candidate previews and saves each one to `VOICE_OUTPUT_DIR` for audition. Every call returns a *different* set and rewrites those files, so enrollment names the preview to promote with `--generated-voice-id` rather than designing again in the same run, which would enroll a voice nobody had heard. The promoted voice is a permanent `generated` voice that speaks through the same `ulaw_8000` path as a clone. `voice_stack/design.py` implements `POST /v1/text-to-voice/design` and the promotion `POST /v1/text-to-voice`; `--dry-run` prints the resolved plan without spending anything.
+
+The line a preview speaks is optional. A supplied `--text` must be 100 to 1000 characters, the window the provider enforces, so a shorter line fails locally instead of as a remote 422. Omitting `--text` sets `auto_generate_text`: the provider writes the line only when asked, and leaving both unset would request previews with nothing to say.
+
+```bash
+python scripts/design_voice.py --env-file .env --description "A calm, low-pitched narrator."
+# Audition voice_output/design-preview-*.mp3, then enroll only the preview you chose.
+python scripts/design_voice.py --env-file .env --description "A calm, low-pitched narrator." \
+  --generated-voice-id <GENERATED_VOICE_ID> --create delegate-voice
+```
+
 `POST https://api.elevenlabs.io/v1/voices/add` takes multipart `name` and repeated `files` fields; authenticate with `xi-api-key`. Let HTTPX create the multipart boundary. The API response contains `voice_id` and `requires_verification`. The `files` field spelling below matches the official Python client's request construction. [Create IVC voice](https://elevenlabs.io/docs/api-reference/voices/ivc/create), [official client](https://github.com/elevenlabs/elevenlabs-python/blob/main/src/elevenlabs/voices/ivc/raw_client.py).
 
 ```python
@@ -58,7 +83,7 @@ def create_clone(api_key: str, name: str, sample_paths: list[str]) -> dict:
         return response.json()
 ```
 
-Before call integration, use this voice to generate one sentence and listen locally. That isolates voice/account issues from Twilio routing.
+Before call integration, use this voice to generate one sentence and listen locally. `scripts/voice_check.py --say` renders one phrase, and `--ask` sends a question to the configured Gemini model and speaks each finished phrase, issuing one synthesis request per phrase — the same contract the relay uses. That isolates voice and account problems from Twilio routing, and `--voice-id` auditions a candidate without editing `.env`.
 
 ## Stream the other person's speech to Deepgram
 

@@ -17,10 +17,16 @@ SID = re.compile(r"CA[0-9a-fA-F]{32}\Z")
 PUBLIC_DIRECTORY = Path(__file__).parent / "public"
 RESUME_FILES = frozenset({"james-liu.pdf", "gerry-jones.pdf", "muhammed-altindal.pdf",
                           "shane-mccarthy.pdf"})
+WORKSPACE_ASSETS = {
+    "dashboard-crm.js": "text/javascript",
+    "dashboard-crm.css": "text/css",
+    "dashboard-toolbar.js": "text/javascript",
+    "dashboard-toolbar.css": "text/css",
+}
 
 
 def html_page(filename):
-    """Serve our HTML with hashes for only the inline scripts and styles it contains."""
+    """Allow our same-origin assets and hash the HTML's inline scripts/styles."""
     html = (Path(__file__).parent / filename).read_text()
     scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
     styles = re.findall(r"<style>(.*?)</style>", html, re.S)
@@ -31,7 +37,7 @@ def html_page(filename):
 
     headers = dict(SAFE_HEADERS)
     headers["Content-Security-Policy"] = (
-        "default-src 'none'; script-src " + hashes(scripts) + "; style-src " + hashes(styles)
+        "default-src 'none'; script-src 'self' " + hashes(scripts) + "; style-src 'self' " + hashes(styles)
         + "; connect-src 'self'; media-src 'self'; img-src 'self' data:; base-uri 'none'; "
           "frame-ancestors 'none'; form-action 'self'")
     return HTMLResponse(html, headers=headers)
@@ -62,6 +68,14 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
         if not logo.is_file():
             raise HTTPException(404, "Logo is unavailable", headers=SAFE_HEADERS)
         return FileResponse(logo, media_type="image/svg+xml", headers=SAFE_HEADERS)
+
+    @app.api_route("/assets/{filename}", methods=["GET", "HEAD"])
+    def workspace_asset(filename: str):
+        media_type = WORKSPACE_ASSETS.get(filename)
+        asset = PUBLIC_DIRECTORY / filename
+        if media_type is None or not asset.is_file():
+            raise HTTPException(404, "Asset is unavailable", headers=SAFE_HEADERS)
+        return FileResponse(asset, media_type=media_type, headers=SAFE_HEADERS)
 
     @app.api_route("/resumes/{filename}", methods=["GET", "HEAD"])
     def resume_pdf(filename: str):

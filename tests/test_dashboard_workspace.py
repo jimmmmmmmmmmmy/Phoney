@@ -126,3 +126,18 @@ def test_history_restores_a_contact_profile_without_replacing_audio(tmp_path):
  assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.paused,false);
 })().catch(error=>{console.error(error);process.exitCode=1;});
 ''')
+
+
+def test_contact_call_action_restores_a_dismissed_player_without_autoplay(tmp_path):
+    run_browser_logic(tmp_path, r'''
+state.snapshot=snapshot([session()],[recording()]);render();openCall();
+const audio=$('call-audio');audio.play();audio.currentTime=19;
+showPage('contacts');dismissAudio();
+assert.equal($('audio-panel').hidden,true);
+const plays=audio.plays,loads=audio.loads;
+state.paused=true;
+window.DashboardCalls.openCall(SID);
+assert.equal(state.page,'calls');assert.equal(state.detail,true);
+assert.equal($('audio-panel').hidden,false);assert.equal(audio.paused,true);
+assert.equal(audio.currentTime,19);assert.equal(audio.plays,plays);assert.equal(audio.loads,loads);
+''')

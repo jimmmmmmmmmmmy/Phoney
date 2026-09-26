@@ -786,6 +786,7 @@
         state.refreshRequested = false;
       }
     }
+    window.DashboardCalls = {openCall: chooseCall};
     for (const page of ["calls", "contacts", "agents"]) {
       const nav = $("nav-" + page);
       if (nav) nav.addEventListener("click", () => showPage(page));

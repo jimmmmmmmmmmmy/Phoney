@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -148,32 +147,17 @@ class Supervisor:
         return validate_sha(result.stdout.strip())
 
     def ensure_tunnel(self):
+        def check_stopping():
+            if self.stopping:
+                raise DeploymentStopped()
+
+        environment = self.environment()
         state = dev.read_state()
-        data = dev.request(dev.TUNNELS)
-        url = dev.public_url(data)
-        if not url:
-            if dev.owned(state.get("ngrok")):
-                raise RuntimeError("The recorded ngrok process has no healthy tunnel; retrying in 30 seconds.")
-            if data is not None or not dev.available(4040):
-                raise RuntimeError("Port 4040 has an unrelated listener; it was left running.")
-            executable = shutil.which("ngrok")
-            if not executable:
-                raise RuntimeError("ngrok is not installed or is not on PATH.")
-            process = dev.spawn("ngrok", [executable, "http", dev.BASE, "--log", "stdout",
-                                           "--log-format", "json"], state)
-            deadline = time.monotonic() + 25
-            while not url and process.poll() is None and time.monotonic() < deadline:
-                if self.stopping:
-                    raise DeploymentStopped()
-                time.sleep(0.3)
-                url = dev.public_url(dev.request(dev.TUNNELS))
-            if not url:
-                raise RuntimeError("ngrok did not provide a tunnel; inspect .runtime/ngrok.log.")
-        if self.environment().get("PUBLIC_BASE_URL") != url:
-            dev.persist_url(url)
-        state["public_url"] = url
-        dev.write_state(state)
-        return url
+        if dev.tunnel_provider(environment) != state.get("tunnel_provider", "ngrok"):
+            # Keep the old connector carrying media until active calls finish.
+            with self.drain(state.get("app")):
+                return dev.ensure_tunnel(environment, stopping=check_stopping)
+        return dev.ensure_tunnel(environment, stopping=check_stopping)
 
     def configure_hooks(self, url):
         if self.state.get("configured_public_url") == url:
@@ -372,7 +356,8 @@ class Supervisor:
         try:
             url = self.ensure_tunnel()
             self.recover()
-            self.configure_hooks(url)
+            if self.state.get("active_commit"):
+                self.configure_hooks(url)
             sha = self.fetch()
             self.save(remote_commit=sha)
             if sha == self.state.get("active_commit"):
@@ -385,6 +370,7 @@ class Supervisor:
             if self.stopping:
                 raise DeploymentStopped()
             self.activate(release, sha)
+            self.configure_hooks(url)
             print("Deployed " + sha, flush=True)
         except DeploymentDeferred as error:
             self.save(status="waiting", last_error=str(error), waiting_at=timestamp())

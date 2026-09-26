@@ -162,7 +162,7 @@ def stop():
     if installed():
         unload()
     subprocess.run([str(PYTHON), str(ROOT / "scripts/dev.py"), "stop"], check=True, timeout=70)
-    print("Server stopped: deployment watcher, managed app, and managed ngrok. Use start to resume.")
+    print("Server stopped: deployment watcher, managed app, and managed tunnel. Use start to resume.")
 
 
 def status():

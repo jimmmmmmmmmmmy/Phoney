@@ -39,7 +39,7 @@ Grant write access only to trusted teammates. Their code, dependency installatio
 
 ## Set up server mode
 
-Installation takes about 2–5 minutes when Python 3.11+, authenticated ngrok, and the GitHub CLI (`gh`) are ready. `gh auth status` must show an account with repository administration access for webhook setup. Installation and the first release need internet access to fetch code and dependencies.
+Installation takes about 2–5 minutes when Python 3.11+, a tunnel client, and the GitHub CLI (`gh`) are ready. Set `TUNNEL_PROVIDER=cloudflare` for the accountless Quick Tunnel with `cloudflared` installed; the default `ngrok` option needs an authenticated ngrok client. See [the Cloudflare guide](CLOUDFLARE.md) for migration and URL behavior. `gh auth status` must show an account with repository administration access for webhook setup. Installation and the first release need internet access to fetch code and dependencies.
 
 1. Install the root environment:
 
@@ -58,9 +58,9 @@ Installation takes about 2–5 minutes when Python 3.11+, authenticated ngrok, a
 
 4. Run `python3 scripts/server.py status`, then call the Twilio number from a phone different from `CALLEE_NUMBER`. For configured Build 1, the teammate phone rings; answer it and speak both ways. With no forwarding number configured, expect the team greeting and hangup.
 
-The installer creates the separate service checkout and Python environment. On first installation it copies the project's `.env` privately and migrates existing runner and webhook metadata so the current ngrok tunnel can be reused. Reinstalling preserves the service's `.env`. Subsequent configuration changes belong in **`~/Library/Application Support/NewCollegeOperator/.env`**; editing the project's `.env` does not change the installed service's settings. After editing the active configuration, run `python3 scripts/server.py stop`, then `python3 scripts/server.py start` from the project to restart the application with those settings.
+The installer creates the separate service checkout and Python environment. On first installation it copies the project's `.env` privately and migrates existing runner and webhook metadata so an existing managed tunnel can be recovered, or a compatible ngrok tunnel reused. Reinstalling preserves the service's `.env`. Subsequent configuration changes belong in **`~/Library/Application Support/NewCollegeOperator/.env`**; editing the project's `.env` does not change the installed service's settings. After editing the active configuration, run `python3 scripts/server.py stop`, then `python3 scripts/server.py start` from the project to restart the application with those settings.
 
-The service runs as the macOS LaunchAgent `com.newcollege.passive-operator`. It starts at login and restarts if its supervisor exits. It starts or recovers the local app and ngrok tunnel and updates both Twilio incoming-voice/caller-status webhooks and the GitHub push webhook when the public tunnel URL changes. Repository administration access is required to create or update the GitHub hook.
+The service runs as the macOS LaunchAgent `com.newcollege.passive-operator`. It starts at login and restarts if its supervisor exits. It starts or recovers the local app and selected tunnel and updates both Twilio incoming-voice/caller-status webhooks and the GitHub push webhook when the public tunnel URL changes. Repository administration access is required to create or update the GitHub hook.
 
 The hook configuration helper supports an explicit setup or repair:
 
@@ -97,9 +97,9 @@ The following log paths are relative to `~/Library/Application Support/NewColleg
 | `.runtime/server.log` and `.runtime/server-error.log` | Supervisor progress and service errors |
 | `.runtime/deploy/build.log` | Fetching, dependency installation, tests, and webhook configuration |
 | `.runtime/deploy/candidate.log` | Candidate startup and health failures |
-| `.runtime/app.log` and `.runtime/ngrok.log` | Active application and tunnel behavior |
+| `.runtime/app.log` and `.runtime/cloudflared.log` or `.runtime/ngrok.log` | Active application and selected tunnel behavior |
 
-Run `python3 scripts/server.py stop` to disable the supervisor and stop the managed app and managed ngrok process. Use `start` to resume. A pre-existing ngrok tunnel reused by the runner remains running. Run `python3 scripts/server.py remove` to stop the service and remove its LaunchAgent file; source files and runtime data remain on disk.
+Run `python3 scripts/server.py stop` to disable the supervisor and stop the managed app and selected managed tunnel process. Use `start` to resume. A pre-existing ngrok tunnel reused by the runner remains running. Run `python3 scripts/server.py remove` to stop the service and remove its LaunchAgent file; source files and runtime data remain on disk.
 
 To undo a published application change, push a new commit that restores the intended code. The supervisor deploys that revision through the same dependency, test, and health checks. It does not rewrite GitHub history.
 
@@ -109,7 +109,7 @@ The supervisor uses deployment-management scripts from the installed service che
 
 The LaunchAgent uses `caffeinate -i` to prevent idle sleep while running. Keep the Mac powered, online, and logged in. Closing a laptop lid, explicitly sleeping it, shutting it down, or logging out can stop service availability. Login starts the service again; this is not a service that starts before a user logs in.
 
-Twilio and GitHub reach this Mac through ngrok. When the Mac or tunnel is unavailable, calls cannot reach the app; the polling fallback discovers the latest `main` after the server returns. The public URL may change after tunnel restart, so the service reconciles both webhook destinations.
+Twilio and GitHub reach this Mac through the selected Cloudflare or ngrok tunnel. When the Mac or tunnel is unavailable, calls cannot reach the app; the polling fallback discovers the latest `main` after the server returns. The public URL may change after tunnel restart, so the service reconciles both webhook destinations.
 
 Build 1 is implemented; perform the real-phone checks in [BUILD_1.md](BUILD_1.md). Automatic updates preserve established calls through the authenticated drain protocol, including outstanding dialing/cleanup tasks. App shutdown gets a 40-second grace period. Explicitly stopping the service or a process crash still ends continuity: this milestone does not persist live conference sessions across restarts.
 
@@ -123,7 +123,7 @@ Read [BUILD_2.md](BUILD_2.md) for the phone test and [PARTNER_HANDOFF.md](PARTNE
 
 ## Public viewer and unanswered-call voicemail
 
-Run `.venv/bin/python scripts/open_dashboard.py` from the source checkout to open the installed service's configured `PUBLIC_BASE_URL/dashboard`. The dashboard, transcript/recording APIs, and JSON/text/WAV downloads are public: anyone with the ngrok URL can read available text and play/download finalized local recordings without signing in. Active recordings and Twilio cloud recording URLs are not served; provider keys stay server-side; existing Twilio signature checks, GitHub webhook signatures, and deployment-control authentication remain enabled.
+Run `.venv/bin/python scripts/open_dashboard.py` from the source checkout to open the installed service's configured `PUBLIC_BASE_URL/dashboard`. The dashboard, transcript/recording APIs, and JSON/text/WAV downloads are public: anyone with the public tunnel URL can read available text and play/download finalized local recordings without signing in. Active recordings and Twilio cloud recording URLs are not served; provider keys stay server-side; existing Twilio signature checks, GitHub webhook signatures, and deployment-control authentication remain enabled.
 
 Set `VOICEMAIL_ENABLED=true`, `VOICEMAIL_MAX_SECONDS=120`, and an absolute private `VOICEMAIL_STORAGE_DIR` in the installed service's private `.env` to record a message when the teammate does not connect. This option defaults to off in a new checkout and is enabled for the live setup. Apply environment changes during an idle period with the server controls above. Keep the signed `/status` incoming-call callback configured so hangup during the greeting cleans up promptly. Saved receipts outside the ten-row startup inbox can be restored for late signed recording callbacks after deployment. See [VOICEMAIL.md](VOICEMAIL.md) for callback contracts, storage boundaries, and the pending real-phone acceptance checks.
 

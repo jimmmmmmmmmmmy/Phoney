@@ -401,13 +401,14 @@ def test_missing_control_token_preserves_protected_app(supervisor, monkeypatch):
     launch.assert_not_called()
 
 
-def test_dev_stop_allows_app_cleanup_but_keeps_ngrok_timeout_short(supervisor, monkeypatch):
-    app, ngrok = {"pid": 1234}, {"pid": 5678}
-    deploy.dev.write_state({"app": app, "ngrok": ngrok})
+def test_dev_stop_allows_app_cleanup_but_keeps_tunnel_timeout_short(supervisor, monkeypatch):
+    app, ngrok, cloudflared = {"pid": 1234}, {"pid": 5678}, {"pid": 9012}
+    deploy.dev.write_state({"app": app, "ngrok": ngrok, "cloudflared": cloudflared})
     terminate = Mock()
     monkeypatch.setattr(deploy.dev, "terminate", terminate)
     deploy.dev.stop()
-    assert terminate.call_args_list == [call(app, timeout=40), call(ngrok, timeout=5)]
+    assert terminate.call_args_list == [call(app, timeout=40), call(ngrok, timeout=5),
+                                         call(cloudflared, timeout=5)]
 
 
 def test_ambiguous_drain_request_reopens_admission(supervisor, monkeypatch):
@@ -432,3 +433,64 @@ def test_failed_admission_reset_remains_visible_for_recovery(supervisor, monkeyp
         supervisor.activate(supervisor.releases / NEW, NEW)
     assert supervisor.state["drain_reset_required"] is True
     terminate.assert_not_called()
+
+
+def test_supervisor_selects_configured_tunnel_and_propagates_shutdown(supervisor, monkeypatch):
+    (supervisor.root / ".env").write_text("TUNNEL_PROVIDER=cloudflare\n")
+    helper = Mock(return_value="https://demo.trycloudflare.com")
+    monkeypatch.setattr(deploy.dev, "ensure_tunnel", helper)
+    assert supervisor.ensure_tunnel() == "https://demo.trycloudflare.com"
+    assert helper.call_args.args[0]["TUNNEL_PROVIDER"] == "cloudflare"
+    stopping = helper.call_args.kwargs["stopping"]
+    stopping()
+    supervisor.stopping = True
+    with pytest.raises(deploy.DeploymentStopped):
+        stopping()
+
+
+def test_tunnel_recovery_reconfigures_webhooks_before_checking_github(supervisor, monkeypatch):
+    supervisor.save(active_commit=OLD, configured_public_url="https://old.example")
+    calls = []
+    new_url = "https://new.trycloudflare.com"
+    monkeypatch.setattr(supervisor, "ensure_tunnel", lambda: new_url)
+    monkeypatch.setattr(supervisor, "recover", lambda: calls.append("recover"))
+    monkeypatch.setattr(supervisor, "command", lambda args, **kwargs: calls.append(args[1].name))
+    def fetch():
+        assert supervisor.state["configured_public_url"] == new_url
+        calls.append("fetch")
+        return OLD
+    monkeypatch.setattr(supervisor, "fetch", fetch)
+    supervisor.check()
+    assert calls == ["recover", "configure_twilio.py", "configure_github.py", "fetch"]
+    assert supervisor.state["status"] == "running"
+
+
+@pytest.mark.parametrize("preparation_fails", [False, True])
+def test_first_deployment_configures_new_webhooks_only_after_activation(supervisor, monkeypatch, preparation_fails):
+    new_url = "https://new.trycloudflare.com"
+    calls = []
+    monkeypatch.setattr(supervisor, "ensure_tunnel", lambda: new_url)
+    monkeypatch.setattr(supervisor, "recover", Mock())
+    monkeypatch.setattr(supervisor, "fetch", lambda: NEW)
+    def prepare(sha):
+        if preparation_fails:
+            raise RuntimeError("failed build")
+        return supervisor.releases / sha
+    monkeypatch.setattr(supervisor, "prepare", prepare)
+    monkeypatch.setattr(supervisor, "activate", lambda *args: calls.append("activate"))
+    monkeypatch.setattr(supervisor, "configure_hooks", lambda url: calls.append("hooks"))
+    supervisor.check()
+    assert calls == ([] if preparation_fails else ["activate", "hooks"])
+
+
+def test_provider_switch_waits_for_calls_before_replacing_connector(supervisor, monkeypatch):
+    protected_app(supervisor, monkeypatch)
+    (supervisor.root / ".env").write_text("TUNNEL_PROVIDER=cloudflare\nDEPLOY_CONTROL_TOKEN=" + "x" * 32 + "\n")
+    helper = Mock()
+    monkeypatch.setattr(deploy.dev, "ensure_tunnel", helper)
+    control = Mock(side_effect=[deploy.DeploymentDeferred("call still active"), drain_state(draining=False)])
+    monkeypatch.setattr(supervisor, "deployment_control", control)
+    with pytest.raises(deploy.DeploymentDeferred):
+        supervisor.ensure_tunnel()
+    helper.assert_not_called()
+    assert control.call_args_list == [call(True), call(False)]

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Start, inspect, or stop the local Build 0 server and ngrok tunnel."""
+"""Start, inspect, or stop the local server and its ngrok/Cloudflare tunnel."""
 import argparse
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -8,6 +10,7 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,6 +24,8 @@ RUNTIME = ROOT / ".runtime"
 STATE = RUNTIME / "dev.json"
 BASE = "http://127.0.0.1:8000"
 TUNNELS = "http://127.0.0.1:4040/api/tunnels"
+CLOUDFLARE_READY = "http://127.0.0.1:4041/ready"
+QUICK_URL = re.compile(r"https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com")
 
 
 def request(url):
@@ -48,10 +53,11 @@ def read_state():
 def write_state(state):
     RUNTIME.mkdir(mode=0o700, exist_ok=True)
     os.chmod(RUNTIME, 0o700)
-    fd = os.open(STATE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w") as handle:
+    with tempfile.NamedTemporaryFile(mode="w", dir=RUNTIME, prefix=".dev.", delete=False) as handle:
+        temporary = Path(handle.name)
+        os.chmod(temporary, 0o600)
         json.dump(state, handle, indent=2)
+    os.replace(temporary, STATE)
 
 
 def available(port):
@@ -90,11 +96,16 @@ def persist_url(url):
     os.chmod(path, 0o600)
 
 
-def spawn(name, command, state):
+def spawn(name, command, state, environment=None):
+    RUNTIME.mkdir(mode=0o700, exist_ok=True)
     log = RUNTIME / (name + ".log")
-    fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     os.fchmod(fd, 0o600)
-    environment = dict(os.environ)
+    log_stat = os.fstat(fd)
+    if not stat.S_ISREG(log_stat.st_mode):
+        os.close(fd)
+        raise RuntimeError("Refusing a non-file process log.")
+    environment = dict(os.environ if environment is None else environment)
     if name == "app":
         environment["PUBLIC_BASE_URL"] = state["public_url"]
     with os.fdopen(fd, "ab") as output:
@@ -102,6 +113,9 @@ def spawn(name, command, state):
                                    stdout=output, stderr=subprocess.STDOUT,
                                    start_new_session=True, env=environment)
     record = {"pid": process.pid, "identity": identity(process.pid)}
+    if name == "cloudflared":
+        record.update(log_offset=log_stat.st_size, log_inode=log_stat.st_ino,
+                      log_device=log_stat.st_dev)
     state[name] = record
     write_state(state)
     return process
@@ -125,21 +139,207 @@ def terminate(record, timeout=5):
             time.sleep(0.1)
 
 
+def tunnel_environment():
+    """Keep the standalone CLI dependency-free; .env overrides shell provider."""
+    environment = dict(os.environ)
+    path = ROOT / ".env"
+    for line in path.read_text().splitlines() if path.exists() else []:
+        match = re.match(r"^\s*(?:export\s+)?TUNNEL_PROVIDER\s*=\s*(.*?)\s*$", line)
+        if match:
+            value = match.group(1).split(" #", 1)[0].strip().strip("\"'")
+            environment["TUNNEL_PROVIDER"] = value
+    return environment
+
+
+def tunnel_provider(environment):
+    provider = environment.get("TUNNEL_PROVIDER", "ngrok").strip().lower()
+    if provider not in ("ngrok", "cloudflare"):
+        raise RuntimeError("TUNNEL_PROVIDER must be ngrok or cloudflare.")
+    return provider
+
+
+@contextmanager
+def tunnel_lock():
+    """Prevent two CLI/supervisor processes from launching duplicate connectors."""
+    RUNTIME.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(RUNTIME, 0o700)
+    fd = os.open(RUNTIME / "tunnel.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError("Another controller is preparing the tunnel; retry shortly.") from error
+        yield
+    finally:
+        os.close(fd)
+
+
+def listener_pids(port):
+    """An HTTP response alone cannot establish ownership of the metrics port."""
+    executable = shutil.which("lsof")
+    if not executable:
+        raise RuntimeError("lsof is required to verify Cloudflare metrics port ownership.")
+    try:
+        result = subprocess.run([executable, "-nP", "-iTCP:" + str(port), "-sTCP:LISTEN", "-Fp"],
+                                capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError("Could not verify Cloudflare metrics port ownership.") from error
+    if result.returncode not in (0, 1):
+        raise RuntimeError("Could not verify Cloudflare metrics port ownership.")
+    return {int(line[1:]) for line in result.stdout.splitlines()
+            if re.fullmatch(r"p[0-9]+", line)}
+
+
+def cloudflare_url(record):
+    """Read only this process's log, never a previous connector's random URL."""
+    if not record:
+        return None
+    cached = record.get("public_url")
+    if isinstance(cached, str) and QUICK_URL.fullmatch(cached):
+        return cached
+    offset = record.get("log_offset")
+    if type(offset) is not int or offset < 0:
+        return None
+    try:
+        fd = os.open(RUNTIME / "cloudflared.log", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_size < offset
+                    or info.st_ino != record.get("log_inode")
+                    or info.st_dev != record.get("log_device")):
+                return None
+            handle.seek(offset)
+            content = handle.read(1024 * 1024).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    for candidate in re.findall(r'https://[^\s"\\|]+', content):
+        if QUICK_URL.fullmatch(candidate):
+            return candidate
+    return None
+
+
+def cloudflare_ready(record):
+    if not owned(record):
+        return False
+    if listener_pids(4041) != {record["pid"]}:
+        return False
+    data = request(CLOUDFLARE_READY)
+    return bool(isinstance(data, dict) and data.get("status") == 200
+                and type(data.get("readyConnections")) is int and data["readyConnections"] > 0)
+
+
+def check_stopping(stopping):
+    if stopping and stopping():
+        raise RuntimeError("Tunnel startup was stopped.")
+
+
+def _ensure_ngrok(state, environment, stopping):
+    record = state.get("ngrok")
+    data = request(TUNNELS)
+    url = public_url(data)
+    if url:
+        if record and not owned(record):
+            state.pop("ngrok", None)  # Reuse the unowned tunnel without claiming its PID.
+        return url
+    if not owned(record):
+        if data is not None or not available(4040):
+            raise RuntimeError("Port 4040 is in use without a matching ngrok tunnel; no processes were stopped.")
+        executable = shutil.which("ngrok")
+        if not executable:
+            raise RuntimeError("ngrok is not installed or is not on PATH.")
+        check_stopping(stopping)
+        spawn("ngrok", [executable, "http", BASE, "--log", "stdout", "--log-format", "json"],
+              state, environment=environment)
+    deadline = time.monotonic() + 25
+    while owned(state.get("ngrok")) and time.monotonic() < deadline:
+        check_stopping(stopping)
+        url = public_url(request(TUNNELS))
+        if url:
+            return url
+        time.sleep(0.3)
+    raise RuntimeError("ngrok is not ready; inspect .runtime/ngrok.log. Its recorded process was preserved.")
+
+
+def _ensure_cloudflare(state, environment, stopping):
+    record = state.get("cloudflared")
+    if not owned(record):
+        if not available(4041):
+            raise RuntimeError("Port 4041 belongs to an untracked process; no processes were stopped.")
+        executable = shutil.which("cloudflared")
+        if not executable:
+            raise RuntimeError("cloudflared is not installed or is not on PATH.")
+        config_dirs = (Path.home() / ".cloudflared", Path.home() / ".cloudflare-warp",
+                       Path.home() / "cloudflare-warp", Path("/etc/cloudflared"),
+                       Path("/usr/local/etc/cloudflared"), Path("/opt/homebrew/etc/cloudflared"))
+        if any((directory / name).exists() for directory in config_dirs
+               for name in ("config.yml", "config.yaml")):
+            raise RuntimeError("An existing cloudflared config may override Quick Tunnel settings. "
+                               "Move it aside before starting this demo; it was not modified.")
+        # Verify that ownership checks can run before launching a connector.
+        listener_pids(4041)
+        check_stopping(stopping)
+        spawn("cloudflared", [executable, "tunnel", "--no-autoupdate", "--url", BASE,
+                              "--metrics", "127.0.0.1:4041", "--output", "json"],
+              state, environment=environment)
+        record = state["cloudflared"]
+    deadline = time.monotonic() + 40
+    while owned(record) and time.monotonic() < deadline:
+        check_stopping(stopping)
+        url = cloudflare_url(record)
+        if url and cloudflare_ready(record):
+            record["public_url"] = url
+            return url
+        time.sleep(0.3)
+    raise RuntimeError("Cloudflare is not ready; inspect .runtime/cloudflared.log. "
+                       "Its recorded process was preserved for recovery; no duplicate was started.")
+
+
+def ensure_tunnel(environment, stopping=None):
+    """Return and persist the selected provider's ready HTTPS origin.
+
+    Existing owned connectors survive app deploys and supervisor restarts. The
+    callback may raise the supervisor's stop exception, or return True to stop.
+    """
+    provider = tunnel_provider(environment)
+    check_stopping(stopping)
+    with tunnel_lock():
+        state = read_state()
+        url = (_ensure_cloudflare if provider == "cloudflare" else _ensure_ngrok)(
+            state, environment, stopping)
+        check_stopping(stopping)
+        old = "ngrok" if provider == "cloudflare" else "cloudflared"
+        if old in state:
+            terminate(state[old], timeout=5)  # terminate verifies saved process identity.
+            state.pop(old)
+        if environment.get("PUBLIC_BASE_URL") != url:
+            persist_url(url)
+        state.update(public_url=url, tunnel_provider=provider)
+        write_state(state)
+        return url
+
+
 def status():
     state = read_state()
-    url = public_url(request(TUNNELS))
+    provider = tunnel_provider(tunnel_environment())
+    if provider == "cloudflare":
+        record = state.get("cloudflared")
+        url = cloudflare_url(record) if cloudflare_ready(record) else None
+        tunnel_alive = bool(url)
+    else:
+        url = public_url(request(TUNNELS))
+        tunnel_alive = "ngrok" not in state or owned(state["ngrok"])
     healthy = owned(state.get("app")) and request(BASE + "/health") is not None
     print("App: " + ("healthy at " + BASE if healthy else "not running or unhealthy"))
-    print("ngrok: " + (url if url else "no HTTPS tunnel to port 8000"))
+    print(provider + ": " + (url if url else "no ready HTTPS tunnel to port 8000"))
     if url:
         print("Voice webhook: " + url + "/voice")
-    ngrok_alive = "ngrok" not in state or owned(state["ngrok"])
-    return 0 if healthy and ngrok_alive and url and url == state.get("public_url") else 1
+    return 0 if healthy and tunnel_alive and url and url == state.get("public_url") else 1
 
 
 def start():
     previous = read_state()
-    if any(owned(previous.get(name)) for name in ("app", "ngrok")):
+    if owned(previous.get("app")):
         if status() == 0:
             return 0
         raise RuntimeError("Recorded services are incomplete. Run 'python3 scripts/dev.py stop', then start.")
@@ -148,25 +348,9 @@ def start():
         raise RuntimeError("Missing .venv/bin/python; install the project dependencies first.")
     if not available(8000):
         raise RuntimeError("Port 8000 is occupied by an untracked process; no processes were stopped.")
-    data = request(TUNNELS)
-    url = public_url(data)
-    if not url and (data is not None or not available(4040)):
-        raise RuntimeError("Port 4040 is in use without a matching ngrok tunnel; no processes were stopped.")
-    if not url and not shutil.which("ngrok"):
-        raise RuntimeError("ngrok is not installed or is not on PATH.")
-    state = {}
-    write_state(state)
+    url = ensure_tunnel(tunnel_environment())
+    state = read_state()
     try:
-        if not url:
-            ngrok = spawn("ngrok", ["ngrok", "http", BASE, "--log", "stdout", "--log-format", "json"], state)
-            deadline = time.monotonic() + 25
-            while not url and ngrok.poll() is None and time.monotonic() < deadline:
-                time.sleep(0.3)
-                url = public_url(request(TUNNELS))
-            if not url:
-                raise RuntimeError("ngrok did not start; inspect .runtime/ngrok.log.")
-        persist_url(url)
-        state["public_url"] = url
         app = spawn("app", [str(python), "-m", "uvicorn", "main:app", "--host", "127.0.0.1",
                             "--port", "8000", "--no-access-log",
                             "--ws-max-size", "65536", "--ws-max-queue", "16"], state)
@@ -175,22 +359,23 @@ def start():
             if request(BASE + "/health") is not None:
                 if status() == 0:
                     return 0
-                raise RuntimeError("App started but the ngrok tunnel changed; start again.")
+                raise RuntimeError("App started but the tunnel changed; start again.")
             time.sleep(0.3)
         raise RuntimeError("App did not become healthy; inspect .runtime/app.log.")
     except BaseException:
-        for name in ("app", "ngrok"):
-            terminate(state.get(name), timeout=40 if name == "app" else 5)
-        STATE.unlink(missing_ok=True)
+        terminate(state.get("app"), timeout=40)
+        state.pop("app", None)
+        write_state(state)  # Keep the ready connector and URL for a later start.
         raise
 
 
 def stop():
     state = read_state()
-    for name in ("app", "ngrok"):
-        terminate(state.get(name), timeout=40 if name == "app" else 5)
+    for name in ("app", "ngrok", "cloudflared"):
+        if name in state:
+            terminate(state[name], timeout=40 if name == "app" else 5)
     STATE.unlink(missing_ok=True)
-    print("Stopped recorded app and ngrok processes. Reused tunnels remain running.")
+    print("Stopped recorded app and tunnel processes. Unowned reused tunnels remain running.")
     return 0
 
 

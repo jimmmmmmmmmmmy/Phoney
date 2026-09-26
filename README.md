@@ -4,11 +4,11 @@
 
 # Passive Operator
 
-**Build 3:** the existing two-human Twilio call now has optional live **Deepgram Nova-3 transcription**, a minimal dashboard with caller number/time/duration, recorded-audio playback, automatic Gemini summaries after calls, public JSON/text/WAV downloads, and transcript JSON stored with private filesystem permissions. The same media tap continues writing the two original WAV tracks. Open the viewer with the command above; it reads the installed server's configured public URL. Anyone with that ngrok URL can see caller numbers, call times/durations, saved summaries, and transcript text, play finalized local recordings, and download JSON/text/WAV without signing in. See [the Build 3 guide](docs/BUILD_3.md) for setup, output contracts, and acceptance checks.
+**Build 3:** the existing two-human Twilio call now has optional live **Deepgram Nova-3 transcription**, a minimal dashboard with caller number/time/duration, recorded-audio playback, automatic Gemini summaries after calls, public JSON/text/WAV downloads, and transcript JSON stored with private filesystem permissions. The same media tap continues writing the two original WAV tracks. Open the viewer with the command above; it reads the installed server's configured public URL. Anyone with that public URL can see caller numbers, call times/durations, saved summaries, and transcript text, play finalized local recordings, and download JSON/text/WAV without signing in. See [the Build 3 guide](docs/BUILD_3.md) for setup, output contracts, and acceptance checks.
 
 **Current scope: Twilio calling, unanswered-call voicemail, capture, observational speech-to-text, and Gemini summaries after calls.** Deepfake detection, Gemini dialogue, ElevenLabs voice cloning, and keypad takeover remain partner work. Partners can consume [saved transcripts and typed audio replay](docs/PARTNER_HANDOFF.md) while the people continue talking through the Twilio conference.
 
-**Verification (2026-09-26):** all 547 automated tests pass, including finalized WAV playback, seeking, stereo alignment, and public-route checks. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. The compact dashboard also passed Chrome checks for line highlighting, overlap, seek/track changes, persistent collapsible sections, and manual call selection during incoming live activity. This confirms player behavior, not recorded speech quality.
+**Verification (2026-09-26):** all 596 automated tests pass, including finalized WAV playback, seeking, stereo alignment, and public-route checks. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. The compact dashboard also passed Chrome checks for line highlighting, overlap, seek/track changes, persistent collapsible sections, and manual call selection during incoming live activity. This confirms player behavior, not recorded speech quality.
 
 A browser check verified anonymous voicemail-inbox access using an isolated fake receipt, without placing a phone call or invoking a speech/agent provider. Twilio's `/voice` and caller-status `/status` POST webhooks were configured and verified by API read-back. Earlier generated speech passed a real Deepgram 8 kHz probe and a local signed-media/browser/export test with both WAV tracks completed. The live service has one completed capture with valid mono PCM16/8 kHz WAV headers (27.73 seconds inbound, 27.67 seconds outbound); this was a file/header check, not a listening test.
 
@@ -72,9 +72,11 @@ The server Mac needs to be running, connected to the internet, and logged in. Re
 
 The installed service lives at `~/Library/Application Support/NewCollegeOperator`. Its `.env` is the active server configuration after installation; the project checkout remains available for editing. `python3 scripts/server.py status` shows the service location and deployed revision.
 
+**Use Cloudflare instead of ngrok:** set `TUNNEL_PROVIDER=cloudflare` in the active environment and install `cloudflared`. The app still runs on this Mac at port `8000`; Cloudflare forwards public HTTPS and WebSocket traffic to it. The [Cloudflare guide](docs/CLOUDFLARE.md) covers the accountless Quick Tunnel, migration of the installed service, and a later stable domain. Quick Tunnel URLs change when the connector restarts. The supervisor updates the public URL and webhook destinations; GitHub polling continues every 30 seconds. This does not move the Python server into Cloudflare hosting.
+
 ## Start locally
 
-Allow about 5 minutes with Python, ngrok, and Twilio credentials ready.
+Allow about 5 minutes with Python, a tunnel client, and Twilio credentials ready.
 
 These commands are for manual development. Use [server mode](docs/SERVER.md) for automatic deployment; both modes use port `8000`, so run one mode at a time.
 
@@ -87,7 +89,7 @@ These commands are for manual development. Use [server mode](docs/SERVER.md) for
 
    `requirements-lock.txt` pins the verified environment, including tests. `requirements.txt` and `requirements-dev.txt` list the direct dependencies for intentional upgrades. Use Python 3.11 or newer.
 
-2. Fill in `.env` using `.env.example` as the reference. Enable capture/transcription and set private provider/storage settings using [Build 3 configuration](docs/BUILD_3.md#configure-the-installed-server) when you want live text; both optional features can remain disabled for a basic bridge test. Set `CALLEE_NUMBER` to the teammate’s full E.164 number, different from `TWILIO_NUMBER`. Preserve existing credentials; `TWILIO_AUTH_TOKEN` validates callbacks. For automatic deployment, also set a random `DEPLOY_CONTROL_TOKEN` of at least 32 characters. Install ngrok and authenticate it if needed.
+2. Fill in `.env` using `.env.example` as the reference. Enable capture/transcription and set private provider/storage settings using [Build 3 configuration](docs/BUILD_3.md#configure-the-installed-server) when you want live text; both optional features can remain disabled for a basic bridge test. Set `CALLEE_NUMBER` to the teammate’s full E.164 number, different from `TWILIO_NUMBER`. Preserve existing credentials; `TWILIO_AUTH_TOKEN` validates callbacks. For automatic deployment, also set a random `DEPLOY_CONTROL_TOKEN` of at least 32 characters. For Cloudflare, install with `brew install cloudflared` and set `TUNNEL_PROVIDER=cloudflare`; otherwise the default `ngrok` provider requires an installed, authenticated ngrok client.
 
 3. Start the app and tunnel:
 
@@ -95,7 +97,7 @@ These commands are for manual development. Use [server mode](docs/SERVER.md) for
    python3 scripts/dev.py start
    ```
 
-   The helper starts `main:app` on port `8000`, starts ngrok, and saves the tunnel origin as `PUBLIC_BASE_URL` in `.env`.
+   The helper starts `main:app` on port `8000`, starts the selected tunnel, and saves its origin as `PUBLIC_BASE_URL` in `.env`.
 
 4. Save the running tunnel’s webhook on the Twilio number:
 
@@ -103,11 +105,11 @@ These commands are for manual development. Use [server mode](docs/SERVER.md) for
    .venv/bin/python scripts/configure_twilio.py --apply
    ```
 
-   This sets the number specified by `TWILIO_NUMBER` to `PUBLIC_BASE_URL/voice` for incoming calls and `PUBLIC_BASE_URL/status` for caller termination, both with method **POST**, and verifies both by read-back. Run without `--apply` to inspect settings without changing them. Repeat after a restart if the ngrok URL changes. The incoming voice URL is under the number’s **Voice → Handling for incoming calls**; the helper also configures the caller-status callback needed for hangup during the voicemail greeting.
+   This sets the number specified by `TWILIO_NUMBER` to `PUBLIC_BASE_URL/voice` for incoming calls and `PUBLIC_BASE_URL/status` for caller termination, both with method **POST**, and verifies both by read-back. Run without `--apply` to inspect settings without changing them. In manual development, repeat after a restart if the tunnel URL changes. The incoming voice URL is under the number’s **Voice → Handling for incoming calls**; the helper also configures the caller-status callback needed for hangup during the voicemail greeting.
 
 5. Call the Twilio number from **a phone other than `CALLEE_NUMBER`**. Answer the teammate phone and exchange distinct phrases for 30 seconds. **Pass:** both people hear each other and either hangup ends both legs. Calls from the forwarding phone are rejected to prevent calling it back into itself. See the guide for no-answer and hangup tests.
 
-Keep this computer awake while testing. The local app and ngrok must both remain running.
+Keep this computer awake and online while testing. The local app and selected tunnel must both remain running.
 
 ## Useful commands
 
@@ -121,7 +123,7 @@ Keep this computer awake while testing. The local app and ngrok must both remain
 
 An unsigned request to `/voice` is rejected. Browser visits and ordinary `curl` requests cannot stand in for a signed Twilio webhook. Validation uses the account Auth Token and the exact public URL; an API key secret is not a substitute. See [Twilio request validation](https://www.twilio.com/docs/usage/security).
 
-Private process state and logs live in `.runtime/`. The configuration helper saves the prior Twilio settings there before applying a change. If startup fails, inspect `.runtime/app.log` or `.runtime/ngrok.log`.
+Private process state and logs live in `.runtime/`. The configuration helper saves the prior Twilio settings there before applying a change. If startup fails, inspect `.runtime/app.log` and the selected tunnel's log: `.runtime/cloudflared.log` or `.runtime/ngrok.log`.
 
 ## Build 3 boundary
 

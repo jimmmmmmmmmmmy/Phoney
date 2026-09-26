@@ -20,6 +20,7 @@ class AudioMarkup(HTMLParser):
         self.ids = []
         self.details = {}
         self.attributes = {}
+        self.tags = {}
 
     def handle_starttag(self, tag, attributes):
         attributes = dict(attributes)
@@ -28,6 +29,7 @@ class AudioMarkup(HTMLParser):
         if "id" in attributes:
             self.ids.append(attributes["id"])
             self.attributes[attributes["id"]] = attributes
+            self.tags[attributes["id"]] = tag
         if tag == "details":
             self.details[attributes["id"]] = attributes
 
@@ -55,7 +57,9 @@ def test_playback_dock_has_its_own_viewport_row_outside_scrolling_content():
     css = re.search(r"<style>(.*?)</style>", html, re.S).group(1)
     dock = re.search(r"\.audio-panel\s*\{([^}]+)\}", css).group(1)
     body = re.search(r"body\s*\{([^}]+)\}", css).group(1)
-    assert "grid-template-rows:auto minmax(0,1fr) auto" in body
+    assert "display:grid" in body
+    assert "grid-template-columns:" in body
+    assert "grid-template-rows:" in body and "minmax(0,1fr)" in body
     assert "height:100dvh" in body
     assert "position:fixed" not in dock
     assert "safe-area-inset-bottom" in dock
@@ -66,6 +70,23 @@ def test_playback_dock_has_its_own_viewport_row_outside_scrolling_content():
     assert all("safe-area-inset-bottom" not in rule and "126px" not in rule for rule in main_rules)
     assert re.search(r"@media\s*\(max-width:\s*\d+px\)\s*\{\s*\.audio-panel\s*\{"
                      r"[^}]*safe-area-inset-bottom", css)
+
+
+def test_navigation_and_unimplemented_search_are_accessible_and_honest():
+    parsed = AudioMarkup()
+    parsed.feed(HTML.read_text())
+    for page in ("calls", "contacts", "agents"):
+        control = parsed.attributes[f"nav-{page}"]
+        assert parsed.tags[f"nav-{page}"] == "button"
+        assert control.get("type") == "button"
+        assert control.get("aria-current") == ("page" if page == "calls" else None)
+    assert "hidden" not in parsed.attributes["dashboard-view"]
+    assert "hidden" in parsed.attributes["contacts-view"]
+    assert "hidden" in parsed.attributes["agents-view"]
+    search = parsed.attributes["global-search"]
+    assert parsed.tags["global-search"] == "input"
+    assert search["type"] == "search" and "disabled" in search
+    assert search["aria-label"] == "Search (coming soon)" and search["title"]
 
 
 HARNESS = r'''
@@ -121,6 +142,54 @@ def run_browser_logic(tmp_path, assertions):
     path.write_text("const markupIds = new Set(" + json.dumps(parsed.ids) + ");\n" + HARNESS + script + "\n" + assertions)
     result = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+def test_navigation_preserves_call_selection_and_ongoing_playback_without_requests(tmp_path):
+    run_browser_logic(tmp_path, r'''
+assert.equal(state.page,'calls');
+state.snapshot=snapshot([session(),session(OTHER)],[recording(),recording(OTHER)]);render();
+const audio=$('call-audio');audio.play();audio.currentTime=17;
+const selected=state.selected,src=audio.src,loads=audio.loads,pauses=audio.pauses,plays=audio.plays;
+const viewIds={calls:'dashboard-view',contacts:'contacts-view',agents:'agents-view'};
+for(const page of ['contacts','agents','calls']){
+ $('nav-'+page).events.click();
+ assert.equal(state.page,page);
+ assert.equal($('page-title').textContent,page[0].toUpperCase()+page.slice(1));
+ for(const name of Object.keys(viewIds)){
+  assert.equal($(viewIds[name]).hidden,name!==page);
+  assert.equal($('nav-'+name).attributes['aria-current'],name===page?'page':undefined);
+ }
+ assert.equal(state.selected,selected);assert.equal(state.playbackPinned,selected);
+ assert.equal(audio.src,src);assert.equal(audio.currentTime,17);assert.equal(audio.paused,false);
+ assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.plays,plays);
+ assert.equal($('audio-panel').hidden,false);
+}
+// The harness rejects every fetch: changing pages cannot dial, transfer, or call an agent API.
+''')
+
+
+def test_background_polling_keeps_placeholder_page_selected_and_audio_running(tmp_path):
+    run_browser_logic(tmp_path, r'''
+(async()=>{
+state.snapshot=snapshot([session()],[recording()]);render();
+const audio=$('call-audio');audio.play();audio.currentTime=17;
+showPage('agents');
+const requests=[],loads=audio.loads,pauses=audio.pauses;
+fetch=async(url,options)=>{
+ requests.push({url,options});
+ return {ok:true,json:async()=>snapshot([session()],[recording()])};
+};
+await poll();
+assert.equal(requests.length,1);assert.equal(requests[0].url,`/api/transcripts?call_sid=${SID}`);
+assert.equal(state.page,'agents');assert.equal($('agents-view').hidden,false);
+assert.equal($('dashboard-view').hidden,true);assert.equal($('contacts-view').hidden,true);
+assert.equal($('nav-agents').attributes['aria-current'],'page');
+assert.equal(state.selected,SID);assert.equal(audio.currentTime,17);assert.equal(audio.paused,false);
+assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
+showPage('calls');assert.equal($('call-list').children.length,1);
+assert.equal($('transcript-title').textContent,'Call transcript');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+''')
 
 
 def test_snapshot_fetch_bypasses_ngrok_html_warning_and_preserves_audio(tmp_path):

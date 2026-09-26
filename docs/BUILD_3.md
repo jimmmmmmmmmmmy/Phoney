@@ -8,7 +8,7 @@ Run this from the source checkout on the server Mac. It reads the installed serv
 
 Build 3 adds speech-to-text to the existing two-human Twilio conference and passive audio capture. It sends enabled call audio to Deepgram Nova-3, presents interim/final text in HTML, and preserves transcript data for partner development. The caller's conversation remains connected through Twilio; Python observes a copy of the media.
 
-**Acceptance baseline:** 599 automated tests passed. Chrome checks with silent synthetic recordings verified the fixed bottom player at desktop and 390-pixel mobile widths, playback continuing during polling, seeking with transcript highlighting, and resetting playback when selecting another call. No browser warnings or errors were reported. Earlier fixture checks also covered overlapping speech and collapsible sections. These checks do not establish recorded speech quality.
+**Acceptance baseline:** 602 automated tests passed. Chrome checks with silent synthetic recordings verified the fixed bottom player at desktop and 390-pixel mobile widths, playback continuing during polling and page navigation, seeking with transcript highlighting, and resetting playback when selecting another call. Responsive checks also verified that search, navigation, and playback stay in place while content scrolls, including a short landscape viewport. No browser warnings or errors were reported. Earlier fixture checks also covered overlapping speech and collapsible sections. These checks do not establish recorded speech quality.
 
 A browser check verified anonymous voicemail-inbox access using an isolated fake receipt; that check placed no phone call and invoked no speech/agent provider. Earlier generated speech passed the real Deepgram API and a full local Uvicorn signed-media/browser/export test, with both WAV tracks completed. The live service has one completed capture with valid mono PCM16/8 kHz headers: inbound 27.73 seconds and outbound 27.67 seconds. Only file metadata/headers were checked; audio content was not assessed.
 
@@ -99,6 +99,10 @@ Deepgram distinguishes finalized processed ranges (`is_final`) from endpointing 
 The page polls selected-call data once per second; provider processing and network delay add to that refresh interval. There is no viewer login/logout flow or viewer session cookie.
 
 Call rows show the caller number, time, and duration. Select a row to see its saved summary directly under **Call transcript**, followed by transcript lines labeled **Caller** and **New College**. The recording plays from a fixed dock at the bottom of the page. Live text and highlighted playback lines scroll automatically. A new live call does not interrupt selected recorded playback. Raw call identifiers and provider metadata remain available through the API.
+
+The persistent navigation places **Calls**, **Contacts**, and **Agents** in a left column on desktop and a top row on mobile. The call list and transcript scroll independently; speaker entries use compact spacing. Switching pages preserves the selected call and ongoing playback in the bottom dock. The top **Search** field is a disabled placeholder.
+
+**Contacts** and **Agents** are display-only previews. They do not create, edit, or fetch contacts, place outbound calls, route agents, or activate phone keypad controls. The Agents preview proposes `#1` to add an agent and `#2` to transfer a call; these labels are not an implemented keypad contract. See [FINAL_BUILD.md](FINAL_BUILD.md) for the broader partner implementation plans.
 
 On a free ngrok tunnel, click **Visit Site** if its initial notice appears. Snapshot requests send `Accept: application/json` and `ngrok-skip-browser-warning: 1`, with same-origin cookies, so ngrok does not substitute an HTML notice for the JSON response. Native audio and download links use the browser's normal same-origin requests and ngrok's notice-acceptance cookie. This does not add application authentication.
 

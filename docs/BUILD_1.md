@@ -105,7 +105,9 @@ Automated checks use mock phone numbers and a mocked Twilio client; they do not 
 
 **Recorded result (2026-09-26):** the owner confirmed two-way audio, caller-first hangup, teammate-first hangup, and no-answer cleanup within the deadline. Twilio independently reported both legs of the first call completed at the same time, with the caller ending the conference. The automated suite passes 137 tests. Private call IDs and observations are saved locally in `.runtime/build1-acceptance.json`; phone numbers and call records are not committed. Repeat the phone checks after a material telephony change.
 
-## Later milestones
+## Later milestones and partner scope
+
+**Current work remains Twilio-only.** Build 2 is implemented in [BUILD_2.md](BUILD_2.md); AI detection and voice-agent work remain partner-owned scaffolding in [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md). The milestones below describe the wider product, not permission to implement those partner components now.
 
 The final product adds outbound calls and owner keypad shortcuts that delegate the conversation to an agent using the owner's cloned voice. See [Final build — put your AI on the call](FINAL_BUILD.md) for `#1`–`#4` prompt selection, context transfer, and return-to-human behavior. Build 1 remains the two-human switchboard; manual delegation will work independently of AI detection.
 

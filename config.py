@@ -26,6 +26,9 @@ class Settings:
     api_secret: str = field(default="", repr=False)
     switchboard_setup_timeout: float = 45.0
     deploy_control_token: str = field(default="", repr=False)
+    media_capture_enabled: bool = False
+    media_storage_dir: str = ""
+    media_max_seconds: int = 1800
 
     def __post_init__(self):
         if not self.account_sid.startswith("AC") or len(self.account_sid) != 34:
@@ -54,6 +57,12 @@ class Settings:
             raise ValueError("Switchboard setup timeout must be between 1 and 120 seconds.")
         if self.deploy_control_token and len(self.deploy_control_token) < 32:
             raise ValueError("DEPLOY_CONTROL_TOKEN must contain at least 32 characters.")
+        if type(self.media_capture_enabled) is not bool:
+            raise ValueError("MEDIA_CAPTURE_ENABLED must be true or false.")
+        if self.media_capture_enabled and not Path(self.media_storage_dir).is_absolute():
+            raise ValueError("Set MEDIA_STORAGE_DIR to an absolute private directory before enabling capture.")
+        if type(self.media_max_seconds) is not int or not 1 <= self.media_max_seconds <= 3600:
+            raise ValueError("MEDIA_MAX_SECONDS must be between 1 and 3600 seconds.")
 
     @property
     def switchboard_ready(self):
@@ -62,6 +71,9 @@ class Settings:
     @classmethod
     def from_env(cls):
         load_dotenv(ROOT / ".env")
+        capture_flag = os.getenv("MEDIA_CAPTURE_ENABLED", "false").strip().lower()
+        if capture_flag not in {"true", "false"}:
+            raise ValueError("MEDIA_CAPTURE_ENABLED must be true or false.")
         return cls(
             account_sid=os.getenv("TWILIO_ACCOUNT_SID", "").strip(),
             auth_token=os.getenv("TWILIO_AUTH_TOKEN", "").strip(),
@@ -76,4 +88,7 @@ class Settings:
             api_key=os.getenv("TWILIO_API_KEY", "").strip(),
             api_secret=os.getenv("TWILIO_API_SECRET", "").strip(),
             deploy_control_token=os.getenv("DEPLOY_CONTROL_TOKEN", "").strip(),
+            media_capture_enabled=capture_flag == "true",
+            media_storage_dir=os.getenv("MEDIA_STORAGE_DIR", "").strip(),
+            media_max_seconds=int(os.getenv("MEDIA_MAX_SECONDS", "1800")),
         )

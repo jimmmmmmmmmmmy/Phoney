@@ -4,13 +4,24 @@ python3 scripts/server.py status
 
 # Passive Operator
 
-**Build 1:** call the configured Twilio number from a different phone and hear **“New College Data Science Team”** while the switchboard rings the fixed teammate number in `CALLEE_NUMBER`. When the teammate answers, both people talk through a Twilio conference. FastAPI and ngrok run on this Mac. Read [the Build 1 guide](docs/BUILD_1.md) for setup and the live phone checks. With no teammate configured, the original greeting still plays and the call ends.
+**Build 2:** the Twilio number still rings the fixed teammate in `CALLEE_NUMBER`; a passive Media Stream now saves the caller's input and playback into separate private WAV files. The caller hears **“New College Data Science Team”** and a recording notice. Human audio stays in the Twilio conference even if capture fails. Read [the Build 2 guide](docs/BUILD_2.md) for configuration, file locations, and phone checks.
 
-**Verification (2026-09-26):** 137 automated tests pass, including callback races, no-answer cleanup, destination restrictions, and deployment draining. The owner confirmed live two-way audio, both hangup directions, and no-answer cleanup. Twilio records also showed both legs of the first test ending together. Automated tests use fake calls; the phone checks were performed separately.
+**Today's scope is Twilio only.** AI detection, transcription, voice cloning, and voice-agent implementation belong to our partners. This repository provides [typed audio contracts and an offline replay tool](docs/PARTNER_HANDOFF.md) so partners can develop without modifying the phone bridge or making another call. No AI-provider dependencies or calls were added.
+
+**Verification (2026-09-26):** 212 automated tests pass. A real local Uvicorn/WebSocket test accepted the signed upgrade and wrote two correctly formatted WAV tracks. Build 1's real-phone audio and cleanup tests passed; Build 2's real Twilio capture check is pending.
+
+## Partner starting point
+
+1. Make a short recorded test call through the Twilio number and hang up.
+2. Open the completed capture under `MEDIA_STORAGE_DIR/<CallSid>/` and check `manifest.json` has `status: completed`.
+3. Run `.venv/bin/python scripts/replay_capture.py /absolute/path/to/manifest.json` for a local summary.
+4. Implement `AudioConsumer.on_frame` / `on_end` using [the handoff examples](docs/PARTNER_HANDOFF.md). Replay delivers mono PCM16 at 8 kHz with track IDs and timestamps.
+
+`inbound.wav` is the caller microphone. `outbound.wav` is what that caller heard, including the teammate and hold audio. Captures stay on this Mac, outside Git. The replay tool makes no network requests.
 
 **Final-build vision:** call someone through the operator, press `#1`, and let an agent using a clone of your own voice take over. `#2`, `#3`, and `#4` switch its saved prompts while the call continues. This is a modern version of being on hold: your AI representative keeps the conversation going while you step away. Outbound calls, inbound calls, voice enrollment, and returning control to the human are specified in [the final-build plan](docs/FINAL_BUILD.md). These features are planned, not yet implemented.
 
-## Final build: your AI takes the call
+## Future product vision — partner integration
 
 Imagine calling a car dealership. You start the conversation, explain which car you want, and press `#1` when you want to step away. An agent that sounds like you continues the same call with the context already discussed. Instead of elevator music, the other party has your AI representative to talk to.
 
@@ -25,7 +36,7 @@ The phone keypad becomes a prompt selector. Implement these defaults, configurab
 
 Changing a prompt can route the conversation to a different agent/model while preserving your cloned voice. `#0` returns the speaking role to you and interrupts the agent. The final product supports both inbound and outbound calls routed through the operator; manual takeover works whether the other party is human or AI.
 
-### Build it this way
+### Future implementation reference
 
 Use **Python/FastAPI + two Twilio bidirectional Media Streams + Deepgram + Claude + ElevenLabs**. The Python bridge forwards the humans' audio until a keypad command substitutes the voice agent. For outbound calls, the server calls your phone first, you accept, and it calls the dealership. Both legs stay under the operator's control.
 
@@ -37,7 +48,7 @@ Use **Python/FastAPI + two Twilio bidirectional Media Streams + Deepgram + Claud
 
 [**Implementation recipe →**](docs/IMPLEMENTATION.md) has exact modules, API routes, TwiML/Python examples, keypad parsing, audio mixing, timing policies, failure recovery, and a phone test for each stage. [**Voice provider adapters →**](docs/VOICE_STACK.md) has the actual cloning, STT, text-generation, and speech-streaming requests. [**Product behavior →**](docs/FINAL_BUILD.md) describes the dealership experience and acceptance criteria.
 
-The design includes workarounds for the platform gaps: Python supplies the audio switch, Twilio call updates supply phone-menu digits, and FFmpeg supplies format conversion when needed. **These are later-build instructions; Build 1 implements the two-human bridge.** Start implementation with `operator_service/sessions.py` and the owner-only callback described in the recipe.
+The design includes workarounds for the platform gaps: Python supplies the audio switch, Twilio call updates supply phone-menu digits, and FFmpeg supplies format conversion when needed. **These are later-build reference plans, outside today’s Twilio scope.** The implemented system is the conference bridge and passive capture; partner work starts from the replay interface above.
 
 ## GitHub and the running server
 
@@ -97,8 +108,8 @@ An unsigned request to `/voice` is rejected. Browser visits and ordinary `curl` 
 
 Private process state and logs live in `.runtime/`. The configuration helper saves the prior Twilio settings there before applying a change. If startup fails, inspect `.runtime/app.log` or `.runtime/ngrok.log`.
 
-## Build 1 boundary
+## Build 2 boundary
 
-This build provides the inbound greeting, two-human conference, one fixed outgoing destination, signed callbacks, setup timeout and cleanup, health checks, and automatic deployment that waits for active calls. It does not record audio, stream media, clone voices, detect bots, or run an AI agent. Session state is in memory; explicit stop or a process crash ends continuity. The [server guide](docs/SERVER.md) covers operation and recovery.
+This build provides the two-human conference, one fixed outgoing destination, signed callbacks and media WebSockets, private audio capture, an offline partner interface, timeout cleanup, and automatic deployment that waits for calls and capture work. It does not transcribe, clone voices, detect bots, generate speech, or implement an agent. Session state is in memory; explicit stop or a process crash ends continuity. The [server guide](docs/SERVER.md) covers operation and recovery.
 
-The initial roadmap comes from [the shared Grok conversation](https://grok.com/share/bGVnYWN5_618ab7b3-9c27-4570-9709-edd7bee0bc21). The implemented switchboard and phone acceptance checks are in [docs/BUILD_1.md](docs/BUILD_1.md). The expanded product direction is in [docs/FINAL_BUILD.md](docs/FINAL_BUILD.md).
+The initial roadmap comes from [the shared Grok conversation](https://grok.com/share/bGVnYWN5_618ab7b3-9c27-4570-9709-edd7bee0bc21). The conference baseline is in [docs/BUILD_1.md](docs/BUILD_1.md); current audio-capture checks are in [docs/BUILD_2.md](docs/BUILD_2.md). The expanded product direction is in [docs/FINAL_BUILD.md](docs/FINAL_BUILD.md).

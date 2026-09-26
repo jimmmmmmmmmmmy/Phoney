@@ -1,5 +1,7 @@
 # Build the voice pipeline
 
+**Partner reference only:** current implementation work is limited to Twilio routing and passive capture. AI detection and voice-agent code remain partner-owned; use [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md) for the implemented integration seam.
+
 Implement **Deepgram Nova-3 → Claude Haiku 4.5 → ElevenLabs Flash v2.5** inside the Python relay in [IMPLEMENTATION.md](IMPLEMENTATION.md). These are implementation instructions and adapter examples; the running Build 1 does not yet contain this pipeline. Provider contracts were checked against official documentation on September 26, 2026. Real API and phone tests remain part of implementation.
 
 ## Set up configuration

@@ -168,7 +168,8 @@ def start():
         persist_url(url)
         state["public_url"] = url
         app = spawn("app", [str(python), "-m", "uvicorn", "main:app", "--host", "127.0.0.1",
-                            "--port", "8000", "--no-access-log"], state)
+                            "--port", "8000", "--no-access-log",
+                            "--ws-max-size", "65536", "--ws-max-queue", "16"], state)
         deadline = time.monotonic() + 20
         while app.poll() is None and time.monotonic() < deadline:
             if request(BASE + "/health") is not None:

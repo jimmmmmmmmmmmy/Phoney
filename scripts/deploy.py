@@ -211,7 +211,8 @@ class Supervisor:
         descriptor = os.open(log, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
         with os.fdopen(descriptor, "ab") as output:
             process = subprocess.Popen([str(release / ".venv/bin/python"), "-m", "uvicorn", "main:app",
-                                        "--host", "127.0.0.1", "--port", str(port), "--no-access-log"],
+                                        "--host", "127.0.0.1", "--port", str(port), "--no-access-log",
+                                        "--ws-max-size", "65536", "--ws-max-queue", "16"],
                                        cwd=release, env=self.environment(sha), stdin=subprocess.DEVNULL,
                                        stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
         record = {"pid": process.pid, "identity": dev.identity(process.pid), "release": str(release),
@@ -338,7 +339,8 @@ class Supervisor:
                 python = self.root / ".venv/bin/python"
                 if python.exists():
                     dev.spawn("app", [str(python), "-m", "uvicorn", "main:app", "--host", "127.0.0.1",
-                                      "--port", "8000", "--no-access-log"], state)
+                                      "--port", "8000", "--no-access-log",
+                                      "--ws-max-size", "65536", "--ws-max-queue", "16"], state)
             raise
         self.save(active_commit=sha, active_release=str(release), status="running", failed_commit=None,
                   deployed_at=timestamp(), last_error=None, candidate_commit=None)

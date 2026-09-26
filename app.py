@@ -1,4 +1,4 @@
-"""Build 1: a signed Twilio switchboard, with a greeting while unconfigured."""
+"""Build 2: a signed Twilio switchboard with optional passive audio capture."""
 
 import hashlib
 import hmac
@@ -10,13 +10,14 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, Response
 from twilio.twiml.voice_response import VoiceResponse
 
 from config import Settings
-from webhooks import require_sid, twilio_validator
+from webhooks import require_sid, twilio_validator, valid_media_signature
 from switchboard.service import SessionRejected, Switchboard
+from media_capture import CaptureManager
 
 logger = logging.getLogger("uvicorn.error")
 MAX_GITHUB_BODY_BYTES = 1024 * 1024
@@ -40,23 +41,27 @@ def write_deploy_trigger(path: str, delivery_id: str) -> None:
 
 
 def create_app(settings: Settings, gateway=None) -> FastAPI:
-    switchboard = Switchboard(settings, gateway=gateway)
+    media_capture = CaptureManager(settings)
+    switchboard = Switchboard(settings, gateway=gateway, on_end=media_capture.finish)
 
     @asynccontextmanager
     async def lifespan(app):
         yield
         await switchboard.close()
+        await media_capture.close()
 
-    app = FastAPI(title="Passive Operator — Build 1", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Passive Operator — Build 2", docs_url=None, redoc_url=None,
                   openapi_url=None, redirect_slashes=False, lifespan=lifespan)
     app.state.switchboard = switchboard
+    app.state.media_capture = media_capture
     validate_twilio = twilio_validator(settings)
 
     @app.get("/health")
     @app.get("/")
     async def health():
-        result = {"status": "ok", "service": "passive-operator", "build": 1,
-                  "switchboard_ready": settings.switchboard_ready}
+        result = {"status": "ok", "service": "passive-operator", "build": 2,
+                  "switchboard_ready": settings.switchboard_ready,
+                  "media_capture_enabled": settings.media_capture_enabled and settings.switchboard_ready}
         if settings.deploy_commit:
             result["commit"] = settings.deploy_commit
         return result
@@ -72,7 +77,8 @@ def create_app(settings: Settings, gateway=None) -> FastAPI:
     def deploy_state():
         return JSONResponse({"draining": switchboard.draining,
                              "active_sessions": switchboard.active_count,
-                             "pending_work": switchboard.pending_count},
+                             "pending_work": switchboard.pending_count + media_capture.active_count
+                                             + media_capture.pending_count},
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/internal/deploy", dependencies=[Depends(validate_deploy_control)])
@@ -149,6 +155,23 @@ def create_app(settings: Settings, gateway=None) -> FastAPI:
                 response.hangup()
                 return Response(str(response), media_type="application/xml")
             response.say("New College Data Science Team", language="en-US")
+            if settings.media_capture_enabled:
+                try:
+                    ticket = media_capture.reserve(call_sid)
+                except (ValueError, RuntimeError, OSError) as exc:
+                    # Passive capture must not prevent the two humans talking.
+                    logger.error("capture_reservation_failed type=%s", type(exc).__name__)
+                else:
+                    response.say("This demo call records audio for testing.", language="en-US")
+                    stream = response.start().stream(
+                        url=settings.public_base_url.replace("https://", "wss://", 1)
+                            + f"/media/{call_sid}/",
+                        name=ticket.stream_name,
+                        track="both_tracks",
+                        status_callback=settings.public_base_url + f"/media/status/{call_sid}",
+                        status_callback_method="POST",
+                    )
+                    stream.parameter(name="token", value=ticket.token)
             dial = response.dial(
                 action=settings.public_base_url + f"/conference/finished/{call_sid}",
                 method="POST",
@@ -169,6 +192,37 @@ def create_app(settings: Settings, gateway=None) -> FastAPI:
         response.say("New College Data Science Team", language="en-US")
         response.hangup()
         return Response(str(response), media_type="application/xml")
+
+    @app.websocket("/media/{parent_call_sid}/")
+    async def media_socket(websocket: WebSocket, parent_call_sid: str):
+        try:
+            require_sid(parent_call_sid)
+        except HTTPException:
+            await websocket.close(code=1008)
+            return
+        session = switchboard.sessions.get(parent_call_sid)
+        if (not settings.media_capture_enabled or not session or session.phase == "ended"
+                or not valid_media_signature(settings, websocket)):
+            logger.warning("media_handshake_rejected call_sid=%s", parent_call_sid)
+            await websocket.close(code=1008)
+            return
+        await media_capture.handle(websocket, parent_call_sid)
+
+    @app.post("/media/status/{parent_call_sid}")
+    async def media_status(parent_call_sid: str, form=Depends(validate_twilio)):
+        require_sid(parent_call_sid)
+        if require_sid(form.get("CallSid")) != parent_call_sid:
+            raise HTTPException(400, "Stream callback does not match the call")
+        stream_sid = require_sid(form.get("StreamSid"), "MZ")
+        event = str(form.get("StreamEvent", ""))
+        if event not in {"stream-started", "stream-stopped", "stream-error"}:
+            raise HTTPException(400, "Unknown stream event")
+        if not form.get("StreamName"):
+            raise HTTPException(400, "Missing stream name")
+        media_capture.mark_status(parent_call_sid, stream_sid, event,
+                                  stream_name=str(form.get("StreamName", "")),
+                                  error="twilio_stream_error" if form.get("StreamError") else None)
+        return Response(status_code=204)
 
     @app.post("/conference/events/{parent_call_sid}")
     async def conference_events(parent_call_sid: str, form=Depends(validate_twilio)):

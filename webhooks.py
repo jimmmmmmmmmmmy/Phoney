@@ -6,6 +6,16 @@ from fastapi import HTTPException, Request
 from twilio.request_validator import RequestValidator
 
 
+def valid_media_signature(settings, websocket):
+    """Media Streams signs the fixed public WSS URL, without form fields."""
+    if websocket.scope.get("query_string"):
+        return False
+    path = websocket.scope.get("raw_path", b"/").decode("ascii")
+    origin = settings.public_base_url.replace("https://", "wss://", 1)
+    return RequestValidator(settings.auth_token).validate(
+        origin + path, {}, websocket.headers.get("x-twilio-signature", ""))
+
+
 def require_sid(value, prefix="CA"):
     if not re.fullmatch(prefix + r"[0-9a-fA-F]{32}", str(value or "")):
         raise HTTPException(400, f"Missing or invalid {prefix} SID")

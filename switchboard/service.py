@@ -23,9 +23,10 @@ class Switchboard:
     MAX_ACTIVE = 16
     TOMBSTONE_SECONDS = 24 * 60 * 60
 
-    def __init__(self, settings, gateway=None):
+    def __init__(self, settings, gateway=None, on_end=None):
         self.settings = settings
         self.gateway = gateway if gateway is not None else TwilioGateway(settings)
+        self.on_end = on_end
         self.sessions: dict[str, CallSession] = {}
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
@@ -306,6 +307,11 @@ class Switchboard:
         if s.outbound_sid:
             work.append(self._safe_end_call(s.outbound_sid))
         await asyncio.gather(*work)
+        if self.on_end:
+            try:
+                await self.on_end(s.parent_sid)
+            except Exception as exc:
+                log.warning("call observer cleanup failed type=%s", type(exc).__name__)
 
     async def finished(self, parent_sid):
         async with self._lock:

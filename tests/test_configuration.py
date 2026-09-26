@@ -20,6 +20,13 @@ BASE = dict(account_sid="AC" + "1" * 32, auth_token="test-auth",
     {"switchboard_setup_timeout": 0},
     {"switchboard_setup_timeout": 121},
     {"deploy_control_token": "short"},
+    {"media_capture_enabled": True},
+    {"media_capture_enabled": True, "media_storage_dir": "relative/recordings"},
+    {"media_capture_enabled": "false"},
+    {"media_max_seconds": 0},
+    {"media_max_seconds": 3601},
+    {"media_max_seconds": 1.5},
+    {"media_max_seconds": True},
 ])
 def test_invalid_switchboard_configuration_fails(fields):
     with pytest.raises(ValueError):

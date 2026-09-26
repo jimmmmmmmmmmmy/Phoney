@@ -6,7 +6,7 @@ python3 scripts/server.py status
 
 **Build 1:** call the configured Twilio number from a different phone and hear **“New College Data Science Team”** while the switchboard rings the fixed teammate number in `CALLEE_NUMBER`. When the teammate answers, both people talk through a Twilio conference. FastAPI and ngrok run on this Mac. Read [the Build 1 guide](docs/BUILD_1.md) for setup and the live phone checks. With no teammate configured, the original greeting still plays and the call ends.
 
-**Verification:** 137 automated tests pass, including callback races, no-answer cleanup, destination restrictions, and deployment draining. Real two-phone audio and hangup checks remain pending until performed. Automated tests do not place calls.
+**Verification (2026-09-26):** 137 automated tests pass, including callback races, no-answer cleanup, destination restrictions, and deployment draining. The owner confirmed live two-way audio, both hangup directions, and no-answer cleanup. Twilio records also showed both legs of the first test ending together. Automated tests use fake calls; the phone checks were performed separately.
 
 **Final-build vision:** call someone through the operator, press `#1`, and let an agent using a clone of your own voice take over. `#2`, `#3`, and `#4` switch its saved prompts while the call continues. This is a modern version of being on hold: your AI representative keeps the conversation going while you step away. Outbound calls, inbound calls, voice enrollment, and returning control to the human are specified in [the final-build plan](docs/FINAL_BUILD.md). These features are planned, not yet implemented.
 

@@ -2,7 +2,7 @@
 
 # Build 1 — two humans talking
 
-**Status: implemented; live two-phone acceptance pending.** The bridge, callback authentication, duplicate prevention, timeout cleanup, and call-aware deployment are covered by automated tests. Allow about 5 minutes for the phone checks below with two phones available. The forwarding destination is private configuration and is never accepted from caller-supplied form data.
+**Status: implemented and phone-tested on 2026-09-26.** The bridge, callback authentication, duplicate prevention, timeout cleanup, and call-aware deployment are covered by automated tests. Allow about 5 minutes for the phone checks below with two phones available. The forwarding destination is private configuration and is never accepted from caller-supplied form data.
 
 Set `CALLEE_NUMBER` in the active server `.env` to enable forwarding. `/health` reports `build: 1` and `switchboard_ready: true` when configured. Empty `CALLEE_NUMBER` retains the Build 0 greeting. Calls originating from the forwarding number or the Twilio number are rejected to avoid loops.
 
@@ -103,7 +103,7 @@ Automated checks use mock phone numbers and a mocked Twilio client; they do not 
 4. **Real phones:** caller dials the Twilio number; teammate answers; both speak and hear distinct phrases for 30 seconds. Use a caller phone different from `CALLEE_NUMBER`. Repeat once with each person hanging up first and verify the other leg ends.
 5. **Real no-answer:** teammate does not answer; the caller receives the configured failure outcome within the deadline. Verify the Twilio logs show no orphaned outbound leg or active conference.
 
-Record the date, observed Call/Conference SIDs, and pass/fail results in a local test note. Do not mark Build 1 complete based only on mocked tests or REST responses.
+**Recorded result (2026-09-26):** the owner confirmed two-way audio, caller-first hangup, teammate-first hangup, and no-answer cleanup within the deadline. Twilio independently reported both legs of the first call completed at the same time, with the caller ending the conference. The automated suite passes 137 tests. Private call IDs and observations are saved locally in `.runtime/build1-acceptance.json`; phone numbers and call records are not committed. Repeat the phone checks after a material telephony change.
 
 ## Later milestones
 

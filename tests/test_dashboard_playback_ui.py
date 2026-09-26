@@ -50,18 +50,20 @@ def test_one_native_player_is_accessible_and_never_autoplays_or_preloads_audio()
     assert "open" not in parsed.details["voicemail-section"]
 
 
-def test_playback_dock_stays_outside_scrolling_content_with_mobile_safe_area_space():
+def test_playback_dock_has_its_own_viewport_row_outside_scrolling_content():
     html = HTML.read_text()
     css = re.search(r"<style>(.*?)</style>", html, re.S).group(1)
     dock = re.search(r"\.audio-panel\s*\{([^}]+)\}", css).group(1)
-    assert re.search(r"position\s*:\s*fixed(?:;|$)", dock)
-    assert re.search(r"inset\s*:\s*auto\s+0\s+0(?:;|$)", dock)
+    body = re.search(r"body\s*\{([^}]+)\}", css).group(1)
+    assert "grid-template-rows:auto minmax(0,1fr) auto" in body
+    assert "height:100dvh" in body
+    assert "position:fixed" not in dock
     assert "safe-area-inset-bottom" in dock
     assert html.index("</main>") < html.index('id="audio-panel"')
-    # Reserve space below the page at desktop and mobile widths so fixed audio
-    # controls do not cover the final transcript/sidebar content.
+    # The player consumes its own row, so the main scroll area needs no
+    # compensating bottom padding and cannot hide content behind the player.
     main_rules = re.findall(r"(?<![\w-])main\s*\{([^}]+)\}", css)
-    assert sum("safe-area-inset-bottom" in rule for rule in main_rules) >= 2
+    assert all("safe-area-inset-bottom" not in rule and "126px" not in rule for rule in main_rules)
     assert re.search(r"@media\s*\(max-width:\s*\d+px\)\s*\{\s*\.audio-panel\s*\{"
                      r"[^}]*safe-area-inset-bottom", css)
 

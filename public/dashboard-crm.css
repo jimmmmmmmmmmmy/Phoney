@@ -1,5 +1,6 @@
 .crm{max-width:1440px;padding-top:1px;color:var(--ink)}
-.crm:has(>.crm-profile-heading){max-width:var(--workspace-content-width,1040px)}
+.crm:has(>.crm-profile-heading){width:calc(100% - 72px);max-width:var(--workspace-content-width,1040px)}
+@media(max-width:700px){.crm:has(>.crm-profile-heading){width:100%}}
 .crm button,.crm-dialog button,.crm-dialog input,.crm-dialog textarea,.crm-dialog select{font:inherit}
 .crm-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:36px;padding:7px 12px;border:1px solid #dbe2e9;border-radius:7px;background:#fff;color:var(--ink);font-size:12px;font-weight:600;text-decoration:none;white-space:nowrap}
 .crm-button:hover{background:#f4f7f9}.crm-button-primary{background:var(--teal);border-color:var(--teal);color:#fff}.crm-button-primary:hover{background:#076b70;border-color:#076b70}.crm-icon{width:16px;height:16px;flex:none}.crm-link{color:var(--teal);text-decoration:none}.crm-link:hover{text-decoration:underline}.crm-muted{color:var(--muted)}

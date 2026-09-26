@@ -34,7 +34,9 @@ Requests run serially. The Gemini HTTP operation has a 30-second total deadline.
 
 After restart, the worker catches up on eligible calls in the transcript manager's bounded recent history: up to ten restored transcripts. It does not scan the entire archive. A changed transcript is a new fingerprint; old summaries remain hidden and a new attempt can qualify. Summary failure leaves the call, recording, and Deepgram transcript usable. The dashboard shows a small pending or failed state; there is no public endpoint to generate, edit, or retry a summary.
 
-The result is limited to 2,000 characters and contains no voice synthesis or deepfake decision. Gemini and ElevenLabs dialogue/takeover adapters remain future work in [VOICE_STACK.md](VOICE_STACK.md). The latest retry on September 26 again returned **HTTP 402**, stored as `billing_required`; the provider still reports a billing failure. The installed service uses the current configured key; successful generation is still blocked and unverified. The existing authored summaries are not Gemini-generated examples. Real-phone end-to-end acceptance also remains pending.
+The result is limited to 2,000 characters and contains no voice synthesis or deepfake decision. Gemini and ElevenLabs dialogue/takeover adapters remain future work in [VOICE_STACK.md](VOICE_STACK.md).
+
+**Verified on 2026-09-26:** after earlier HTTP 402 (`billing_required`) failures, an authorized retry through the installed worker generated and persisted one summary from an existing ended transcript. The saved result records `source: "gemini"` and model `gemini-3.8-flash`; the two existing authored summaries were unchanged. The public transcript API exposed the saved Gemini result, and the dashboard displayed it under **Call transcript** with **Caller** and **New College DS** attribution. This verifies provider generation, local persistence, and public display from saved text. It does not establish a new live phone call's complete capture/transcription/summary path; real-phone end-to-end acceptance remains pending.
 
 ## Retry after repairing billing or configuration
 

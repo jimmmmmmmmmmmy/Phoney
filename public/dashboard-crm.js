@@ -172,10 +172,9 @@
       section.append(saved);
     }
     const history = callsFor(contact), sum = history.reduce((total, call) => total + (call.duration || 0), 0), metrics = node("dl", "crm-metrics crm-profile-metrics");
-    metrics.append(metric("Conversations", history.length, history.length ? "Inbound and outbound calls" : "No conversations yet"),
-      metric("Talk time", duration(sum), "Total conversation time"),
-      metric("Last contact", history.length ? date(history[0].startedAt, false) : "—", history.length ? String(new Date(history[0].startedAt).getFullYear()) : "No calls yet"));
-    section.append(metrics);
+    metrics.append(metric("Conversations", history.length), metric("Talk time", duration(sum)),
+      metric("Last contact", history.length ? date(history[0].startedAt, false) : "—"));
+    heading.append(metrics);
     const layout = node("div", "crm-profile-layout"), main = node("section"), callHeading = node("div", "crm-section-title"), historyList = node("div", "crm-history");
     callHeading.append(node("h3", "", "Conversations"), node("span", "", `${history.length} ${history.length === 1 ? "call" : "calls"}`));
     main.append(callHeading);

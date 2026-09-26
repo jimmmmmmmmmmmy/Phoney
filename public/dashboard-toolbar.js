@@ -3,6 +3,8 @@
 
   const STORAGE_KEY = "hacking-banyons.agent-drafts.v1";
   const MAX_DRAFTS = 50;
+  const MAX_NOTIFICATIONS = 20;
+  const endedStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
   const icons = {
     bell: [{tag: "path", d: "M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"}],
     gear: [{tag: "circle", cx: "12", cy: "12", r: "3"}, {tag: "path", d: "m9 3-.6 2.1-1.7 1-2.1-.5-2 3.4 1.5 1.6v2.8L2.6 15l2 3.4 2.1-.5 1.7 1L9 21h6l.6-2.1 1.7-1 2.1.5 2-3.4-1.5-1.6v-2.8L21.4 9l-2-3.4-2.1.5-1.7-1L15 3Z"}],
@@ -27,6 +29,14 @@
   let liveNotice;
   let drafts = [];
   let storageReadFailed = false;
+  let notificationsButton;
+  let notificationPopup;
+  let notificationBadge;
+  let notificationList;
+  let notificationEmpty;
+  let notificationRenderKey = "";
+  const seenCallIds = new Set();
+  let callNotifications = [];
 
   function node(tag, className, text) {
     const element = document.createElement(tag);
@@ -96,6 +106,87 @@
       const items = popup.querySelectorAll('[role="menuitem"]');
       items[event.key === "ArrowUp" ? items.length - 1 : 0].focus();
     });
+  }
+
+  function notificationCaller(item) {
+    return window.DashboardCRM?.findContactByPhone?.(item.phone)?.name || item.phone || "Unknown caller";
+  }
+
+  function renderNotifications() {
+    if (!notificationsButton) return;
+    const unread = callNotifications.filter(item => item.unread).length;
+    notificationBadge.hidden = !unread;
+    notificationBadge.textContent = String(unread);
+    notificationsButton.setAttribute("data-unread", String(unread > 0));
+    const label = unread ? `Notifications, ${unread} unread notification${unread === 1 ? "" : "s"}` : "Notifications";
+    notificationsButton.setAttribute("aria-label", label);
+    notificationsButton.title = label;
+    notificationEmpty.hidden = callNotifications.length > 0;
+    const key = JSON.stringify(callNotifications.map(item => [item.id, notificationCaller(item), item.phone, item.startedAt, item.active, item.available]));
+    if (notificationRenderKey === key) return;
+    notificationRenderKey = key;
+    notificationList.replaceChildren();
+    for (const item of callNotifications) {
+      const row = node("li", "toolbar-notification");
+      const heading = node("div", "toolbar-notification-heading");
+      const caller = node("strong", "", notificationCaller(item));
+      if (item.phone) caller.title = item.phone;
+      heading.append(caller, node("span", "toolbar-notification-state", !item.available ? "Unavailable" : item.active ? "Live" : "Ended"));
+      const timestamp = new Date(item.startedAt);
+      const time = node("time", "", Number.isFinite(timestamp.getTime())
+        ? timestamp.toLocaleString(undefined, {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}) : "Time unavailable");
+      if (Number.isFinite(timestamp.getTime())) time.dateTime = timestamp.toISOString();
+      let open;
+      if (item.available) {
+        open = node("a", "toolbar-notification-open", "Open call →");
+        open.href = `#calls/recent/${encodeURIComponent(item.id)}`;
+        open.setAttribute("aria-label", `Open call from ${notificationCaller(item)}`);
+        open.addEventListener("click", event => {
+          if (event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          closePopover();
+          if (window.DashboardCalls?.openCall) {
+            event.preventDefault();
+            window.DashboardCalls.openCall(item.id);
+          }
+        });
+      } else open = node("span", "toolbar-notification-unavailable", "Outside recent history");
+      row.append(heading, time, open);
+      notificationList.append(row);
+    }
+  }
+
+  function setSessions(sessions) {
+    if (!Array.isArray(sessions)) return;
+    const added = [];
+    for (const item of callNotifications) item.available = false;
+    for (const session of sessions) {
+      if (!session || !/^CA[0-9a-fA-F]{32}$/.test(session.call_sid)) continue;
+      const detail = session.call_detail || {};
+      const active = !session.voicemail_only && !session.ended_at && !detail.ended_at
+        && !endedStatuses.has(String(session.status || "").toLowerCase());
+      const phone = typeof detail.caller_number === "string" ? detail.caller_number : "";
+      const startedAt = detail.started_at || session.started_at || "";
+      const existing = callNotifications.find(item => item.id === session.call_sid);
+      if (existing) {
+        // Metadata can arrive after the call itself; keep the last useful values.
+        if (phone) existing.phone = phone;
+        if (startedAt) existing.startedAt = startedAt;
+        existing.active = active;
+        existing.available = true;
+      }
+      if (seenCallIds.has(session.call_sid)) continue;
+      seenCallIds.add(session.call_sid);
+      if (active) added.push({id: session.call_sid, phone, startedAt, active, available: true, unread: activePopover !== notificationPopup});
+    }
+    if (added.length) {
+      callNotifications = [...added, ...callNotifications]
+        .sort((a, b) => (new Date(b.startedAt).getTime() || 0) - (new Date(a.startedAt).getTime() || 0))
+        .slice(0, MAX_NOTIFICATIONS);
+      if (liveNotice) liveNotice.textContent = added.length === 1
+        ? `New live call from ${notificationCaller(added[0])}. Open notifications to view it.`
+        : `${added.length} new live calls. Open notifications to view them.`;
+    }
+    renderNotifications();
   }
 
   function readDrafts() {
@@ -258,14 +349,22 @@
     mount.classList.add("toolbar-actions");
     mount.setAttribute("role", "group");
     mount.setAttribute("aria-label", "Workspace actions");
-    const notifications = iconButton("Notifications", "bell", "notifications-button");
+    notificationsButton = iconButton("Notifications", "bell", "notifications-button");
+    notificationBadge = node("span", "toolbar-notification-count");
+    notificationBadge.id = "notification-count";
+    notificationBadge.hidden = true;
+    notificationBadge.setAttribute("aria-hidden", "true");
+    notificationsButton.append(notificationBadge);
     const settings = iconButton("Settings", "gear", "settings-button");
     const create = iconButton("Create", "plus", "create-button", "toolbar-create");
-    const notificationPopup = node("section", "toolbar-popover");
+    notificationPopup = node("section", "toolbar-popover toolbar-notifications-popover");
     notificationPopup.id = "notifications-popover";
     notificationPopup.hidden = true;
     notificationPopup.setAttribute("aria-label", "Notifications");
-    notificationPopup.append(node("h2", "", "Notifications"), node("p", "toolbar-popover-empty", "You’re all caught up."), node("p", "", "No notifications yet."));
+    notificationEmpty = node("p", "toolbar-popover-empty", "No new calls yet.");
+    notificationList = node("ul", "toolbar-notification-list");
+    notificationList.setAttribute("aria-label", "Recent call notifications");
+    notificationPopup.append(node("h2", "", "Notifications"), notificationEmpty, notificationList);
     const settingsPopup = node("section", "toolbar-popover");
     settingsPopup.id = "settings-popover";
     settingsPopup.hidden = true;
@@ -308,14 +407,21 @@
       event.preventDefault();
       items[next].focus();
     });
-    attachPopover(notifications, notificationPopup);
+    attachPopover(notificationsButton, notificationPopup);
+    notificationsButton.addEventListener("click", () => {
+      if (activePopover !== notificationPopup) return;
+      for (const item of callNotifications) item.unread = false;
+      renderNotifications();
+    });
     attachPopover(settings, settingsPopup);
     attachPopover(create, createPopup, true);
-    mount.append(notifications, settings, create, notificationPopup, settingsPopup, createPopup);
+    mount.append(notificationsButton, settings, create, notificationPopup, settingsPopup, createPopup);
     liveNotice = node("div", "sr-only");
     liveNotice.setAttribute("role", "status");
     liveNotice.setAttribute("aria-live", "polite");
     document.body.append(liveNotice);
+    window.addEventListener("dashboard-contacts-changed", renderNotifications);
+    renderNotifications();
     document.addEventListener("pointerdown", event => {
       if (activePopover && !activePopover.contains(event.target) && !activeTrigger.contains(event.target)) closePopover();
     });
@@ -333,7 +439,7 @@
     buildAgentDialog();
   }
 
-  window.DashboardToolbar = {init, openCreateAgent};
+  window.DashboardToolbar = {init, openCreateAgent, setSessions};
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init, {once: true});
   else init();
 })();

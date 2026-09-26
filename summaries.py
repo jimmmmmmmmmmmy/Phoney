@@ -7,15 +7,19 @@ import math
 import re
 import time
 
-from call_details import MAX_SUMMARY_CHARS, transcript_fingerprint
+from call_details import MAX_SUMMARY_ATTEMPTS, MAX_SUMMARY_CHARS, transcript_fingerprint
 
 POLL_SECONDS = 2.0
 REQUEST_SECONDS = 45.0
 STORE_SECONDS = 5.0
 CLOSE_SECONDS = 6.0
 MAX_SESSIONS = 20
-MAX_ATTEMPTS = 3
-RETRY_DELAYS = (30, 120)
+MAX_ATTEMPTS = MAX_SUMMARY_ATTEMPTS
+# A brief provider outage should not permanently strand an otherwise valid
+# transcript. The durable budget still prevents an unbounded background loop.
+RETRY_DELAYS = (30, 120, 600, 1800)
+RETRYABLE_ERRORS = {"rate_limited", "provider_unavailable", "timeout", "transport_error",
+                    "provider-timeout", "interrupted"}
 
 
 class SummaryManager:
@@ -129,6 +133,15 @@ class SummaryManager:
                         continue
                     state = await self._state(document)
                     if not state or state["status"] == "completed":
+                        continue
+                    if (state["status"] == "failed" and not state["retry_at"]
+                            and 0 < state["attempts"] < MAX_ATTEMPTS
+                            and state.get("error") in RETRYABLE_ERRORS):
+                        # Recover jobs exhausted by an older, shorter retry
+                        # policy without resetting their durable attempt count
+                        # or immediately sending requests during startup.
+                        await self._failed(document, state["error"],
+                                           time.time() + RETRY_DELAYS[state["attempts"] - 1])
                         continue
                     if state["status"] == "failed" and (not state["retry_at"] or state["retry_at"] > time.time()):
                         continue

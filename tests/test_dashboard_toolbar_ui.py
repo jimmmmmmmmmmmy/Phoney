@@ -54,6 +54,9 @@ for (const id of ['header-actions', 'agents-view', 'nav-agents', 'page-title']) 
 }
 let stored = null, failWrites = false, contactOpened = 0, navigated = 0, writes = 0;
 const window = {
+  listeners: {},
+  addEventListener(type, listener) {(this.listeners[type] ||= []).push(listener);},
+  dispatch(type, event = {}) {for (const listener of this.listeners[type] || []) listener(event);},
   localStorage: {
     getItem: () => stored,
     setItem: (key, value) => {if (failWrites) throw new Error('quota'); stored = value; writes++;}
@@ -65,6 +68,11 @@ const $ = id => document.getElementById(id);
 const text = element => element.textContent + element.children.map(text).join(' ');
 const menuItems = () => $('create-menu').querySelectorAll('[role="menuitem"]');
 const submit = () => $('create-agent-dialog').children[0].dispatch('submit');
+const call = (index, overrides = {}) => ({call_sid: 'CA' + String(index).padStart(32, '0'),
+  status: 'live', started_at: '2026-09-26T20:00:00Z',
+  call_detail: {caller_number: '+19415550101'}, ...overrides});
+const notificationRows = () => $('notifications-popover').all().filter(element => element.tagName === 'LI');
+const notificationLinks = () => $('notifications-popover').all().filter(element => element.tagName === 'A');
 """
 
 
@@ -174,3 +182,120 @@ assert.equal($('create-agent-dialog').open, false);
 assert.equal(document.activeElement, $('create-button'));
 assert.equal(writes, 0);
 """, before="stored = " + json.dumps(json.dumps(drafts)) + ";")
+
+
+def test_live_call_notifications_count_deduplicate_and_ignore_completed_history():
+    run_toolbar(r"""
+const completed = call(1, {status: 'completed'});
+const active = call(2);
+window.DashboardToolbar.setSessions([completed, active]);
+assert.equal($('notification-count').hidden, false);
+assert.equal($('notification-count').textContent, '1');
+assert.equal($('notifications-button').getAttribute('data-unread'), 'true');
+assert.equal($('notifications-button').getAttribute('aria-label'), 'Notifications, 1 unread notification');
+assert.equal(notificationRows().length, 1);
+assert.match(text($('notifications-popover')), /\+19415550101/);
+assert.match(text($('notifications-popover')), /Sep 26/);
+for (let i = 0; i < 5; i++) window.DashboardToolbar.setSessions([completed, active]);
+assert.equal(notificationRows().length, 1);
+window.DashboardToolbar.setSessions([completed, {...active, status: 'completed', ended_at: '2026-09-26T20:04:00Z'}]);
+assert.equal($('notification-count').textContent, '1');
+assert.match(text($('notifications-popover')), /Ended/);
+window.DashboardToolbar.setSessions([completed]);
+assert.equal(notificationRows().length, 1, 'Call remains in notifications after leaving recent history');
+window.DashboardToolbar.setSessions([call(3), call(4, {voicemail_only: true}), call(5, {call_detail: {ended_at: '2026-09-26T20:04:00Z'}})]);
+assert.equal($('notification-count').textContent, '2');
+assert.equal($('notifications-button').getAttribute('aria-label'), 'Notifications, 2 unread notifications');
+assert.equal(writes, 0);
+""")
+
+
+def test_opening_notifications_acknowledges_calls_and_navigation_uses_call_id():
+    run_toolbar(r"""
+let selected = '';
+window.DashboardCalls = {openCall: id => {selected = id;}};
+window.DashboardCRM.findContactByPhone = phone => phone === '+19415550101' ? {name: 'Shane McCarthy'} : null;
+window.DashboardToolbar.setSessions([call(1)]);
+$('notifications-button').click();
+assert.equal($('notification-count').hidden, true);
+assert.equal($('notifications-button').getAttribute('aria-label'), 'Notifications');
+assert.equal($('notifications-button').getAttribute('data-unread'), 'false');
+assert.match(text($('notifications-popover')), /Shane McCarthy/);
+window.DashboardToolbar.setSessions([call(1), call(2)]);
+assert.equal($('notification-count').hidden, true, 'New calls visible in the open panel are already read');
+const open = notificationLinks()[0];
+assert.equal(open.href, '#calls/recent/' + call(2).call_sid);
+assert.equal(open.getAttribute('aria-label'), 'Open call from Shane McCarthy');
+const modified = open.dispatch('click', {button: 0, ctrlKey: true});
+assert.equal(modified.defaultPrevented, undefined);
+assert.equal(selected, '');
+const event = open.dispatch('click', {button: 0});
+assert.equal(event.defaultPrevented, true);
+assert.equal(selected, call(2).call_sid);
+assert.equal($('notifications-popover').hidden, true);
+window.DashboardToolbar.setSessions([call(3)]);
+assert.equal($('notification-count').textContent, '1');
+assert.equal($('notification-count').hidden, false);
+""")
+
+
+def test_notifications_update_late_contact_metadata_safely_and_keep_focus_on_poll():
+    run_toolbar(r"""
+window.DashboardToolbar.setSessions([call(1, {call_detail: {}})]);
+assert.match(text($('notifications-popover')), /Unknown caller/);
+window.DashboardToolbar.setSessions([call(1)]);
+assert.match(text($('notifications-popover')), /\+19415550101/);
+let contactName = '<img src=x onerror=alert(1)>';
+window.DashboardCRM.findContactByPhone = () => ({name: contactName});
+window.dispatch('dashboard-contacts-changed');
+assert.match(text($('notifications-popover')), /<img src=x onerror=alert\(1\)>/);
+assert.equal($('notifications-popover').all().some(element => ['SCRIPT', 'IMG'].includes(element.tagName)), false);
+$('notifications-button').click();
+const open = notificationLinks()[0];
+open.focus();
+window.DashboardToolbar.setSessions([call(1)]);
+assert.equal(notificationLinks()[0], open, 'Identical polling data should preserve focused link');
+assert.equal(document.activeElement, open);
+contactName = 'Shane McCarthy';
+window.dispatch('dashboard-contacts-changed');
+assert.match(text($('notifications-popover')), /Shane McCarthy/);
+window.DashboardToolbar.setSessions([call(1, {call_detail: {}})]);
+assert.equal(notificationLinks()[0].getAttribute('aria-label'), 'Open call from Shane McCarthy');
+""")
+
+
+def test_recent_notifications_are_bounded_and_invalid_sessions_are_ignored():
+    run_toolbar(r"""
+window.DashboardToolbar.setSessions([null, {call_sid: '<script>'}, call(1, {status: 'FAILED'}), call(2, {status: 'disabled'})]);
+assert.equal(notificationRows().length, 0);
+assert.equal($('notification-count').hidden, true);
+window.DashboardToolbar.setSessions(null);
+for (let i = 3; i < 28; i++) window.DashboardToolbar.setSessions([call(i)]);
+assert.equal(notificationRows().length, 20);
+assert.equal($('notification-count').textContent, '20');
+assert.equal(notificationLinks()[0].href, '#calls/recent/' + call(27).call_sid);
+window.DashboardToolbar.setSessions([call(3)]);
+assert.equal(notificationRows().length, 20);
+assert.equal(notificationLinks().length, 0, 'Trimmed calls must not return as new notifications');
+""")
+
+
+def test_missing_calls_stay_in_notifications_without_a_dead_open_action():
+    run_toolbar(r"""
+window.DashboardToolbar.setSessions([call(1)]);
+assert.equal(notificationLinks().length, 1);
+window.DashboardToolbar.setSessions([]);
+assert.equal(notificationRows().length, 1, 'Keep the notification when recent history drops its call');
+assert.equal(notificationLinks().length, 0, 'Do not offer an Open call link that cannot navigate');
+assert.match(text($('notifications-popover')), /Unavailable/);
+assert.match(text($('notifications-popover')), /Outside recent history/);
+assert.doesNotMatch(text($('notifications-popover')), /Live|Ended/);
+assert.equal($('notification-count').textContent, '1');
+window.DashboardToolbar.setSessions([call(1)]);
+assert.equal(notificationLinks().length, 1, 'An available call restores its action');
+assert.equal(notificationLinks()[0].href, '#calls/recent/' + call(1).call_sid);
+assert.equal($('notification-count').textContent, '1', 'Restored history is not a new notification');
+window.DashboardToolbar.setSessions([call(1, {ended_at: '2026-09-26T20:04:00Z'})]);
+assert.equal(notificationLinks().length, 1);
+assert.match(text($('notifications-popover')), /Ended/);
+""")

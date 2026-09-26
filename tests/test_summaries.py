@@ -83,7 +83,7 @@ class Store:
     def begin_summary(self, sid, doc):
         if not self.begin_result: return False
         state = self.summary_state(sid, doc)
-        if state["status"] == "completed" or state["attempts"] >= 3: return False
+        if state["status"] == "completed" or state["attempts"] >= summaries.MAX_ATTEMPTS: return False
         self.jobs[sid] = {"status": "pending", "attempts": state["attempts"] + 1, "retry_at": 0,
                           "error": "", "fingerprint": transcript_fingerprint(doc)}
         self._persist()
@@ -172,27 +172,27 @@ def test_retry_budget_and_backoff_survive_worker_and_store_restart(tmp_path, mon
     monkeypatch.setattr(summaries.time, "time", lambda: clock[0])
     async def run():
         path = tmp_path / "jobs.json"
-        provider = Provider(*(ProviderError("rate_limited", True) for _ in range(3)))
-        for attempt, instant in enumerate((1000, 1030, 1150), start=1):
+        provider = Provider(*(ProviderError("rate_limited", True) for _ in range(5)))
+        for attempt, instant in enumerate((1000, 1030, 1150, 1750, 3550), start=1):
             clock[0] = instant
             store = Store(path)
             manager = SummaryManager(settings(), Transcription(), store, provider=provider)
             await manager.run_once()
             job = store.jobs[CALL]
             assert job["attempts"] == attempt and job["error"] == "rate_limited"
-            assert job["retry_at"] == ({1: 1030, 2: 1150, 3: 0}[attempt])
+            assert job["retry_at"] == ({1: 1030, 2: 1150, 3: 1750, 4: 3550, 5: 0}[attempt])
             await manager.run_once()
             assert len(provider.calls) == attempt
             await manager.close()
         clock[0] = 100_000
         final = SummaryManager(settings(), Transcription(), Store(path), provider=provider)
         await final.run_once()
-        assert len(provider.calls) == 3
+        assert len(provider.calls) == 5
         await final.close()
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("attempts,expected_calls", [(2, 1), (3, 0)])
+@pytest.mark.parametrize("attempts,expected_calls", [(2, 1), (4, 1), (5, 0)])
 def test_crashed_pending_attempt_is_retried_only_within_budget(attempts, expected_calls):
     async def run():
         store, provider = Store(), Provider()
@@ -358,4 +358,87 @@ def test_real_details_store_retry_and_generated_summary_survive_restart(tmp_path
         await second.run_once()
         assert len(second.provider.calls) == 1
         await second.close()
+    asyncio.run(run())
+
+
+def test_provider_recovers_after_three_failures_without_losing_the_transcript(tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(summaries.time, "time", lambda: clock[0])
+
+    async def run():
+        config = settings(call_details_storage_dir=str(tmp_path))
+        provider = Provider(*(ProviderError("provider_unavailable", True) for _ in range(3)),
+                            "Caller requested a callback; New College DS confirmed.")
+        for instant in (1000, 1030, 1150):
+            clock[0] = instant
+            manager = SummaryManager(config, Transcription(), CallDetailsStore(str(tmp_path)),
+                                     provider=provider)
+            await manager.run_once()
+            await manager.close()
+        store = CallDetailsStore(str(tmp_path))
+        record = store.snapshot([document()])["calls"][0]
+        assert record["summary"] is None
+        assert record["summary_status"] == "retrying" and record["summary_retry_at"] == 1750
+        assert not {"error", "attempts", "fingerprint"} & record.keys()
+        clock[0] = 1749
+        manager = SummaryManager(config, Transcription(), store, provider=provider)
+        await manager.run_once()
+        assert len(provider.calls) == 3
+        clock[0] = 1750
+        await manager.run_once()
+        await manager.run_once()
+        record = CallDetailsStore(str(tmp_path)).snapshot([document()])["calls"][0]
+        assert record["summary_status"] == "completed"
+        assert record["summary"]["text"].startswith("Caller requested a callback")
+        assert "summary_retry_at" not in record and len(provider.calls) == 4
+        await manager.close()
+
+    asyncio.run(run())
+
+
+def test_old_exhausted_transient_failure_recovers_without_resetting_attempt_budget(tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(summaries.time, "time", lambda: clock[0])
+    store = CallDetailsStore(str(tmp_path))
+    for attempt in range(3):
+        assert store.begin_summary(CALL, document())
+        assert store.fail_summary(CALL, document(), "provider_unavailable", retry_at=1 if attempt < 2 else 0)
+
+    async def run():
+        provider = Provider()
+        manager = SummaryManager(settings(), Transcription(), store, provider=provider)
+        await manager.run_once()
+        state = store.summary_state(CALL, document())
+        assert state["attempts"] == 3 and state["retry_at"] == 1600
+        await manager.run_once()
+        assert provider.calls == []
+        await manager.close()
+        clock[0] = 1600
+        restarted = CallDetailsStore(str(tmp_path))
+        resumed = SummaryManager(settings(), Transcription(), restarted, provider=provider)
+        await resumed.run_once()
+        assert len(provider.calls) == 1
+        assert restarted.snapshot([document()])["calls"][0]["summary_status"] == "completed"
+        assert restarted._records[CALL]["summary_job"]["attempts"] == 4
+        await resumed.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("error", ["billing_required", "authentication_failed", "blocked", "invalid_response"])
+def test_longer_retry_policy_does_not_resume_permanent_failures(tmp_path, error):
+    store = CallDetailsStore(str(tmp_path))
+    assert store.begin_summary(CALL, document())
+    assert store.fail_summary(CALL, document(), error)
+
+    async def run():
+        provider = Provider()
+        manager = SummaryManager(settings(), Transcription(), store, provider=provider)
+        await manager.run_once()
+        await manager.run_once()
+        assert provider.calls == []
+        record = store.snapshot([document()])["calls"][0]
+        assert record["summary_status"] == "failed" and "summary_retry_at" not in record
+        await manager.close()
+
     asyncio.run(run())

@@ -923,3 +923,112 @@ assert.equal(label.textContent,phone);assert.equal(label.getAttribute('title'),n
 assert.equal(audio.src,src);assert.equal(audio.currentTime,19);assert.equal(audio.paused,false);
 assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.plays,plays);
 ''')
+
+
+def test_initial_live_preview_survives_empty_provider_results_until_finalized(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const live={...session(),ended_at:null,status:'live',segments:[],
+ tracks:{inbound:{status:'live',interim:'Can you help with'},outbound:{status:'live',interim:''}}};
+const texts=()=>$('messages').children.map(row=>row.children[1].children[1].textContent);
+const labels=()=>$('messages').children.map(row=>row.children[1].children[0].children[1]?.textContent);
+state.snapshot=snapshot([live]);render();openCall();
+const route=location.hash;
+assert.deepEqual(texts(),['Can you help with']);assert.deepEqual(labels(),['In progress']);
+state.snapshot=snapshot([{...live,tracks:{inbound:{status:'live',interim:''},outbound:{status:'live',interim:''}}}]);render();
+assert.equal($('empty').hidden,true);assert.deepEqual(texts(),['Can you help with']);
+assert.deepEqual(labels(),['Awaiting confirmation']);assert.equal(state.selected,SID);assert.equal(location.hash,route);
+// A revised hypothesis replaces the retained preview; confidence is not a visibility gate.
+state.snapshot=snapshot([{...live,tracks:{inbound:{status:'live',interim:{text:'Can you help with my appointment?',confidence:.01}},outbound:{status:'live',interim:''}}}]);render();
+assert.deepEqual(texts(),['Can you help with my appointment?']);assert.deepEqual(labels(),['In progress']);
+const finalized={id:'one',track:'inbound',start_ms:0,end_ms:1500,text:'Could you help with my appointment?',confidence:.01};
+state.snapshot=snapshot([{...live,tracks:{inbound:{status:'live',interim:''}},segments:[finalized]}]);render();
+assert.deepEqual(texts(),[finalized.text]);assert.deepEqual(labels(),['1% confidence']);
+assert.equal(state.transcriptRows.length,1);assert.equal($('empty').hidden,true);
+// A later utterance has its own provisional lifecycle without duplicating the first final.
+state.snapshot=snapshot([{...live,segments:[finalized],tracks:{inbound:{status:'live',interim:'Next Tuesday'}}}]);render();
+state.snapshot=snapshot([{...live,segments:[finalized],tracks:{inbound:{status:'live',interim:''}}}]);render();
+assert.deepEqual(texts(),[finalized.text,'Next Tuesday']);
+assert.deepEqual(labels(),['1% confidence','Awaiting confirmation']);
+const nextFinal={...finalized,id:'two',start_ms:2500,end_ms:4000,text:'Next Tuesday, please.'};
+state.snapshot=snapshot([{...live,segments:[finalized,nextFinal],tracks:{inbound:{status:'live',interim:''}}}]);render();
+assert.deepEqual(texts(),[finalized.text,nextFinal.text]);assert.equal(state.transcriptRows.length,2);
+''')
+
+
+def test_selected_live_finals_survive_partial_snapshots_and_accept_corrections(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const first=session().segments[0], second={...first,id:'two',start_ms:1500,end_ms:2200,text:'A second sentence.'};
+const live={...session(),ended_at:null,status:'live',segments:[first,second]};
+const texts=()=>$('messages').children.map(row=>row.children[1].children[1].textContent);
+state.snapshot=snapshot([live]);render();openCall();
+// The API strips non-selected rows to metadata. Such a response cannot erase cached text.
+state.snapshot=snapshot([session(OTHER),{...live,segments:[]}]);render();
+assert.deepEqual(texts(),[first.text,second.text]);assert.equal($('empty').hidden,true);
+assert.equal(state.selected,SID);assert.equal(state.renderedCall,SID);
+// A recording-only snapshot likewise lacks a transcript, not proof of an empty transcript.
+state.snapshot=snapshot([], [{...recording(),status:'recording',finished_at:null}]);render();
+assert.deepEqual(texts(),[first.text,second.text]);assert.equal($('empty').hidden,true);
+const corrected={...second,text:'A corrected second sentence.',confidence:.1};
+state.snapshot=snapshot([{...live,segments:[corrected]}]);render();
+assert.deepEqual(texts(),[first.text,corrected.text]);
+// Terminal selected snapshots are authoritative, including revisions that remove content.
+state.snapshot=snapshot([{...session(),segments:[corrected]}]);render();
+assert.deepEqual(texts(),[corrected.text]);
+state.snapshot=snapshot([{...session(),segments:[]}]);render();
+assert.deepEqual(texts(),[]);assert.equal($('empty').hidden,false);
+assert.equal($('empty-title').textContent,'No speech was finalized.');
+''')
+
+
+def test_retained_preview_is_track_scoped_and_cleared_on_call_end_or_another_caller(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const live={...session(),status:'live',ended_at:null,segments:[],tracks:{
+ inbound:{status:'live',interim:'Caller provisional text'},outbound:{status:'live',interim:'Agent provisional text'}}};
+const texts=()=>$('messages').children.map(row=>row.children[1].children[1].textContent);
+state.snapshot=snapshot([live,{...session(OTHER),segments:[]}]);render();openCall();
+state.snapshot=snapshot([{...live,segments:[{id:'out',track:'outbound',start_ms:1000,end_ms:2000,text:'Agent finalized text'}],
+ tracks:{inbound:{status:'failed',error:'provider-disconnected',interim:''},outbound:{status:'live',interim:''}}}]);render();
+assert.deepEqual(texts(),['Agent finalized text','Caller provisional text']);
+assert.equal($('session-storage-warning').hidden,false);
+// An ended call cannot present provisional text as saved or finalized speech.
+state.snapshot=snapshot([{...session(),tracks:{},segments:[]}]);render();
+assert.deepEqual(texts(),[]);assert.equal($('empty').hidden,false);
+state.snapshot=snapshot([live,{...session(OTHER),segments:[]}]);render();
+openCall(OTHER);
+assert.deepEqual(texts(),[]);assert.equal(state.selected,OTHER);
+assert.equal($('empty-title').textContent,'Loading this conversation…');
+''')
+
+
+def test_aborted_poll_cannot_restore_old_call_text_after_switching_calls(tmp_path):
+    run_browser_logic(tmp_path, r'''
+(async()=>{
+state.snapshot=snapshot([session(),{...session(OTHER),segments:[]}]);render();openCall();
+let resolveOld;
+fetch=async()=>({ok:true,json:()=>new Promise(resolve=>{resolveOld=resolve;})});
+const pending=poll();await Promise.resolve();
+chooseCall(OTHER); // Refresh aborts the in-flight request for SID.
+resolveOld(snapshot([session()]));await pending;
+assert.equal(state.selected,OTHER);assert.equal($('messages').children.length,0);
+fetch=async()=>({ok:true,json:async()=>snapshot([{...session(OTHER),segments:[{...session().segments[0],text:'Other caller transcript'}]}])});
+await poll();
+assert.equal(state.selected,OTHER);assert.equal($('messages').children.length,1);
+assert.equal($('messages').children[0].children[1].children[1].textContent,'Other caller transcript');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+''')
+
+
+def test_summary_retry_and_pending_statuses_are_visible_without_replacing_saved_text(tmp_path):
+    run_browser_logic(tmp_path, r'''
+state.snapshot=snapshot([session()]);
+state.snapshot.call_details={calls:[{call_sid:SID,summary_status:'retrying',summary_retry_at:1790467200}]};
+render();openCall();
+assert.equal($('call-summary').textContent,'Summary temporarily unavailable. Retrying automatically.');
+assert.equal($('call-list').children[0].children[2].textContent,'Summary retry scheduled.');
+state.snapshot.call_details.calls[0].summary_status='pending';render();
+assert.equal($('call-summary').textContent,'Summarizing…');
+assert.equal($('call-list').children[0].children[2].textContent,'Summarizing…');
+state.snapshot.call_details.calls[0].summary={text:'A saved summary.'};render();
+assert.equal($('call-summary').textContent,'A saved summary.');
+assert.equal($('call-list').children[0].children[2].textContent,'A saved summary.');
+''')

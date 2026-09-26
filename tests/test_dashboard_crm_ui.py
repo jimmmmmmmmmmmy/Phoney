@@ -308,6 +308,8 @@ def test_profile_removes_notices_relationship_and_id_and_exposes_editable_detail
 assert.equal(contactRoot.all().some(element => hasClass(element, 'crm-notice')), false);
 const metrics = contactRoot.all().find(element => hasClass(element, 'crm-metrics'));
 assert.equal(metrics.children.length, 3);
+assert.equal(hasClass(metrics.parentNode, 'crm-profile-heading'), true);
+assert.equal(metrics.all().some(element => element.tagName === 'SMALL'), false);
 assert.deepEqual(metrics.children.map(item => text(item.children[0])), ['Conversations', 'Talk time', 'Last contact']);
 assert.doesNotMatch(text(contactRoot), /Relationship|Contact ID|local-12345678|This browser|not shared with other devices/);
 assert.equal($('crm-edit-contact').getAttribute('aria-label'), 'Edit contact details');

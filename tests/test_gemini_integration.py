@@ -9,7 +9,7 @@ import os
 from fastapi.testclient import TestClient
 
 from app import create_app
-from call_details import CallDetailsStore
+from call_details import CallDetailsStore, MAX_SUMMARY_ATTEMPTS
 from config import Settings
 
 SID = "CA" + "a" * 32
@@ -96,7 +96,7 @@ def test_only_supervisor_owned_app_can_summarize_and_drain_stops_new_jobs(tmp_pa
 def test_summary_job_attempts_and_owner_retry_survive_restart(tmp_path):
     path = str(tmp_path / "details")
     store = CallDetailsStore(path)
-    for attempt in range(1, 4):
+    for attempt in range(1, MAX_SUMMARY_ATTEMPTS + 1):
         assert store.begin_summary(SID, DOCUMENT)
         assert store.summary_state(SID, DOCUMENT)["attempts"] == attempt
         assert store.fail_summary(SID, DOCUMENT, "rate_limited", retry_at=1)

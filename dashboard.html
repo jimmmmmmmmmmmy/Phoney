@@ -266,6 +266,7 @@
         window.DashboardCRM.setSessions?.(state.sessions);
         window.DashboardCRM.render();
       }
+      window.DashboardToolbar?.setSessions?.(state.sessions);
     }
     function showPage(page) {
       if (!Object.hasOwn(pages, page)) return;
@@ -487,7 +488,10 @@
     }
     function summaryPreview(session) {
       return text(session.call_detail && session.call_detail.summary && session.call_detail.summary.text).trim()
-        || (session.voicemail ? voicemailLabel(session.voicemail) : isActive(session) ? "Live call" : "No summary yet.");
+        || (session.call_detail && session.call_detail.summary_status === "retrying" ? "Summary retry scheduled."
+          : session.call_detail && session.call_detail.summary_status === "pending" ? "Summarizing…"
+          : session.call_detail && session.call_detail.summary_status === "failed" ? "Summary unavailable."
+          : session.voicemail ? voicemailLabel(session.voicemail) : isActive(session) ? "Live call" : "No summary yet.");
     }
     function renderRows(sessions, listId, keyName) {
       const rows = sessions.map(session => ({session, contact: window.DashboardCRM?.findContactByPhone?.(callerNumber(session)) || null}));
@@ -541,7 +545,7 @@
       const content = node("div", "message-content");
       const meta = node("div", "message-meta");
       meta.append(node("span", "speaker", trackNames[track]));
-      if (interim) meta.append(node("span", "interim-label", "In progress"));
+      if (interim) meta.append(node("span", "interim-label", segment.unconfirmed ? "Awaiting confirmation" : "In progress"));
       else if (Number.isFinite(segment.confidence) && segment.confidence >= 0 && segment.confidence <= 1) {
         meta.append(node("span", "confidence", `${Math.round(segment.confidence * 100)}% confidence`));
       }
@@ -619,6 +623,7 @@
       const summaryText = text(summary && summary.text).trim();
       const summaryStatus = session && session.call_detail && session.call_detail.summary_status;
       const summaryPlaceholder = summaryStatus === "pending" ? "Summarizing…"
+        : summaryStatus === "retrying" ? "Summary temporarily unavailable. Retrying automatically."
         : summaryStatus === "failed" ? "Summary unavailable." : "No summary yet.";
       if ($("call-summary").textContent !== (summaryText || summaryPlaceholder)) {
         $("call-summary").textContent = summaryText || summaryPlaceholder;
@@ -629,7 +634,7 @@
       const voicemail = session && session.voicemail;
       const voicemailOnly = Boolean(session && session.voicemail_only);
       const noTranscript = Boolean(session && session.transcript_unavailable);
-      const loading = session && !noTranscript && typeof state.snapshot.selected_call_sid === "string"
+      const loading = session && !noTranscript && !session.transcript_retained && typeof state.snapshot.selected_call_sid === "string"
         && state.snapshot.selected_call_sid !== session.call_sid;
       $("transcript-title").textContent = voicemailOnly ? "Voicemail" : session ? "Call transcript" : "Waiting for a call";
       $("voicemail-badge").hidden = !voicemail;
@@ -657,7 +662,7 @@
         const details = session && session.tracks && session.tracks[track] || {};
         const value = details.interim;
         const interim = typeof value === "string" ? {text: value} : value && typeof value === "object" ? value : {};
-        if (text(interim.text).trim()) interims.push({...interim, track});
+        if (text(interim.text).trim()) interims.push({...interim, track, unconfirmed: Boolean(details.interim_retained)});
       }
       const segments = session && Array.isArray(session.segments) ? session.segments
         .filter(segment => segment && typeof segment === "object" && text(segment.text).trim())
@@ -710,6 +715,44 @@
       }
       updatePlaybackHighlight();
     }
+    function retainLiveTranscript(session) {
+      const previous = state.selectedSession;
+      if (!previous || previous.call_sid !== session.call_sid) return session;
+      const partial = session.transcript_unavailable || (Object.hasOwn(state.snapshot, "selected_call_sid")
+        && state.snapshot.selected_call_sid !== session.call_sid);
+      const active = isActive(session);
+      // Only the selected API row contains text. Metadata-only rows cannot
+      // invalidate text already received for this call, even after it ends.
+      if (!partial && !active) return session;
+      const validSegments = value => Array.isArray(value) ? value.filter(segment => segment
+        && typeof segment === "object" && text(segment.text).trim()) : [];
+      const before = validSegments(previous.segments);
+      const incoming = validSegments(session.segments);
+      const segmentKey = segment => JSON.stringify([segment.track, segment.id ?? segment.start_ms]);
+      const previousBySegment = new Map(before.map(segment => [segmentKey(segment), segment]));
+      const bySegment = new Map(previousBySegment);
+      if (!partial) for (const segment of incoming) bySegment.set(segmentKey(segment), segment);
+      const tracks = {...session.tracks};
+      for (const track of ["inbound", "outbound"]) {
+        const oldTrack = previous.tracks && previous.tracks[track] || {};
+        const nextTrack = tracks[track] || {};
+        const value = nextTrack.interim;
+        const newText = text(typeof value === "string" ? value : value && value.text).trim();
+        const oldValue = oldTrack.interim;
+        const oldText = text(typeof oldValue === "string" ? oldValue : oldValue && oldValue.text).trim();
+        const finalized = !partial && incoming.some(segment => segment.track === track
+          && JSON.stringify(segment) !== JSON.stringify(previousBySegment.get(segmentKey(segment))));
+        // Silence/empty hypotheses should not erase the initial preview.
+        // It stays visibly provisional, and yields to corrections or finals.
+        if (active && oldText && (partial || (!newText && !finalized))) {
+          tracks[track] = {...nextTrack, interim: oldValue, interim_retained: true};
+        } else if (partial) {
+          tracks[track] = {...nextTrack, interim: ""};
+        }
+      }
+      return {...session, segments: Array.from(bySegment.values()), tracks,
+        transcript_retained: Boolean(partial && (before.length || Object.values(tracks).some(track => track.interim)))};
+    }
     function render() {
       const snapshot = state.snapshot;
       if (!snapshot) return;
@@ -759,7 +802,8 @@
       if (liveSid && liveSid !== state.latestLive) state.pendingLive = liveSid;
       state.latestLive = liveSid;
       if (!sessions.some(session => session.call_sid === state.pendingLive && isActive(session))) state.pendingLive = null;
-      state.sessions = Array.from(new Map(sessions.map(session => [session.call_sid, session])).values());
+      state.sessions = Array.from(new Map(sessions.map(session => [session.call_sid, session])).values())
+        .map(session => session.call_sid === state.selected ? retainLiveTranscript(session) : session);
       state.sessions.sort((a, b) => (dateValue(callStartedAt(b)).getTime() || 0) - (dateValue(callStartedAt(a)).getTime() || 0));
       renderCollections();
       const selected = state.sessions.find(session => session.call_sid === state.selected);

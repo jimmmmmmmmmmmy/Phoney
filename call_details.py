@@ -26,6 +26,7 @@ MAX_FILES = 1000
 MAX_CALLS = 10
 MAX_FILE_BYTES = 16_384
 MAX_SUMMARY_CHARS = 2000
+MAX_SUMMARY_ATTEMPTS = 5
 SUMMARY_MODEL = re.compile(r"[a-z0-9][a-z0-9.-]{0,99}\Z")
 SUMMARY_ERRORS = {"", "auth", "rate-limit", "provider-error", "timeout", "network", "invalid-response",
                   "blocked", "empty-response", "truncated", "invalid-input", "storage-failed",
@@ -180,7 +181,7 @@ def _validate(document, call_sid):
         if (not isinstance(job, dict) or set(job) != {"fingerprint", "status", "attempts", "error", "retry_at"}
                 or not isinstance(job["fingerprint"], str) or not re.fullmatch(r"[0-9a-f]{64}", job["fingerprint"])
                 or job["status"] not in {"pending", "completed", "failed"}
-                or type(job["attempts"]) is not int or not 0 <= job["attempts"] <= 3
+                or type(job["attempts"]) is not int or not 0 <= job["attempts"] <= MAX_SUMMARY_ATTEMPTS
                 or job["error"] not in SUMMARY_ERRORS
                 or type(job["retry_at"]) not in (int, float) or not math.isfinite(job["retry_at"])
                 or not 0 <= job["retry_at"] <= 10_000_000_000):
@@ -435,7 +436,7 @@ class CallDetailsStore:
             with self._lock:
                 record = self._current(call_sid)
                 job = self._summary_state(record, fingerprint)
-                if job["status"] == "completed" or job["attempts"] >= 3:
+                if job["status"] == "completed" or job["attempts"] >= MAX_SUMMARY_ATTEMPTS:
                     return False
                 if job["status"] == "failed" and (not job["retry_at"] or job["retry_at"] > time.time()):
                     return False
@@ -523,5 +524,9 @@ class CallDetailsStore:
                 job_state = self._summary_state(record, job_fingerprint)
                 if record["summary_job"] is not None:
                     result["summary_status"] = job_state["status"]
+                    if (job_state["status"] == "failed" and job_state["retry_at"] > 0
+                            and job_state["attempts"] < MAX_SUMMARY_ATTEMPTS):
+                        result["summary_status"] = "retrying"
+                        result["summary_retry_at"] = job_state["retry_at"]
                 calls.append(result)
             return {"enabled": True, "storage_error": self.storage_error, "calls": calls}

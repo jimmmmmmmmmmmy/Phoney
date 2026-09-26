@@ -2,7 +2,7 @@
 
 **Start by implementing two Twilio call legs connected through Python. Get two people talking through that bridge, then replace one direction with the cloned voice pipeline.**
 
-This is the selected implementation recipe for the [final product](FINAL_BUILD.md). It describes code to add, not features already running. Build 0, ngrok, signed webhooks, and GitHub deployment already exist. Keep [Build 1](BUILD_1.md) as the small conference smoke test; its final-build successor uses the bridge below. Budget roughly 4–8 focused hours for the bridge/keypad prototype and another 8–16 for provider integration and failure tests, assuming working provider accounts and two test phones. These are engineering estimates, not measured build times.
+This is the selected implementation recipe for the [final product](FINAL_BUILD.md). It describes code to add, not features already running. Build 1’s conference, ngrok, signed webhooks, and GitHub deployment already exist. Keep [Build 1](BUILD_1.md) as the small conference smoke test; its final-build successor uses the bridge below. Budget roughly 4–8 focused hours for the bridge/keypad prototype and another 8–16 for provider integration and failure tests, assuming working provider accounts and two test phones. These are engineering estimates, not measured build times.
 
 ## Use this architecture
 
@@ -207,7 +207,7 @@ Build a context packet containing the last 20 finalized turns plus a rolling sum
 
 ## Preserve calls during automatic deployment
 
-The current supervisor restarts the app when a healthy revision is ready. Extend it **before** testing long calls:
+Build 1 already implements authenticated `/internal/deploy` draining and waits for active sessions plus pending REST work. Preserve that protocol when replacing the conference with the audio bridge. The bridge must expose its own session/work counts through the existing endpoint; add the persistent journal in the last step:
 
 1. Add an authenticated local drain endpoint and active-session count. Once draining, reject new outbound sessions with `503`; inbound `/voice` returns a short unavailable message. Existing sessions continue.
 2. Prepare/test the new revision while the old revision handles calls. Candidate health checks must not dial, enroll voices, or connect STT providers without a session.

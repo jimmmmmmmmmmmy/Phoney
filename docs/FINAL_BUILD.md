@@ -4,7 +4,7 @@
 
 This is the modern version of putting someone on hold: instead of leaving them with elevator music while you step away, your AI representative stays in the conversation. It sounds like you, knows what has already been said, and works on the task you assigned.
 
-**Status: specified for implementation.** The running Build 0 only speaks the team greeting. [Build 1](BUILD_1.md) remains the two-human switchboard milestone. Build the final behavior with the selected [Python bridge recipe](IMPLEMENTATION.md) and [voice API adapters](VOICE_STACK.md). This extends the original inbound screening concept to user-controlled delegation on both inbound and outbound calls.
+**Status: specified for implementation.** The running [Build 1](BUILD_1.md) connects two humans in a conference. Build the final behavior with the selected [Python bridge recipe](IMPLEMENTATION.md) and [voice API adapters](VOICE_STACK.md). This extends the original inbound screening concept to user-controlled delegation on both inbound and outbound calls.
 
 ## Example: calling a car dealership
 

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.request import Request, urlopen
 
 from dotenv import dotenv_values
 
@@ -25,10 +26,15 @@ except ImportError:
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = "jimmmmmmmmmmmy/fictional-rotary-phone"
 REMOTE = "https://github.com/" + REPOSITORY + ".git"
+_UNREAD_HEALTH = object()
 
 
 class DeploymentStopped(BaseException):
     """Stop an in-progress build without treating shutdown as a bad commit."""
+
+
+class DeploymentDeferred(Exception):
+    """Keep the current process while calls or their cleanup prevent replacement."""
 
 
 def timestamp():
@@ -212,9 +218,72 @@ class Supervisor:
                   "commit": sha, "public_url": self.environment().get("PUBLIC_BASE_URL")}
         return process, record
 
-    def healthy(self, sha, port=8000):
-        result = dev.request("http://127.0.0.1:" + str(port) + "/health")
+    def health(self, port=8000):
+        return dev.request("http://127.0.0.1:" + str(port) + "/health")
+
+    @staticmethod
+    def matches_health(result, sha):
         return isinstance(result, dict) and result.get("status") == "ok" and result.get("commit") == sha
+
+    def healthy(self, sha, port=8000):
+        return self.matches_health(self.health(port), sha)
+
+    def deployment_control(self, draining=None):
+        token = self.environment().get("DEPLOY_CONTROL_TOKEN", "").strip()
+        if not token:
+            raise DeploymentDeferred("DEPLOY_CONTROL_TOKEN is required before replacing the active switchboard.")
+        request = Request(dev.BASE + "/internal/deploy", headers={"Authorization": "Bearer " + token})
+        if draining is not None:
+            request.method = "POST"
+            request.add_header("Content-Type", "application/json")
+            request.data = json.dumps({"draining": draining}).encode("utf-8")
+        try:
+            with urlopen(request, timeout=2) as response:
+                state = json.load(response)
+        except (OSError, ValueError):
+            raise DeploymentDeferred("The active switchboard did not confirm its deployment state; preserving it.") from None
+        if (not isinstance(state, dict) or type(state.get("draining")) is not bool
+                or any(type(state.get(key)) is not int or state[key] < 0
+                       for key in ("active_sessions", "pending_work"))
+                or (draining is not None and state["draining"] != draining)):
+            raise DeploymentDeferred("The active switchboard returned an invalid deployment state; preserving it.")
+        return state
+
+    @contextmanager
+    def drain(self, record, health=_UNREAD_HEALTH):
+        if not dev.owned(record):
+            yield
+            return
+        health = self.health() if health is _UNREAD_HEALTH else health
+        if (not isinstance(health, dict) or type(health.get("build")) is not int
+                or health["build"] < 1 or health.get("switchboard_ready") is not True):
+            yield
+            return
+        deadline = time.monotonic() + 60
+        try:
+            self.save(status="draining")
+            state = self.deployment_control(True)
+            while state["active_sessions"] or state["pending_work"]:
+                if self.stopping:
+                    raise DeploymentStopped()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise DeploymentDeferred("Active calls or pending call cleanup delayed deployment; retrying automatically.")
+                time.sleep(min(1, remaining))
+                state = self.deployment_control()
+            if self.stopping:
+                raise DeploymentStopped()
+            yield
+        finally:
+            # A timeout, interruption, or failed termination must reopen the old
+            # process to incoming calls. Newly launched processes start undrained.
+            if dev.owned(record):
+                try:
+                    self.deployment_control(False)
+                except DeploymentDeferred:
+                    self.save(drain_reset_required=True)
+                else:
+                    self.save(drain_reset_required=False)
 
     def wait_healthy(self, process, sha, port):
         deadline = time.monotonic() + 20
@@ -234,7 +303,7 @@ class Supervisor:
         try:
             self.wait_healthy(process, sha, 8001)
         finally:
-            dev.terminate(record)
+            dev.terminate(record, timeout=40)
             process.wait(timeout=2)
             self.save(candidate_process=None)
 
@@ -247,7 +316,7 @@ class Supervisor:
         try:
             self.wait_healthy(process, sha, 8000)
         except BaseException:
-            dev.terminate(record)
+            dev.terminate(record, timeout=40)
             process.wait(timeout=2)
             raise
 
@@ -257,7 +326,8 @@ class Supervisor:
         previous_record = state.get("app")
         if not dev.owned(previous_record) and not dev.available(8000):
             raise RuntimeError("Port 8000 belongs to an untracked process; deployment was not activated.")
-        dev.terminate(previous_record)
+        with self.drain(previous_record):
+            dev.terminate(previous_record, timeout=40)
         try:
             self.launch(release, sha, state)
         except Exception:
@@ -278,10 +348,16 @@ class Supervisor:
         if not sha:
             return
         state = dev.read_state()
-        if (dev.owned(state.get("app")) and self.healthy(sha)
-                and state["app"].get("public_url") == self.environment().get("PUBLIC_BASE_URL")):
+        record = state.get("app")
+        health = self.health() if dev.owned(record) else None
+        if dev.owned(record) and self.state.get("drain_reset_required"):
+            self.deployment_control(False)
+            self.save(drain_reset_required=False)
+        if (dev.owned(record) and self.matches_health(health, sha)
+                and record.get("public_url") == self.environment().get("PUBLIC_BASE_URL")):
             return
-        dev.terminate(state.get("app"))
+        with self.drain(record, health):
+            dev.terminate(record, timeout=40)
         self.launch(self.releases / validate_sha(sha), sha, state)
         self.save(status="running", recovered_at=timestamp())
 
@@ -308,6 +384,9 @@ class Supervisor:
                 raise DeploymentStopped()
             self.activate(release, sha)
             print("Deployed " + sha, flush=True)
+        except DeploymentDeferred as error:
+            self.save(status="waiting", last_error=str(error), waiting_at=timestamp())
+            print("Deployment waiting: " + str(error), flush=True)
         except Exception as error:
             changes = {"status": "error", "last_error": str(error), "failed_at": timestamp()}
             if sha:
@@ -322,7 +401,7 @@ class Supervisor:
             signal.signal(signal.SIGTERM, stop)
             signal.signal(signal.SIGINT, stop)
             self.save(supervisor_pid=os.getpid())
-            dev.terminate(self.state.get("candidate_process"))
+            dev.terminate(self.state.get("candidate_process"), timeout=40)
             self.save(candidate_process=None)
             next_check, last_signal = 0, None
             try:
@@ -337,7 +416,7 @@ class Supervisor:
             except DeploymentStopped:
                 pass
             finally:
-                dev.terminate(self.state.get("candidate_process"))
+                dev.terminate(self.state.get("candidate_process"), timeout=40)
                 self.save(supervisor_pid=None, candidate_process=None)
 
 

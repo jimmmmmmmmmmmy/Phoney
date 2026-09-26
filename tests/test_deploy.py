@@ -1,10 +1,11 @@
 """Exercise deployment failure boundaries without starting services or contacting GitHub."""
 import json
+import io
 import os
 import signal
 import socket
 import subprocess
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -20,6 +21,7 @@ def supervisor(tmp_path, monkeypatch):
     monkeypatch.setattr(deploy.dev, "ROOT", tmp_path)
     monkeypatch.setattr(deploy.dev, "RUNTIME", tmp_path / ".runtime")
     monkeypatch.setattr(deploy.dev, "STATE", tmp_path / ".runtime/dev.json")
+    monkeypatch.setattr(deploy.dev, "request", Mock(return_value=None))
     return instance
 
 
@@ -89,7 +91,7 @@ def test_failed_activation_rolls_back_previous_release(supervisor, monkeypatch):
     assert launch.call_args_list[0].args[1] == NEW
     assert launch.call_args_list[1].args[1] == OLD
     assert supervisor.state["active_commit"] == OLD
-    terminate.assert_called_once_with(record)
+    terminate.assert_called_once_with(record, timeout=40)
 
 
 def test_activation_refuses_untracked_port(supervisor, monkeypatch):
@@ -157,7 +159,7 @@ def test_changed_tunnel_restarts_same_commit_with_new_environment(supervisor, mo
     (supervisor.root / ".env").write_text("PUBLIC_BASE_URL=https://new.example\n")
     deploy.dev.write_state({"app": {"public_url": "https://old.example"}})
     monkeypatch.setattr(deploy.dev, "owned", lambda record: True)
-    monkeypatch.setattr(supervisor, "healthy", lambda sha: True)
+    monkeypatch.setattr(supervisor, "health", Mock(return_value={"status": "ok", "commit": OLD}))
     monkeypatch.setattr(deploy.dev, "terminate", Mock())
     launch = Mock()
     monkeypatch.setattr(supervisor, "launch", launch)
@@ -228,3 +230,205 @@ def test_available_allows_rebind_after_server_closes_connection():
                 client.shutdown(socket.SHUT_WR)
                 assert connection.recv(1) == b""
     assert deploy.dev.available(address[1])
+
+
+def protected_app(supervisor, monkeypatch):
+    record = {"pid": 1234, "identity": "old process", "commit": OLD,
+              "public_url": "https://operator.example"}
+    supervisor.save(active_commit=OLD)
+    deploy.dev.write_state({"app": record})
+    alive = [True]
+    monkeypatch.setattr(deploy.dev, "owned", lambda item: item == record and alive[0])
+    health = Mock(return_value={"status": "ok", "build": 1, "switchboard_ready": True,
+                                "commit": OLD})
+    monkeypatch.setattr(supervisor, "health", health)
+    terminate = Mock(side_effect=lambda item, timeout=5: alive.__setitem__(0, False))
+    monkeypatch.setattr(deploy.dev, "terminate", terminate)
+    launch = Mock()
+    monkeypatch.setattr(supervisor, "launch", launch)
+    return record, health, terminate, launch
+
+
+def drain_state(active=0, pending=0, draining=True):
+    return {"draining": draining, "active_sessions": active, "pending_work": pending}
+
+
+def test_activation_waits_for_both_calls_and_pending_cleanup(supervisor, monkeypatch):
+    record, health, terminate, launch = protected_app(supervisor, monkeypatch)
+    control = Mock(side_effect=[drain_state(active=1), drain_state(pending=2), drain_state()])
+    monkeypatch.setattr(supervisor, "deployment_control", control)
+
+    def pause(seconds):
+        terminate.assert_not_called()
+        launch.assert_not_called()
+
+    monkeypatch.setattr(deploy.time, "sleep", pause)
+    supervisor.activate(supervisor.releases / NEW, NEW)
+    assert control.call_args_list == [call(True), call(), call()]
+    terminate.assert_called_once_with(record, timeout=40)
+    assert supervisor.state["active_commit"] == NEW
+    health.assert_called_once_with()
+
+
+@pytest.mark.parametrize("counts", [{"active": 1}, {"pending": 1}])
+def test_drain_timeout_preserves_process_and_reopens_admission(supervisor, monkeypatch, counts):
+    _, _, terminate, launch = protected_app(supervisor, monkeypatch)
+    control = Mock(side_effect=[drain_state(**counts), drain_state(draining=False)])
+    monkeypatch.setattr(supervisor, "deployment_control", control)
+    monkeypatch.setattr(deploy.time, "monotonic", Mock(side_effect=[0, 61]))
+    with pytest.raises(deploy.DeploymentDeferred, match="delayed deployment"):
+        supervisor.activate(supervisor.releases / NEW, NEW)
+    assert control.call_args_list == [call(True), call(False)]
+    terminate.assert_not_called()
+    launch.assert_not_called()
+    assert supervisor.state["active_commit"] == OLD
+    assert supervisor.state["drain_reset_required"] is False
+
+
+def test_shutdown_during_drain_reopens_admission(supervisor, monkeypatch):
+    _, _, terminate, launch = protected_app(supervisor, monkeypatch)
+
+    def control(draining=None):
+        if draining is True:
+            supervisor.stopping = True
+        return drain_state(active=1, draining=draining is not False)
+
+    monkeypatch.setattr(supervisor, "deployment_control", Mock(side_effect=control))
+    with pytest.raises(deploy.DeploymentStopped):
+        supervisor.activate(supervisor.releases / NEW, NEW)
+    assert supervisor.deployment_control.call_args_list == [call(True), call(False)]
+    terminate.assert_not_called()
+    launch.assert_not_called()
+
+
+def test_failed_termination_reopens_surviving_process(supervisor, monkeypatch):
+    _, _, terminate, launch = protected_app(supervisor, monkeypatch)
+    terminate.side_effect = RuntimeError("cannot signal")
+    control = Mock(side_effect=[drain_state(), drain_state(draining=False)])
+    monkeypatch.setattr(supervisor, "deployment_control", control)
+    with pytest.raises(RuntimeError, match="cannot signal"):
+        supervisor.activate(supervisor.releases / NEW, NEW)
+    assert control.call_args_list == [call(True), call(False)]
+    launch.assert_not_called()
+
+
+def test_deferred_activation_is_retried_without_failed_commit(supervisor, monkeypatch):
+    supervisor.save(active_commit=OLD)
+    monkeypatch.setattr(supervisor, "ensure_tunnel", Mock(return_value="https://operator.example"))
+    monkeypatch.setattr(supervisor, "configure_hooks", Mock())
+    monkeypatch.setattr(supervisor, "recover", Mock())
+    monkeypatch.setattr(supervisor, "fetch", Mock(return_value=NEW))
+    preparation = Mock(return_value=supervisor.releases / NEW)
+    monkeypatch.setattr(supervisor, "prepare", preparation)
+    monkeypatch.setattr(supervisor, "activate", Mock(side_effect=deploy.DeploymentDeferred("Call in progress.")))
+    supervisor.check()
+    assert supervisor.state["status"] == "waiting"
+    assert supervisor.state["active_commit"] == OLD
+    assert supervisor.state.get("failed_commit") is None
+    supervisor.check()
+    assert preparation.call_count == 2
+
+
+@pytest.mark.parametrize("health", [{"build": 0}, {"build": 1, "switchboard_ready": False}, None])
+def test_non_switchboard_activation_does_not_require_drain(supervisor, monkeypatch, health):
+    _, health_read, terminate, _ = protected_app(supervisor, monkeypatch)
+    health_read.return_value = health
+    control = Mock()
+    monkeypatch.setattr(supervisor, "deployment_control", control)
+    supervisor.activate(supervisor.releases / NEW, NEW)
+    control.assert_not_called()
+    terminate.assert_called_once()
+
+
+def test_tunnel_recovery_preserves_active_calls_and_only_reads_health_once(supervisor, monkeypatch):
+    _, health, terminate, launch = protected_app(supervisor, monkeypatch)
+    (supervisor.root / ".env").write_text("PUBLIC_BASE_URL=https://new.example\n")
+    monkeypatch.setattr(supervisor, "deployment_control", Mock(side_effect=[
+        drain_state(active=1), drain_state(draining=False)]))
+    monkeypatch.setattr(deploy.time, "monotonic", Mock(side_effect=[0, 61]))
+    with pytest.raises(deploy.DeploymentDeferred):
+        supervisor.recover()
+    health.assert_called_once_with()
+    terminate.assert_not_called()
+    launch.assert_not_called()
+
+
+def test_failed_drain_reset_is_retried_before_leaving_healthy_app_running(supervisor, monkeypatch):
+    _, _, terminate, launch = protected_app(supervisor, monkeypatch)
+    (supervisor.root / ".env").write_text("PUBLIC_BASE_URL=https://operator.example\n")
+    supervisor.save(drain_reset_required=True)
+    control = Mock(return_value=drain_state(draining=False))
+    monkeypatch.setattr(supervisor, "deployment_control", control)
+    supervisor.recover()
+    control.assert_called_once_with(False)
+    assert supervisor.state["drain_reset_required"] is False
+    terminate.assert_not_called()
+    launch.assert_not_called()
+
+
+def test_control_uses_local_bearer_and_explicit_json_body(supervisor, monkeypatch):
+    (supervisor.root / ".env").write_text("DEPLOY_CONTROL_TOKEN=private-deployment-secret\n")
+    response = io.StringIO(json.dumps(drain_state()))
+    opener = Mock(return_value=response)
+    monkeypatch.setattr(deploy, "urlopen", opener)
+    assert supervisor.deployment_control(True) == drain_state()
+    request = opener.call_args.args[0]
+    assert request.full_url == "http://127.0.0.1:8000/internal/deploy"
+    assert request.get_method() == "POST"
+    assert request.get_header("Authorization") == "Bearer private-deployment-secret"
+    assert json.loads(request.data) == {"draining": True}
+    assert opener.call_args.kwargs == {"timeout": 2}
+
+
+@pytest.mark.parametrize("response", [{}, {"draining": True, "active_sessions": 0},
+    drain_state(active=-1), drain_state(pending=True), drain_state(draining=False)])
+def test_invalid_drain_state_cannot_authorize_replacement(supervisor, monkeypatch, response):
+    (supervisor.root / ".env").write_text("DEPLOY_CONTROL_TOKEN=private-deployment-secret\n")
+    monkeypatch.setattr(deploy, "urlopen", Mock(return_value=io.StringIO(json.dumps(response))))
+    with pytest.raises(deploy.DeploymentDeferred, match="invalid deployment state"):
+        supervisor.deployment_control(True)
+
+
+def test_missing_control_token_preserves_protected_app(supervisor, monkeypatch):
+    _, _, terminate, launch = protected_app(supervisor, monkeypatch)
+    monkeypatch.setattr(supervisor, "environment", lambda: {})
+    opener = Mock()
+    monkeypatch.setattr(deploy, "urlopen", opener)
+    with pytest.raises(deploy.DeploymentDeferred, match="DEPLOY_CONTROL_TOKEN"):
+        supervisor.activate(supervisor.releases / NEW, NEW)
+    opener.assert_not_called()
+    terminate.assert_not_called()
+    launch.assert_not_called()
+
+
+def test_dev_stop_allows_app_cleanup_but_keeps_ngrok_timeout_short(supervisor, monkeypatch):
+    app, ngrok = {"pid": 1234}, {"pid": 5678}
+    deploy.dev.write_state({"app": app, "ngrok": ngrok})
+    terminate = Mock()
+    monkeypatch.setattr(deploy.dev, "terminate", terminate)
+    deploy.dev.stop()
+    assert terminate.call_args_list == [call(app, timeout=40), call(ngrok, timeout=5)]
+
+
+def test_ambiguous_drain_request_reopens_admission(supervisor, monkeypatch):
+    _, _, terminate, launch = protected_app(supervisor, monkeypatch)
+    control = Mock(side_effect=[deploy.DeploymentDeferred("request timed out"),
+                               drain_state(draining=False)])
+    monkeypatch.setattr(supervisor, "deployment_control", control)
+    with pytest.raises(deploy.DeploymentDeferred, match="request timed out"):
+        supervisor.activate(supervisor.releases / NEW, NEW)
+    assert control.call_args_list == [call(True), call(False)]
+    assert supervisor.state["drain_reset_required"] is False
+    terminate.assert_not_called()
+    launch.assert_not_called()
+
+
+def test_failed_admission_reset_remains_visible_for_recovery(supervisor, monkeypatch):
+    _, _, terminate, _ = protected_app(supervisor, monkeypatch)
+    control = Mock(side_effect=[deploy.DeploymentDeferred("request timed out"),
+                               deploy.DeploymentDeferred("reset unavailable")])
+    monkeypatch.setattr(supervisor, "deployment_control", control)
+    with pytest.raises(deploy.DeploymentDeferred, match="request timed out"):
+        supervisor.activate(supervisor.releases / NEW, NEW)
+    assert supervisor.state["drain_reset_required"] is True
+    terminate.assert_not_called()

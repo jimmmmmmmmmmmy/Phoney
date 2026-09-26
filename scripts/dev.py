@@ -107,11 +107,11 @@ def spawn(name, command, state):
     return process
 
 
-def terminate(record):
+def terminate(record, timeout=5):
     if not owned(record):
         return
     pid = record["pid"]
-    for sig, delay in ((signal.SIGTERM, 5), (signal.SIGKILL, 1)):
+    for sig, delay in ((signal.SIGTERM, timeout), (signal.SIGKILL, 1)):
         if not owned(record):
             return
         try:
@@ -179,7 +179,7 @@ def start():
         raise RuntimeError("App did not become healthy; inspect .runtime/app.log.")
     except BaseException:
         for name in ("app", "ngrok"):
-            terminate(state.get(name))
+            terminate(state.get(name), timeout=40 if name == "app" else 5)
         STATE.unlink(missing_ok=True)
         raise
 
@@ -187,7 +187,7 @@ def start():
 def stop():
     state = read_state()
     for name in ("app", "ngrok"):
-        terminate(state.get(name))
+        terminate(state.get(name), timeout=40 if name == "app" else 5)
     STATE.unlink(missing_ok=True)
     print("Stopped recorded app and ngrok processes. Reused tunnels remain running.")
     return 0

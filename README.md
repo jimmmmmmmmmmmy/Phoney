@@ -4,7 +4,9 @@ python3 scripts/server.py status
 
 # Passive Operator
 
-**Build 0:** call the configured Twilio number and hear **“New College Data Science Team”**. The call then ends. FastAPI serves the voice webhook through ngrok. Build 1 is a separate implementation: connect two humans in a conference, with no AI. Follow [the Build 1 plan](docs/BUILD_1.md) when Build 0 passes the phone test.
+**Build 1:** call the configured Twilio number from a different phone and hear **“New College Data Science Team”** while the switchboard rings the fixed teammate number in `CALLEE_NUMBER`. When the teammate answers, both people talk through a Twilio conference. FastAPI and ngrok run on this Mac. Read [the Build 1 guide](docs/BUILD_1.md) for setup and the live phone checks. With no teammate configured, the original greeting still plays and the call ends.
+
+**Verification:** 137 automated tests pass, including callback races, no-answer cleanup, destination restrictions, and deployment draining. Real two-phone audio and hangup checks remain pending until performed. Automated tests do not place calls.
 
 **Final-build vision:** call someone through the operator, press `#1`, and let an agent using a clone of your own voice take over. `#2`, `#3`, and `#4` switch its saved prompts while the call continues. This is a modern version of being on hold: your AI representative keeps the conversation going while you step away. Outbound calls, inbound calls, voice enrollment, and returning control to the human are specified in [the final-build plan](docs/FINAL_BUILD.md). These features are planned, not yet implemented.
 
@@ -35,7 +37,7 @@ Use **Python/FastAPI + two Twilio bidirectional Media Streams + Deepgram + Claud
 
 [**Implementation recipe →**](docs/IMPLEMENTATION.md) has exact modules, API routes, TwiML/Python examples, keypad parsing, audio mixing, timing policies, failure recovery, and a phone test for each stage. [**Voice provider adapters →**](docs/VOICE_STACK.md) has the actual cloning, STT, text-generation, and speech-streaming requests. [**Product behavior →**](docs/FINAL_BUILD.md) describes the dealership experience and acceptance criteria.
 
-The design includes workarounds for the platform gaps: Python supplies the audio switch, Twilio call updates supply phone-menu digits, and FFmpeg supplies format conversion when needed. **These are build instructions; the current deployed app still only plays the team greeting.** Start implementation with `operator_service/sessions.py` and the owner-only callback described in the recipe.
+The design includes workarounds for the platform gaps: Python supplies the audio switch, Twilio call updates supply phone-menu digits, and FFmpeg supplies format conversion when needed. **These are later-build instructions; Build 1 implements the two-human bridge.** Start implementation with `operator_service/sessions.py` and the owner-only callback described in the recipe.
 
 ## GitHub and the running server
 
@@ -60,7 +62,7 @@ These commands are for manual development. Use [server mode](docs/SERVER.md) for
 
    `requirements-lock.txt` pins the verified environment, including tests. `requirements.txt` and `requirements-dev.txt` list the direct dependencies for intentional upgrades. Use Python 3.11 or newer.
 
-2. Fill in `.env` using `.env.example` as the reference. Preserve existing credentials. `TWILIO_AUTH_TOKEN` is required to validate Twilio requests. Install ngrok and authenticate it to your ngrok account if needed.
+2. Fill in `.env` using `.env.example` as the reference. Set `CALLEE_NUMBER` to the teammate’s full E.164 number, different from `TWILIO_NUMBER`. Preserve existing credentials; `TWILIO_AUTH_TOKEN` validates callbacks. For automatic deployment, also set a random `DEPLOY_CONTROL_TOKEN` of at least 32 characters. Install ngrok and authenticate it if needed.
 
 3. Start the app and tunnel:
 
@@ -78,7 +80,7 @@ These commands are for manual development. Use [server mode](docs/SERVER.md) for
 
    This updates the number specified by `TWILIO_NUMBER` to `PUBLIC_BASE_URL/voice` with method **POST** and verifies it. Run without `--apply` to inspect settings without changing them. Repeat after a restart if the ngrok URL changes. The same fields are in the Twilio console under the number’s **Voice → Handling for incoming calls**.
 
-5. Call the Twilio number from a phone. **Pass:** you hear “New College Data Science Team” and the call ends. A passing HTTP test alone does not verify the telephone call.
+5. Call the Twilio number from **a phone other than `CALLEE_NUMBER`**. Answer the teammate phone and exchange distinct phrases for 30 seconds. **Pass:** both people hear each other and either hangup ends both legs. Calls from the forwarding phone are rejected to prevent calling it back into itself. See the guide for no-answer and hangup tests.
 
 Keep this computer awake while testing. The local app and ngrok must both remain running.
 
@@ -95,8 +97,8 @@ An unsigned request to `/voice` is rejected. Browser visits and ordinary `curl` 
 
 Private process state and logs live in `.runtime/`. The configuration helper saves the prior Twilio settings there before applying a change. If startup fails, inspect `.runtime/app.log` or `.runtime/ngrok.log`.
 
-## Build 0 boundary
+## Build 1 boundary
 
-This build provides the inbound greeting, request validation, local health check, automated tests, and a repeatable app/tunnel runner. It does not dial a teammate, record calls, stream audio, detect bots, or run an AI agent.
+This build provides the inbound greeting, two-human conference, one fixed outgoing destination, signed callbacks, setup timeout and cleanup, health checks, and automatic deployment that waits for active calls. It does not record audio, stream media, clone voices, detect bots, or run an AI agent. Session state is in memory; explicit stop or a process crash ends continuity. The [server guide](docs/SERVER.md) covers operation and recovery.
 
-The initial roadmap comes from [the shared Grok conversation](https://grok.com/share/bGVnYWN5_618ab7b3-9c27-4570-9709-edd7bee0bc21). Implementation decisions and acceptance checks for the next milestone are in [docs/BUILD_1.md](docs/BUILD_1.md). The expanded product direction is in [docs/FINAL_BUILD.md](docs/FINAL_BUILD.md).
+The initial roadmap comes from [the shared Grok conversation](https://grok.com/share/bGVnYWN5_618ab7b3-9c27-4570-9709-edd7bee0bc21). The implemented switchboard and phone acceptance checks are in [docs/BUILD_1.md](docs/BUILD_1.md). The expanded product direction is in [docs/FINAL_BUILD.md](docs/FINAL_BUILD.md).

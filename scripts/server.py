@@ -161,7 +161,7 @@ def stop():
     launch("disable", SERVICE)
     if installed():
         unload()
-    subprocess.run([str(PYTHON), str(ROOT / "scripts/dev.py"), "stop"], check=True, timeout=20)
+    subprocess.run([str(PYTHON), str(ROOT / "scripts/dev.py"), "stop"], check=True, timeout=70)
     print("Server stopped: deployment watcher, managed app, and managed ngrok. Use start to resume.")
 
 

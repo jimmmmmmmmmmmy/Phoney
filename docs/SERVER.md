@@ -23,7 +23,7 @@ The GitHub SHA and the health response's `commit` value must match after deploym
 
 GitHub sends a signed push event to `PUBLIC_BASE_URL/github/webhook`. The receiver queues the event; while idle, the deployment supervisor checks the queue every second. It also fetches `main` at 30-second intervals between checks, so missed webhook deliveries do not require a manual pull. These are detection intervals: dependency installation, tests, and startup take additional time. Several closely spaced pushes may be combined into one deployment of the latest `main`.
 
-Each candidate gets its own checkout and Python environment under the installed service's `.runtime/deploy/releases/<commit>`. The supervisor installs `requirements-lock.txt`, or `requirements-dev.txt` when the lock file is absent, runs `pytest`, and starts a candidate on local port `8001`. A candidate that fails preparation leaves the current app running. Health checks require `status: "ok"` and a `commit` matching `DEPLOY_COMMIT`. Activation moves the new release to port `8000`; failed activation restores the previous release. Switching the app can briefly interrupt requests.
+Each candidate gets its own checkout and Python environment under the installed service's `.runtime/deploy/releases/<commit>`. The supervisor installs `requirements-lock.txt`, or `requirements-dev.txt` when the lock file is absent, runs `pytest`, and starts a candidate on local port `8001`. A candidate that fails preparation leaves the current app running. Health checks require `status: "ok"` and a `commit` matching `DEPLOY_COMMIT`. Activation moves the new release to port `8000`; failed activation restores the previous release. Switching the app can briefly interrupt new requests. For a configured Build 1, the supervisor closes admission to new calls and waits up to 60 seconds for both active sessions and outstanding call work to reach zero. If calls remain, it reopens admission, retains the old revision, and retries automatically. A `waiting` state is a deferred deployment, not a failed commit.
 
 **The running application code updates automatically from GitHub.** The editable project checkout stays in place; automatic deployments do not pull into it or reset uncommitted work. Keep code changes in Git and secrets in `~/Library/Application Support/NewCollegeOperator/.env` after installation.
 
@@ -48,7 +48,7 @@ Installation takes about 2–5 minutes when Python 3.11+, authenticated ngrok, a
    .venv/bin/python -m pip install -r requirements-lock.txt
    ```
 
-2. Fill the project's local `.env` using `.env.example`. Preserve existing Twilio credentials. Set `DEPLOY_REPOSITORY` to `jimmmmmmmmmmmy/fictional-rotary-phone` and use a random `GITHUB_WEBHOOK_SECRET` of at least 32 characters. The installer sets `DEPLOY_TRIGGER_PATH` to the service's absolute `.runtime/deploy.trigger` path. Keep `.env` out of Git.
+2. Fill the project's local `.env` using `.env.example`. Preserve existing Twilio credentials. Set `DEPLOY_REPOSITORY` to `jimmmmmmmmmmmy/fictional-rotary-phone` and use a random `GITHUB_WEBHOOK_SECRET` of at least 32 characters. The installer sets `DEPLOY_TRIGGER_PATH` to the service's absolute `.runtime/deploy.trigger` path. For Build 1, also set `CALLEE_NUMBER` and a separate random `DEPLOY_CONTROL_TOKEN` of at least 32 characters; the supervisor uses that token for the private `/internal/deploy` endpoint. Keep `.env` out of Git.
 
 3. Install the macOS service:
 
@@ -56,7 +56,7 @@ Installation takes about 2–5 minutes when Python 3.11+, authenticated ngrok, a
    python3 scripts/server.py install
    ```
 
-4. Run `python3 scripts/server.py status`, then call the Twilio number. For Build 0, expect **“New College Data Science Team”** and the call to end.
+4. Run `python3 scripts/server.py status`, then call the Twilio number from a phone different from `CALLEE_NUMBER`. For configured Build 1, the teammate phone rings; answer it and speak both ways. With no forwarding number configured, expect the team greeting and hangup.
 
 The installer creates the separate service checkout and Python environment. On first installation it copies the project's `.env` privately and migrates existing runner and webhook metadata so the current ngrok tunnel can be reused. Reinstalling preserves the service's `.env`. Subsequent configuration changes belong in **`~/Library/Application Support/NewCollegeOperator/.env`**; editing the project's `.env` does not change the installed service's settings. After editing the active configuration, run `python3 scripts/server.py stop`, then `python3 scripts/server.py start` from the project to restart the application with those settings.
 
@@ -111,4 +111,4 @@ The LaunchAgent uses `caffeinate -i` to prevent idle sleep while running. Keep t
 
 Twilio and GitHub reach this Mac through ngrok. When the Mac or tunnel is unavailable, calls cannot reach the app; the polling fallback discovers the latest `main` after the server returns. The public URL may change after tunnel restart, so the service reconciles both webhook destinations.
 
-Build 1 still needs the implementation and real-phone checks in [BUILD_1.md](BUILD_1.md). Before enabling automatic deployment during live Build 1 calls, add graceful call draining or choose a deployment window: restarting an in-memory call controller can lose its session state.
+Build 1 is implemented; perform the real-phone checks in [BUILD_1.md](BUILD_1.md). Automatic updates preserve established calls through the authenticated drain protocol, including outstanding dialing/cleanup tasks. App shutdown gets a 40-second grace period. Explicitly stopping the service or a process crash still ends continuity: this milestone does not persist live conference sessions across restarts.

@@ -46,17 +46,18 @@ def success(parts=None, **candidate_changes):
     }} | candidate_changes]}
 
 
-def run_response(payload, *, status=200, doc=None, headers=None):
+def run_response(payload, *, status=200, doc=None, headers=None, method="summarize"):
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(
             lambda request: httpx.Response(status, content=json.dumps(payload).encode(), headers=headers),
         )) as client:
-            return await GeminiSummarizer(settings(), client).summarize(
+            return await getattr(GeminiSummarizer(settings(), client), method)(
                 document() if doc is None else doc)
     return asyncio.run(run())
 
 
-def test_request_projects_final_text_and_roles_without_private_metadata_or_tools():
+@pytest.mark.parametrize("method", ["summarize", "summarize_brief"])
+def test_request_projects_final_text_and_roles_without_private_metadata_or_tools(method):
     original = document()
     original["status"] = "partial"
     original["segments"][1]["text"] = (
@@ -98,7 +99,7 @@ def test_request_projects_final_text_and_roles_without_private_metadata_or_tools
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
             provider = GeminiSummarizer(settings(), client)
-            assert await provider.summarize(original) == SUMMARY
+            assert await getattr(provider, method)(original) == SUMMARY
             await provider.close()
             assert not client.is_closed  # Caller owns injected clients.
 
@@ -106,13 +107,59 @@ def test_request_projects_final_text_and_roles_without_private_metadata_or_tools
     assert len(seen) == 1 and original == before
 
 
-def test_only_final_visible_parts_are_returned_without_thoughts_or_signatures():
+@pytest.mark.parametrize("method", ["summarize", "summarize_brief"])
+def test_only_final_visible_parts_are_returned_without_thoughts_or_signatures(method):
     assert run_response(success([
         {"thought": True, "text": "PRIVATE REASONING", "thoughtSignature": "private-signature"},
         {"text": "  Caller asked for a callback. "},
         {"thought": False, "text": "New College DS agreed to call tomorrow.  ",
          "thoughtSignature": "another-private-signature"},
-    ])) == SUMMARY
+    ]), method=method) == SUMMARY
+
+
+def test_brief_summary_uses_separate_request_prompt_and_output_from_same_transcript():
+    brief = "Caller requested a callback, and New College DS will call tomorrow."
+    requests = []
+
+    def handle(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        prompt = body["systemInstruction"]["parts"][0]["text"]
+        result = brief if prompt == gemini_summary.BRIEF_SYSTEM_INSTRUCTION else SUMMARY
+        return httpx.Response(200, json=success([{"text": result}]))
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            provider = GeminiSummarizer(settings(), client)
+            assert await provider.summarize(document()) == SUMMARY
+            assert await provider.summarize_brief(document()) == brief
+
+    asyncio.run(run())
+    assert len(requests) == 2
+    assert requests[0]["contents"] == requests[1]["contents"]
+    detailed_prompt = requests[0]["systemInstruction"]["parts"][0]["text"]
+    brief_prompt = requests[1]["systemInstruction"]["parts"][0]["text"]
+    assert "2–3 concise" in detailed_prompt and "2000" in detailed_prompt
+    assert "ONE" in brief_prompt and "sentence" in brief_prompt
+    assert "25 words" in brief_prompt and "280 characters" in brief_prompt
+    assert "2000" not in brief_prompt
+    assert detailed_prompt.endswith(gemini_summary.SUMMARY_SAFEGUARDS)
+    assert brief_prompt.endswith(gemini_summary.SUMMARY_SAFEGUARDS)
+    assert brief not in SUMMARY  # The brief result is not a substring of the detailed result.
+
+
+def test_brief_output_accepts_280_characters_without_changing_detailed_limit():
+    text = "x" * 280
+    assert run_response(success([{"text": text}]), method="summarize_brief") == text
+    detailed = "x" * 2000
+    assert run_response(success([{"text": detailed}])) == detailed
+
+
+@pytest.mark.parametrize("text", ["x" * 281, "Caller said\x00something", "\ud800"])
+def test_brief_invalid_or_oversized_output_is_rejected_instead_of_truncated(text):
+    with pytest.raises(SummaryError) as error:
+        run_response(success([{"text": text}]), method="summarize_brief")
+    assert error.value.code == "invalid_output" and not error.value.retryable
 
 
 @pytest.mark.parametrize("change", [
@@ -124,13 +171,14 @@ def test_only_final_visible_parts_are_returned_without_thoughts_or_signatures():
     {"segments": [{"track": "inbound", "start_ms": 0, "end_ms": 1, "text": "x" * 2001}]},
     {"segments": [{"track": "inbound", "start_ms": 0, "end_ms": 1, "text": "\ud800"}]},
 ])
-def test_invalid_unfinished_or_empty_transcript_never_makes_request(change):
+@pytest.mark.parametrize("method", ["summarize", "summarize_brief"])
+def test_invalid_unfinished_or_empty_transcript_never_makes_request(change, method):
     async def run():
         def forbidden(request):
             pytest.fail("Invalid transcript must not leave the process")
         async with httpx.AsyncClient(transport=httpx.MockTransport(forbidden)) as client:
             with pytest.raises(SummaryError) as error:
-                await GeminiSummarizer(settings(), client).summarize(document() | change)
+                await getattr(GeminiSummarizer(settings(), client), method)(document() | change)
             assert error.value.code == "invalid_transcript" and not error.value.retryable
     asyncio.run(run())
 
@@ -168,10 +216,11 @@ def test_missing_or_invalid_configuration_never_makes_request(changes, code):
     (400, "request_rejected", False),
     (404, "request_rejected", False), (302, "request_rejected", False),
 ])
-def test_http_failures_are_classified_without_leaking_body_key_or_redirect(status, code, retryable):
+@pytest.mark.parametrize("method", ["summarize", "summarize_brief"])
+def test_http_failures_are_classified_without_leaking_body_key_or_redirect(status, code, retryable, method):
     with pytest.raises(SummaryError) as error:
         run_response({"error": {"message": "PRIVATE BODY " + KEY}}, status=status,
-                     headers={"location": "https://untrusted.example/"})
+                     headers={"location": "https://untrusted.example/"}, method=method)
     assert error.value.code == code and error.value.retryable is retryable
     assert str(error.value) == code and KEY not in repr(error.value)
 
@@ -204,9 +253,10 @@ def test_http_failures_are_classified_without_leaking_body_key_or_redirect(statu
     (success([{"text": "Caller said\x00something"}]), "invalid_output"),
     (success([{"text": "\ud800"}]), "invalid_output"),
 ])
-def test_provider_schema_blocks_and_truncation_cannot_be_saved_as_summary(payload, code):
+@pytest.mark.parametrize("method", ["summarize", "summarize_brief"])
+def test_provider_schema_blocks_and_truncation_cannot_be_saved_as_summary(payload, code, method):
     with pytest.raises(SummaryError) as error:
-        run_response(payload)
+        run_response(payload, method=method)
     assert error.value.code == code and not error.value.retryable
     assert "PRIVATE" not in str(error.value)
 

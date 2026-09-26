@@ -223,8 +223,17 @@ def test_unknown_recording_metadata_is_visible_without_invented_caller_or_disk_w
     recording = {"call_sid": CALL, "started_at": START, "finished_at": END, "duration_seconds": 27.5}
     record = only(store, [recording])
     assert record == {"call_sid": CALL, "caller_number": "", "started_at": START,
-                      "ended_at": END, "duration_seconds": 27.5, "summary": None}
+                      "ended_at": END, "duration_seconds": 27.5, "summary": None, "brief_summary": None}
     assert list(tmp_path.iterdir()) == []
+
+
+def test_both_max_length_unicode_summaries_fit_the_bounded_record(tmp_path):
+    store = CallDetailsStore(str(tmp_path))
+    assert store.set_summary(CALL, "\U0001f4de" * 2000, session())
+    assert store.set_summary(CALL, "\U0001f4de" * 280, session(), kind="brief")
+    record = only(CallDetailsStore(str(tmp_path)), [session()])
+    assert len(record["summary"]["text"]) == 2000
+    assert len(record["brief_summary"]["text"]) == 280
 
 
 def test_recent_ten_retain_relevant_older_call_and_snapshots_are_detached(tmp_path):

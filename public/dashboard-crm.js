@@ -77,7 +77,45 @@
     return contacts().filter(contact => (listFilter === "all" || (contact.labels || []).includes(category)) &&
       (!query || [fullName(contact), contact.phone, contact.email, contact.company].some(value => String(value || "").toLowerCase().includes(query))));
   }
-  function renderTable(container, count) { const matches = filteredContacts(); container.replaceChildren(); count.textContent = `${matches.length} ${matches.length === 1 ? "contact" : "contacts"}`; if (!matches.length) { const empty = node("div", "crm-empty"); empty.append(node("strong", "", "No contacts found"), node("p", "", searchText || listFilter !== "all" ? "Try another search or view all contacts." : "Create a contact to get started.")); container.append(empty); return; } const table = node("table", "crm-table"), thead = node("thead"), hr = node("tr"); table.setAttribute("aria-label", "Contacts and call activity"); for (const [label, cls] of [["Contact", ""], ["Phone number", "crm-phone-column"], ["Status", "crm-status-column"], ["Calls", ""], ["Last contact", ""]]) { const th = node("th", cls, label); th.scope = "col"; hr.append(th); } thead.append(hr); const tbody = node("tbody"); for (const contact of matches) { const callHistory = callsFor(contact), row = node("tr"), cell = node("td"), person = node("div", "crm-person"), body = node("div"), name = node("div", "crm-person-name"); name.append(link(fullName(contact), `#contacts/${contact.id}`, "crm-link"), ...contactLabels(contact)); body.append(name, node("div", "crm-person-sub", contact.email || contact.phone)); person.append(node("span", "crm-avatar", initials(contact)), body); cell.append(person); const statusCell = node("td", "crm-status-column"); statusCell.append(status(contact)); row.append(cell, node("td", "crm-phone-column", contact.phone), statusCell, node("td", "", callHistory.length), node("td", "crm-muted", callHistory.length ? date(callHistory[0].startedAt, false) : "No calls yet")); tbody.append(row); } table.append(thead, tbody); container.append(table); }
+  function renderTable(container, count) {
+    const matches = filteredContacts();
+    container.replaceChildren();
+    count.textContent = `${matches.length} ${matches.length === 1 ? "contact" : "contacts"}`;
+    if (!matches.length) {
+      const empty = node("div", "crm-empty");
+      empty.append(node("strong", "", "No contacts found"), node("p", "", searchText || listFilter !== "all" ? "Try another search or view all contacts." : "Create a contact to get started."));
+      container.append(empty);
+      return;
+    }
+    const table = node("table", "crm-table"), thead = node("thead"), hr = node("tr");
+    table.setAttribute("aria-label", "Contacts and call activity");
+    for (const [label, cls] of [["Contact", ""], ["Type", "crm-type-column"], ["Phone number", "crm-phone-column"], ["Status", "crm-status-column"], ["Calls", ""], ["Last contact", ""]]) {
+      const th = node("th", cls, label);
+      th.scope = "col";
+      hr.append(th);
+    }
+    thead.append(hr);
+    const tbody = node("tbody");
+    for (const contact of matches) {
+      const callHistory = callsFor(contact), row = node("tr"), cell = node("td"), person = node("div", "crm-person"), body = node("div"), name = node("div", "crm-person-name");
+      name.append(link(fullName(contact), `#contacts/${contact.id}`, "crm-link"));
+      body.append(name, node("div", "crm-person-sub", contact.email || contact.phone));
+      person.append(node("span", "crm-avatar", initials(contact)), body);
+      cell.append(person);
+      const typeCell = node("td", "crm-type-column"), labels = contactLabels(contact);
+      if (labels.length) {
+        const types = node("div", "crm-type-labels");
+        types.append(...labels);
+        typeCell.append(types);
+      } else typeCell.append(node("span", "crm-muted", "—"));
+      const statusCell = node("td", "crm-status-column");
+      statusCell.append(status(contact));
+      row.append(cell, typeCell, node("td", "crm-phone-column", contact.phone), statusCell, node("td", "", callHistory.length), node("td", "crm-muted", callHistory.length ? date(callHistory[0].startedAt, false) : "No calls yet"));
+      tbody.append(row);
+    }
+    table.append(thead, tbody);
+    container.append(table);
+  }
   function renderList() {
     const section = node("div", "crm"), topline = node("div", "crm-topline");
     const filters = node("div", "crm-filters"), panel = node("div");

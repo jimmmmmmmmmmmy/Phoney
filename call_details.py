@@ -24,9 +24,14 @@ E164 = re.compile(r"\+[1-9][0-9]{7,14}\Z")
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 MAX_FILES = 1000
 MAX_CALLS = 10
-MAX_FILE_BYTES = 16_384
+MAX_FILE_BYTES = 32_768
 MAX_SUMMARY_CHARS = 2000
+MAX_BRIEF_SUMMARY_CHARS = 280
 MAX_SUMMARY_ATTEMPTS = 5
+SUMMARY_KINDS = {
+    "detailed": ("summary", "summary_job", MAX_SUMMARY_CHARS),
+    "brief": ("brief_summary", "brief_summary_job", MAX_BRIEF_SUMMARY_CHARS),
+}
 SUMMARY_MODEL = re.compile(r"[a-z0-9][a-z0-9.-]{0,99}\Z")
 SUMMARY_ERRORS = {"", "auth", "rate-limit", "provider-error", "timeout", "network", "invalid-response",
                   "blocked", "empty-response", "truncated", "invalid-input", "storage-failed",
@@ -138,13 +143,14 @@ def _root(path, create=False):
 def _blank(call_sid):
     return {"schema_version": 1, "call_sid": call_sid, "caller_number": "", "started_at": None,
             "ended_at": None, "duration_seconds": None, "duration_source": "", "summary": None,
-            "summary_job": None}
+            "summary_job": None, "brief_summary": None, "brief_summary_job": None}
 
 
 def _validate(document, call_sid):
-    # Existing authored summaries predate background jobs and remain readable.
-    if isinstance(document, dict) and "summary_job" not in document:
-        document["summary_job"] = None
+    # Existing authored/detailed summaries remain readable before brief jobs.
+    if isinstance(document, dict):
+        for field in ("summary_job", "brief_summary", "brief_summary_job"):
+            document.setdefault(field, None)
     keys = set(_blank(call_sid))
     if (not isinstance(document, dict) or set(document) != keys
             or type(document["schema_version"]) is not int or document["schema_version"] != 1
@@ -162,30 +168,31 @@ def _validate(document, call_sid):
         document["duration_seconds"] = _duration(document["duration_seconds"])
     if document["duration_source"] not in ("", "elapsed", "reported"):
         raise ValueError("Invalid duration source")
-    summary = document["summary"]
-    if summary is not None:
-        if (not isinstance(summary, dict)
+    for summary_key, job_key, limit in SUMMARY_KINDS.values():
+        summary = document[summary_key]
+        if summary is not None:
+            if (not isinstance(summary, dict)
                 or set(summary) - {"text", "source", "created_at", "fingerprint", "model"}
                 or not {"text", "source", "created_at", "fingerprint"}.issubset(summary)
                 or not isinstance(summary["text"], str) or not summary["text"].strip()
-                or len(summary["text"]) > MAX_SUMMARY_CHARS or CONTROL.search(summary["text"])
+                or len(summary["text"]) > limit or CONTROL.search(summary["text"])
                 or summary["source"] not in {"agent", "gemini"} or not isinstance(summary["fingerprint"], str)
                 or not re.fullmatch(r"[0-9a-f]{64}", summary["fingerprint"])):
-            raise ValueError("Invalid summary")
-        summary["created_at"] = _timestamp(summary["created_at"])
-        if "model" in summary and (not isinstance(summary["model"], str)
+                raise ValueError("Invalid summary")
+            summary["created_at"] = _timestamp(summary["created_at"])
+            if "model" in summary and (not isinstance(summary["model"], str)
                                    or not SUMMARY_MODEL.fullmatch(summary["model"])):
-            raise ValueError("Invalid summary model")
-    job = document["summary_job"]
-    if job is not None:
-        if (not isinstance(job, dict) or set(job) != {"fingerprint", "status", "attempts", "error", "retry_at"}
+                raise ValueError("Invalid summary model")
+        job = document[job_key]
+        if job is not None:
+            if (not isinstance(job, dict) or set(job) != {"fingerprint", "status", "attempts", "error", "retry_at"}
                 or not isinstance(job["fingerprint"], str) or not re.fullmatch(r"[0-9a-f]{64}", job["fingerprint"])
                 or job["status"] not in {"pending", "completed", "failed"}
                 or type(job["attempts"]) is not int or not 0 <= job["attempts"] <= MAX_SUMMARY_ATTEMPTS
                 or job["error"] not in SUMMARY_ERRORS
                 or type(job["retry_at"]) not in (int, float) or not math.isfinite(job["retry_at"])
                 or not 0 <= job["retry_at"] <= 10_000_000_000):
-            raise ValueError("Invalid summary job")
+                raise ValueError("Invalid summary job")
     return document
 
 
@@ -372,9 +379,12 @@ class CallDetailsStore:
         except (OSError, ValueError, TypeError, OverflowError):
             return False
 
-    def set_summary(self, call_sid, text, session_document, *, source="agent", model=None):
+    def set_summary(self, call_sid, text, session_document, *, source="agent", model=None, kind="detailed"):
+        if not isinstance(kind, str) or kind not in SUMMARY_KINDS:
+            return False
+        summary_key, job_key, limit = SUMMARY_KINDS[kind]
         if (not self.enabled or not _sid(call_sid) or not isinstance(text, str)
-                or not text.strip() or len(text) > MAX_SUMMARY_CHARS or CONTROL.search(text)
+                or not text.strip() or len(text) > limit or CONTROL.search(text)
                 or not isinstance(session_document, dict) or session_document.get("call_sid") != call_sid
                 or source not in {"agent", "gemini"}
                 or (model is not None and (not isinstance(model, str) or not SUMMARY_MODEL.fullmatch(model)))):
@@ -390,18 +400,18 @@ class CallDetailsStore:
                 record["ended_at"] = record["ended_at"] or _timestamp(session_document["ended_at"])
                 if record["started_at"] and record["ended_at"] < record["started_at"]:
                     return False
-                previous = record["summary"]
+                previous = record[summary_key]
                 if (source == "gemini" and previous and previous["source"] == "agent"
                         and previous["fingerprint"] == fingerprint):
                     return True  # Preserve an operator edit made while generation was in flight.
                 if (not previous or previous["text"] != text.strip() or previous["fingerprint"] != fingerprint
                         or previous["source"] != source or previous.get("model") != model):
-                    record["summary"] = {"text": text.strip(), "source": source, "created_at": _now(),
+                    record[summary_key] = {"text": text.strip(), "source": source, "created_at": _now(),
                                          "fingerprint": fingerprint}
                     if model is not None:
-                        record["summary"]["model"] = model
-                job = record["summary_job"]
-                record["summary_job"] = {"fingerprint": fingerprint, "status": "completed",
+                        record[summary_key]["model"] = model
+                job = record[job_key]
+                record[job_key] = {"fingerprint": fingerprint, "status": "completed",
                     "attempts": job["attempts"] if job and job["fingerprint"] == fingerprint else 0,
                     "error": "", "retry_at": 0}
                 return self._persist(record)
@@ -409,71 +419,79 @@ class CallDetailsStore:
             return False
 
     @staticmethod
-    def _summary_state(record, fingerprint):
+    def _summary_state(record, fingerprint, kind="detailed"):
         missing = {"status": "missing", "attempts": 0, "error": "", "retry_at": 0}
         if not fingerprint:
             return missing
-        summary = record["summary"]
-        job = record["summary_job"]
+        summary_key, job_key, _ = SUMMARY_KINDS[kind]
+        summary = record[summary_key]
+        job = record[job_key]
         if summary and summary["fingerprint"] == fingerprint:
             return {**missing, "status": "completed"}
         if job and job["fingerprint"] == fingerprint:
             return {key: job[key] for key in missing}
         return missing
 
-    def summary_state(self, call_sid, session_document):
+    def summary_state(self, call_sid, session_document, *, kind="detailed"):
         fingerprint = transcript_fingerprint(session_document)
-        if not self.enabled or not _sid(call_sid) or not fingerprint or session_document["call_sid"] != call_sid:
+        if (not isinstance(kind, str) or kind not in SUMMARY_KINDS or not self.enabled
+                or not _sid(call_sid) or not fingerprint or session_document["call_sid"] != call_sid):
             return {"status": "missing", "attempts": 0, "error": "", "retry_at": 0}
         with self._lock:
-            return self._summary_state(self._current(call_sid), fingerprint)
+            return self._summary_state(self._current(call_sid), fingerprint, kind)
 
-    def begin_summary(self, call_sid, session_document):
+    def begin_summary(self, call_sid, session_document, *, kind="detailed"):
         fingerprint = transcript_fingerprint(session_document)
-        if not self.enabled or not _sid(call_sid) or not fingerprint or session_document["call_sid"] != call_sid:
+        if (not isinstance(kind, str) or kind not in SUMMARY_KINDS or not self.enabled
+                or not _sid(call_sid) or not fingerprint or session_document["call_sid"] != call_sid):
             return False
+        _, job_key, _ = SUMMARY_KINDS[kind]
         try:
             with self._lock:
                 record = self._current(call_sid)
-                job = self._summary_state(record, fingerprint)
+                job = self._summary_state(record, fingerprint, kind)
                 if job["status"] == "completed" or job["attempts"] >= MAX_SUMMARY_ATTEMPTS:
                     return False
                 if job["status"] == "failed" and (not job["retry_at"] or job["retry_at"] > time.time()):
                     return False
                 record["started_at"] = record["started_at"] or _timestamp(session_document["started_at"])
                 record["ended_at"] = record["ended_at"] or _timestamp(session_document["ended_at"])
-                record["summary_job"] = {"fingerprint": fingerprint, "status": "pending",
+                record[job_key] = {"fingerprint": fingerprint, "status": "pending",
                     "attempts": job["attempts"] + 1, "error": "", "retry_at": 0}
                 return self._persist(record)
         except (OSError, ValueError, TypeError, KeyError, OverflowError):
             return False
 
-    def fail_summary(self, call_sid, session_document, error, retry_at=0):
+    def fail_summary(self, call_sid, session_document, error, retry_at=0, *, kind="detailed"):
         fingerprint = transcript_fingerprint(session_document)
-        if (not self.enabled or not _sid(call_sid) or not fingerprint or session_document["call_sid"] != call_sid
+        if (not isinstance(kind, str) or kind not in SUMMARY_KINDS or not self.enabled
+                or not _sid(call_sid) or not fingerprint or session_document["call_sid"] != call_sid
                 or type(retry_at) not in (int, float) or not math.isfinite(retry_at)
                 or not 0 <= retry_at <= 10_000_000_000):
             return False
+        _, job_key, _ = SUMMARY_KINDS[kind]
         with self._lock:
             record = self._current(call_sid)
-            job = record["summary_job"]
+            job = record[job_key]
             if not job or job["fingerprint"] != fingerprint or job["status"] == "completed":
                 return False
             job.update(status="failed", error=error if isinstance(error, str) and error in SUMMARY_ERRORS else "unknown",
                        retry_at=retry_at)
             return self._persist(record)
 
-    def retry_summary(self, call_sid, session_document):
+    def retry_summary(self, call_sid, session_document, *, kind="detailed"):
         """Owner-invoked retry after repairing billing or configuration; never a public route."""
         fingerprint = transcript_fingerprint(session_document)
-        if not self.enabled or not _sid(call_sid) or not fingerprint or session_document["call_sid"] != call_sid:
+        if (not isinstance(kind, str) or kind not in SUMMARY_KINDS or not self.enabled
+                or not _sid(call_sid) or not fingerprint or session_document["call_sid"] != call_sid):
             return False
+        _, job_key, _ = SUMMARY_KINDS[kind]
         with self._lock:
             record = self._current(call_sid)
-            state = self._summary_state(record, fingerprint)
+            state = self._summary_state(record, fingerprint, kind)
             if state["status"] != "failed":
                 return False
-            record["summary_job"] = None
+            record[job_key] = None
             return self._persist(record)
 
     def snapshot(self, sessions=None):
@@ -514,19 +532,19 @@ class CallDetailsStore:
             calls = []
             for record in recent:
                 result = {key: record[key] for key in ("call_sid", "caller_number", "started_at", "ended_at", "duration_seconds")}
-                summary = record["summary"]
-                fingerprint = transcript_fingerprint(documents.get(record["call_sid"])) if summary else None
-                result["summary"] = ({key: summary[key] for key in ("text", "source", "created_at")}
-                    if summary and record["ended_at"] and fingerprint == summary["fingerprint"] else None)
-                if result["summary"] and "model" in summary:
-                    result["summary"]["model"] = summary["model"]
-                job_fingerprint = transcript_fingerprint(documents.get(record["call_sid"]))
-                job_state = self._summary_state(record, job_fingerprint)
-                if record["summary_job"] is not None:
-                    result["summary_status"] = job_state["status"]
-                    if (job_state["status"] == "failed" and job_state["retry_at"] > 0
-                            and job_state["attempts"] < MAX_SUMMARY_ATTEMPTS):
-                        result["summary_status"] = "retrying"
-                        result["summary_retry_at"] = job_state["retry_at"]
+                fingerprint = transcript_fingerprint(documents.get(record["call_sid"]))
+                for kind, (summary_key, job_key, _) in SUMMARY_KINDS.items():
+                    summary = record[summary_key]
+                    result[summary_key] = ({key: summary[key] for key in ("text", "source", "created_at")}
+                        if summary and record["ended_at"] and fingerprint == summary["fingerprint"] else None)
+                    if result[summary_key] and "model" in summary:
+                        result[summary_key]["model"] = summary["model"]
+                    job_state = self._summary_state(record, fingerprint, kind)
+                    if record[job_key] is not None:
+                        result[summary_key + "_status"] = job_state["status"]
+                        if (job_state["status"] == "failed" and job_state["retry_at"] > 0
+                                and job_state["attempts"] < MAX_SUMMARY_ATTEMPTS):
+                            result[summary_key + "_status"] = "retrying"
+                            result[summary_key + "_retry_at"] = job_state["retry_at"]
                 calls.append(result)
             return {"enabled": True, "storage_error": self.storage_error, "calls": calls}

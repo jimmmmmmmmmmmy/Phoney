@@ -117,6 +117,29 @@ def test_cli_saves_authored_text_and_keeps_existing_caller(tmp_path, monkeypatch
     assert record["summary"]["text"] == "The caller requested a call tomorrow."
 
 
+@pytest.mark.parametrize("kind", ["detailed", "brief"])
+def test_cli_retry_resets_only_the_selected_failed_job(tmp_path, monkeypatch, kind):
+    settings = replace(SETTINGS, call_details_storage_dir=str(tmp_path / "details"))
+    store = CallDetailsStore(settings.call_details_storage_dir)
+    other = "brief" if kind == "detailed" else "detailed"
+    assert store.set_summary(SID, "Saved counterpart.", SESSION, kind=other)
+    assert store.begin_summary(SID, SESSION, kind=kind)
+    assert store.fail_summary(SID, SESSION, "billing_required", kind=kind)
+    monkeypatch.setattr(commands, "local_sessions", lambda settings: [deepcopy(SESSION)])
+    monkeypatch.setattr(commands, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(commands, "Settings", SimpleNamespace(from_env=lambda: settings))
+    arguments = ["call_details.py", "retry-summary", SID]
+    if kind == "brief":
+        arguments.extend(["--kind", "brief"])
+    monkeypatch.setattr(commands.sys, "argv", arguments)
+    commands.main()
+    reloaded = CallDetailsStore(settings.call_details_storage_dir)
+    assert reloaded.summary_state(SID, SESSION, kind=kind)["status"] == "missing"
+    assert reloaded.summary_state(SID, SESSION, kind=other)["status"] == "completed"
+    other_key = "summary" if other == "detailed" else "brief_summary"
+    assert reloaded.snapshot([SESSION])["calls"][0][other_key]["text"] == "Saved counterpart."
+
+
 def test_relative_storage_configuration_is_rejected():
     with pytest.raises(ValueError, match="CALL_DETAILS_STORAGE_DIR"):
         replace(SETTINGS, call_details_storage_dir="relative-path")

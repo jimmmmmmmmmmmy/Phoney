@@ -74,6 +74,8 @@ def main():
     summary.add_argument("--text-file", type=Path, required=True)
     retry = commands.add_parser("retry-summary", help="Retry a failed automatic summary after fixing billing/configuration")
     retry.add_argument("call_sid")
+    retry.add_argument("--kind", choices=("detailed", "brief"), default="detailed",
+                       help="Summary job to retry; a completed counterpart is preserved")
     args = parser.parse_args()
     load_dotenv(args.env_file or ROOT / ".env", override=bool(args.env_file))
     settings = Settings.from_env()
@@ -91,9 +93,9 @@ def main():
         print("Saved summary for the completed transcript.")
     else:
         document = next((item for item in local_sessions(settings) if item["call_sid"] == args.call_sid), None)
-        if not document or not store.retry_summary(args.call_sid, document):
+        if not document or not store.retry_summary(args.call_sid, document, kind=args.kind):
             raise ValueError("Choose a failed automatic summary for an ended local transcript")
-        print("Failed summary reset; the running summary worker will retry it.")
+        print(f"Failed {args.kind} summary reset; the running summary worker will retry it.")
 
 
 if __name__ == "__main__":

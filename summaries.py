@@ -7,7 +7,7 @@ import math
 import re
 import time
 
-from call_details import MAX_SUMMARY_ATTEMPTS, MAX_SUMMARY_CHARS, transcript_fingerprint
+from call_details import MAX_SUMMARY_ATTEMPTS, SUMMARY_KINDS, transcript_fingerprint
 
 POLL_SECONDS = 2.0
 REQUEST_SECONDS = 45.0
@@ -100,8 +100,8 @@ class SummaryManager:
                      if document["call_sid"] == call_sid
                      and transcript_fingerprint(document) == fingerprint), None)
 
-    async def _state(self, document):
-        result = await self._store(self.call_details.summary_state, document["call_sid"], document)
+    async def _state(self, document, kind):
+        result = await self._store(self.call_details.summary_state, document["call_sid"], document, kind=kind)
         if (not isinstance(result, dict) or result.get("status") not in ("missing", "pending", "completed", "failed")
                 or type(result.get("attempts")) is not int or not 0 <= result["attempts"] <= MAX_ATTEMPTS
                 or type(result.get("retry_at")) not in (int, float)
@@ -109,16 +109,16 @@ class SummaryManager:
             return None
         return result
 
-    async def _failed(self, document, error, retry_at=0):
+    async def _failed(self, document, error, retry_at=0, *, kind):
         safe_error = error if isinstance(error, str) and re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", error) else "provider-error"
         try:
             await self._store(self.call_details.fail_summary, document["call_sid"], document,
-                              safe_error, retry_at=retry_at)
+                              safe_error, retry_at=retry_at, kind=kind)
         except Exception:
             pass  # A persisted pending attempt is still bounded on restart.
 
     async def run_once(self):
-        """Attempt at most one eligible ended call, without overlapping polls."""
+        """Attempt one detailed or brief job, serially and independently."""
         if (not self.enabled or not self._allowed() or self._lock.locked()
                 or any(not task.done() for task in self._io_tasks)):
             return
@@ -131,26 +131,26 @@ class SummaryManager:
                 for document in self._documents():
                     if not self._inactive(document["call_sid"]):
                         continue
-                    state = await self._state(document)
-                    if not state or state["status"] == "completed":
-                        continue
-                    if (state["status"] == "failed" and not state["retry_at"]
-                            and 0 < state["attempts"] < MAX_ATTEMPTS
-                            and state.get("error") in RETRYABLE_ERRORS):
-                        # Recover jobs exhausted by an older, shorter retry
-                        # policy without resetting their durable attempt count
-                        # or immediately sending requests during startup.
-                        await self._failed(document, state["error"],
-                                           time.time() + RETRY_DELAYS[state["attempts"] - 1])
-                        continue
-                    if state["status"] == "failed" and (not state["retry_at"] or state["retry_at"] > time.time()):
-                        continue
-                    if state["attempts"] >= MAX_ATTEMPTS:
-                        if state["status"] == "pending":
-                            await self._failed(document, "retry-exhausted")
-                        continue
-                    await self._summarize(document, state["attempts"] + 1)
-                    break
+                    for kind in SUMMARY_KINDS:
+                        state = await self._state(document, kind)
+                        if not state or state["status"] == "completed":
+                            continue
+                        if (state["status"] == "failed" and not state["retry_at"]
+                                and 0 < state["attempts"] < MAX_ATTEMPTS
+                                and state.get("error") in RETRYABLE_ERRORS):
+                            # Recover older, shorter retry budgets without
+                            # resetting counts or sending requests on startup.
+                            await self._failed(document, state["error"],
+                                               time.time() + RETRY_DELAYS[state["attempts"] - 1], kind=kind)
+                            continue
+                        if state["status"] == "failed" and (not state["retry_at"] or state["retry_at"] > time.time()):
+                            continue
+                        if state["attempts"] >= MAX_ATTEMPTS:
+                            if state["status"] == "pending":
+                                await self._failed(document, "retry-exhausted", kind=kind)
+                            continue
+                        await self._summarize(document, state["attempts"] + 1, kind)
+                        return
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -161,64 +161,65 @@ class SummaryManager:
                 self._busy = False
                 self._running_task = None
 
-    async def _summarize(self, document, attempt):
+    async def _summarize(self, document, attempt, kind):
         sid = document["call_sid"]
         fingerprint = transcript_fingerprint(document)
         begun = False
         try:
             if not self._allowed() or not self._current(sid, fingerprint):
                 return
-            begun = bool(await self._store(self.call_details.begin_summary, sid, document))
+            begun = bool(await self._store(self.call_details.begin_summary, sid, document, kind=kind))
             if not begun:
                 return  # Never spend on an attempt that was not durably counted.
             if not self._allowed():
                 retry_at = time.time() + RETRY_DELAYS[attempt - 1] if attempt < MAX_ATTEMPTS else 0
-                await self._failed(document, "interrupted", retry_at)
+                await self._failed(document, "interrupted", retry_at, kind=kind)
                 return
             if not self._current(sid, fingerprint):
-                await self._failed(document, "transcript-changed")
+                await self._failed(document, "transcript-changed", kind=kind)
                 return
             try:
-                generated = await asyncio.wait_for(self.provider.summarize(document), REQUEST_SECONDS)
+                generate = self.provider.summarize_brief if kind == "brief" else self.provider.summarize
+                generated = await asyncio.wait_for(generate(document), REQUEST_SECONDS)
             except asyncio.TimeoutError:
                 retry_at = time.time() + RETRY_DELAYS[attempt - 1] if attempt < MAX_ATTEMPTS else 0
-                await self._failed(document, "provider-timeout", retry_at)
+                await self._failed(document, "provider-timeout", retry_at, kind=kind)
                 return
             except asyncio.CancelledError:
                 raise
             except Exception as error:
                 retryable = getattr(error, "retryable", False) is True
                 retry_at = time.time() + RETRY_DELAYS[attempt - 1] if retryable and attempt < MAX_ATTEMPTS else 0
-                await self._failed(document, getattr(error, "code", "provider-error"), retry_at)
+                await self._failed(document, getattr(error, "code", "provider-error"), retry_at, kind=kind)
                 return
-            if not isinstance(generated, str) or not generated.strip() or len(generated) > MAX_SUMMARY_CHARS:
-                await self._failed(document, "invalid-response")
+            if not isinstance(generated, str) or not generated.strip() or len(generated) > SUMMARY_KINDS[kind][2]:
+                await self._failed(document, "invalid-response", kind=kind)
                 return
             current = self._current(sid, fingerprint)
             if current is None:
-                await self._failed(document, "transcript-changed")
+                await self._failed(document, "transcript-changed", kind=kind)
                 return
-            state = await self._state(current)
+            state = await self._state(current, kind)
             if not state or state["status"] == "completed":
                 return  # An operator may have written a summary while we waited.
             # Recheck after disk I/O as well; transcript finalization may have
             # changed while the worker was checking an existing agent summary.
             current = self._current(sid, fingerprint)
             if current is None:
-                await self._failed(document, "transcript-changed")
+                await self._failed(document, "transcript-changed", kind=kind)
                 return
             saved = await self._store(self.call_details.set_summary, sid, generated.strip(), current,
-                                     source="gemini", model=getattr(self.settings, "gemini_summary_model", None))
+                                     source="gemini", model=getattr(self.settings, "gemini_summary_model", None), kind=kind)
             if not saved:
-                await self._failed(document, "storage-error")
+                await self._failed(document, "storage-error", kind=kind)
         except asyncio.CancelledError:
             if begun:
                 retry_at = time.time() + RETRY_DELAYS[attempt - 1] if attempt < MAX_ATTEMPTS else 0
-                await self._failed(document, "interrupted", retry_at)
+                await self._failed(document, "interrupted", retry_at, kind=kind)
             raise
         except Exception:
             if begun:
-                await self._failed(document, "storage-error")
+                await self._failed(document, "storage-error", kind=kind)
 
     async def close(self):
         self._closed = True

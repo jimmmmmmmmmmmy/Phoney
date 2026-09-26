@@ -228,6 +228,7 @@ assert.match(text(rows().find(row => text(row).includes('Alex Morgan'))), /Real 
 assert.match(text(rows().find(row => text(row).includes('Casey Reed'))), /Legal/);
 for (const name of ['Maya Patel', 'Jordan Ellis']) assert.match(text(rows().find(row => text(row).includes(name))), /Customers/);
 assert.doesNotMatch(text(rows()[0]), /Real Estate|Legal|Customers/);
+assert.equal(text(rows()[0].children[1]).trim(), '—');
 for (const [label, expected] of [['Real Estate', ['Alex Morgan']], ['Legal', ['Casey Reed']], ['Customers', ['Maya Patel', 'Jordan Ellis']]]) {
   tab(label).click();
   assertSelectedTab(label);
@@ -264,6 +265,31 @@ assertSelectedTab('All contacts');
 """, before="window.location.hash = '#contacts';")
 
 
+def test_contact_type_column_separates_categories_from_names_and_preserves_custom_labels():
+    run_crm(r"""
+const headings = contactRoot.all().filter(element => element.tagName === 'TH');
+assert.deepEqual(headings.map(element => text(element).trim()), ['Contact', 'Type', 'Phone number', 'Status', 'Calls', 'Last contact']);
+assert.equal(headings[1].scope, 'col');
+const typeLabels = row => row.children[1].all().filter(element => hasClass(element, 'crm-label')).map(element => text(element).trim());
+const byName = name => rows().find(row => text(row.children[0]).includes(name));
+assert.deepEqual(typeLabels(byName('Avery Chen')), ['Legal', 'VIP <team>']);
+assert.deepEqual(typeLabels(byName('Alex Morgan')), ['Real Estate']);
+assert.deepEqual(typeLabels(byName('Casey Reed')), ['Legal']);
+for (const name of ['Maya Patel', 'Jordan Ellis']) assert.deepEqual(typeLabels(byName(name)), ['Customers']);
+for (const row of rows()) {
+  assert.equal(row.children.length, headings.length);
+  assert.equal(hasClass(row.children[1], 'crm-type-column'), true);
+  assert.equal(row.children[0].all().some(element => hasClass(element, 'crm-label')), false, 'Do not duplicate types beside names');
+}
+tab('Legal').click();
+assert.deepEqual(names(), ['Avery Chen', 'Casey Reed']);
+search('Avery');
+assert.deepEqual(typeLabels(rows()[0]), ['Legal', 'VIP <team>']);
+assert.equal(rows()[0].all().some(element => element.tagName === 'TEAM'), false);
+assert.equal(writes, 0);
+""", before="window.location.hash = '#contacts'; storeContacts([{...CONTACT, labels: ['Legal', 'VIP <team>']}]);")
+
+
 def test_category_search_survives_call_refresh_and_profiles_keep_call_metrics():
     run_crm(r"""
 tab('Customers').click();
@@ -287,7 +313,7 @@ assert.equal(searchInput().value, 'Maya');
 assert.equal(document.activeElement, input);
 assert.equal(contactRoot.scrollTop, 240);
 assert.deepEqual(names(), ['Maya Patel']);
-assert.equal(text(rows()[0].children[3]).trim(), '2');
+assert.equal(text(rows()[0].children[4]).trim(), '2');
 assert.equal(hasMetrics(), false);
 window.location.hash = '#contacts/demo-maya-patel'; window.DashboardCRM.render();
 assert.equal(hasMetrics(), true);
@@ -370,6 +396,7 @@ dialogButton('Cancel').click();
 navigate('#contacts');
 tab('Legal').click();
 assert.deepEqual(names(), ['Avery Updated Lee', 'Casey Reed']);
+assert.deepEqual(rows()[0].children[1].all().filter(element => hasClass(element, 'crm-label')).map(text), ['Legal', 'Customers']);
 tab('Customers').click();
 assert.deepEqual(names(), ['Avery Updated Lee', 'Maya Patel', 'Jordan Ellis']);
 assert.equal(writes, 1);

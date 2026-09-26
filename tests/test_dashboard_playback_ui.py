@@ -759,16 +759,22 @@ def test_caller_metadata_and_saved_summary_render_safely_without_restarting_play
 const saved=recording(),call=session();call.segments[0].end_ms=3000;
 state.snapshot=snapshot([call,session(OTHER)],[saved,recording(OTHER)]);
 const details={call_sid:SID,caller_number:'+14155550111',started_at:'2026-09-26T13:00:00Z',ended_at:'2026-09-26T13:03:00Z',
- duration_seconds:180,summary:{text:'<img src=x onerror=alert(1)> A saved agent summary.',source:'agent',created_at:'2026-09-26T13:04:00Z'}};
+ duration_seconds:180,summary:{text:'<img src=x onerror=alert(1)> A saved agent summary.',source:'agent',created_at:'2026-09-26T13:04:00Z'},
+ brief_summary:{text:'<img src=x onerror=alert(1)> A separate short summary.',source:'gemini',created_at:'2026-09-26T13:04:00Z'}};
 state.snapshot.call_details={enabled:true,storage_error:'',calls:[details]};render();openCall();
 const button=$('call-list').children.find(row=>row.dataset.callSid===SID);
 assert.equal(button.children[0].textContent,'+14155550111');
-assert.equal(button.children[2].textContent,details.summary.text);
+assert.equal(button.children[2].textContent,details.brief_summary.text);
+assert.equal(button.children[2].title,details.brief_summary.text);assert.equal(button.children[2].children.length,0);
 assert.equal($('call-summary').textContent,details.summary.text);assert.equal($('call-summary').children.length,0);
 assert.equal($('call-summary').dataset.empty,'false');
 const audio=$('call-audio');audio.play();audio.currentTime=1.5;audio.events.timeupdate();
 const loads=audio.loads,pauses=audio.pauses;
 details.summary.text='An updated saved summary.';details.duration_seconds=181;render();
+assert.equal($('call-summary').textContent,'An updated saved summary.');
+assert.equal($('call-list').children.find(row=>row.dataset.callSid===SID).children[2].textContent,details.brief_summary.text);
+details.brief_summary.text='An independently updated short summary.';render();
+assert.equal($('call-list').children.find(row=>row.dataset.callSid===SID).children[2].textContent,details.brief_summary.text);
 assert.equal($('call-summary').textContent,'An updated saved summary.');
 assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.currentTime,1.5);
 assert.equal(state.transcriptRows[0].row.classList.contains('playing-line'),true);
@@ -1021,14 +1027,20 @@ assert.equal($('messages').children[0].children[1].children[1].textContent,'Othe
 def test_summary_retry_and_pending_statuses_are_visible_without_replacing_saved_text(tmp_path):
     run_browser_logic(tmp_path, r'''
 state.snapshot=snapshot([session()]);
-state.snapshot.call_details={calls:[{call_sid:SID,summary_status:'retrying',summary_retry_at:1790467200}]};
+state.snapshot.call_details={calls:[{call_sid:SID,summary_status:'retrying',summary_retry_at:1790467200,brief_summary_status:'retrying'}]};
 render();openCall();
 assert.equal($('call-summary').textContent,'Summary temporarily unavailable. Retrying automatically.');
 assert.equal($('call-list').children[0].children[2].textContent,'Summary retry scheduled.');
-state.snapshot.call_details.calls[0].summary_status='pending';render();
+state.snapshot.call_details.calls[0].summary_status='pending';state.snapshot.call_details.calls[0].brief_summary_status='pending';render();
 assert.equal($('call-summary').textContent,'Summarizing…');
 assert.equal($('call-list').children[0].children[2].textContent,'Summarizing…');
 state.snapshot.call_details.calls[0].summary={text:'A saved summary.'};render();
 assert.equal($('call-summary').textContent,'A saved summary.');
-assert.equal($('call-list').children[0].children[2].textContent,'A saved summary.');
+assert.equal($('call-list').children[0].children[2].textContent,'Summarizing…');
+state.snapshot.call_details.calls[0].brief_summary={text:'A distinct list summary.'};render();
+assert.equal($('call-list').children[0].children[2].textContent,'A distinct list summary.');
+assert.equal($('call-summary').textContent,'A saved summary.');
+delete state.snapshot.call_details.calls[0].brief_summary;delete state.snapshot.call_details.calls[0].brief_summary_status;render();
+assert.equal($('call-list').children[0].children[2].textContent,'No summary yet.');
+assert.equal($('call-summary').textContent,'A saved summary.');
 ''')

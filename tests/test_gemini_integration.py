@@ -22,10 +22,15 @@ DOCUMENT = {"call_sid": SID, "started_at": "2026-09-26T12:00:00+00:00",
 class Provider:
     def __init__(self):
         self.calls = 0
+        self.brief_calls = 0
         self.closed = False
 
     async def summarize(self, document):
         self.calls += 1
+        return "Caller requested a callback tomorrow."
+
+    async def summarize_brief(self, document):
+        self.brief_calls += 1
         return "Caller requested a callback tomorrow."
 
     async def close(self):
@@ -62,9 +67,15 @@ def test_lifespan_worker_saves_gemini_summary_and_keeps_key_private(tmp_path):
         assert config.gemini_api_key not in result.text
         assert client.get("/health").json()["summaries_enabled"] is True
         client.portal.call(app.state.summaries.run_once)
-        assert provider.calls == 1
+        assert provider.calls == provider.brief_calls == 1
+        paired = client.get("/api/transcripts").json()["call_details"]["calls"][0]
+        assert paired["brief_summary_status"] == "completed"
+        assert paired["brief_summary"]["source"] == "gemini"
+        client.portal.call(app.state.summaries.run_once)
+        assert provider.calls == provider.brief_calls == 1
     assert provider.closed
     assert CallDetailsStore(config.call_details_storage_dir).snapshot([DOCUMENT])["calls"][0]["summary"] == record["summary"]
+    assert CallDetailsStore(config.call_details_storage_dir).snapshot([DOCUMENT])["calls"][0]["brief_summary"] == paired["brief_summary"]
 
 
 def test_only_supervisor_owned_app_can_summarize_and_drain_stops_new_jobs(tmp_path):
@@ -131,6 +142,8 @@ def test_legacy_authored_summaries_remain_readable(tmp_path):
     path = tmp_path / (SID + ".json")
     old = json.loads(path.read_text())
     old.pop("summary_job")
+    old.pop("brief_summary")
+    old.pop("brief_summary_job")
     path.write_text(json.dumps(old))
     restored = CallDetailsStore(str(tmp_path))
     assert restored.summary_state(SID, DOCUMENT)["status"] == "completed"

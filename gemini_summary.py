@@ -10,7 +10,7 @@ import re
 
 import httpx
 
-from call_details import CONTROL, MAX_SUMMARY_CHARS, transcript_fingerprint
+from call_details import CONTROL, MAX_BRIEF_SUMMARY_CHARS, MAX_SUMMARY_CHARS, transcript_fingerprint
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 TOTAL_TIMEOUT_SECONDS = 30.0
@@ -18,10 +18,7 @@ MAX_REQUEST_BYTES = 1_048_576
 MAX_RESPONSE_BYTES = 65_536
 MODEL_ID = re.compile(r"[A-Za-z0-9._-]{1,80}\Z")
 
-SYSTEM_INSTRUCTION = """Summarize the supplied phone-call transcript in 2–3 concise
-plain-text sentences, preferably under 500 characters and always at most 2000
-characters. State the purpose, outcome, and any explicit next action with its
-correct owner. Attribute statements with these exact role labels: "Caller" and
+SUMMARY_SAFEGUARDS = """Attribute statements with these exact role labels: "Caller" and
 "New College DS". Do not use vague substitutes such as "participants" or "one
 participant". Do not invent something for a role that has no clear speech.
 
@@ -45,6 +42,16 @@ identities. Do not infer whether a voice is human, cloned, synthetic, or authent
 from text. Return only the summary, with no heading, Markdown, or analysis.
 """
 
+SYSTEM_INSTRUCTION = """Summarize the supplied phone-call transcript in 2–3 concise
+plain-text sentences, preferably under 500 characters and always at most 2000
+characters. State the purpose, outcome, and any explicit next action with its
+correct owner. """ + SUMMARY_SAFEGUARDS
+
+BRIEF_SYSTEM_INSTRUCTION = """Summarize the supplied phone-call transcript in ONE
+concise plain-text sentence of about 25 words, always at most 280 characters.
+Capture the main purpose and outcome or explicit next action with its correct
+owner. This is a brief overview for a call list. """ + SUMMARY_SAFEGUARDS
+
 
 class SummaryError(Exception):
     """Safe for status storage/logging: contains no provider response or secret."""
@@ -55,7 +62,7 @@ class SummaryError(Exception):
         super().__init__(code)
 
 
-def _request_body(document: dict) -> bytes:
+def _request_body(document: dict, *, instruction: str = SYSTEM_INSTRUCTION) -> bytes:
     if transcript_fingerprint(document) is None:
         raise SummaryError("invalid_transcript")
     status = document.get("status")
@@ -68,7 +75,7 @@ def _request_body(document: dict) -> bytes:
     rows.sort(key=lambda row: (row["start_ms"], row["end_ms"], row["track"], row["text"]))
     data = {"completion_status": status, "segments": rows}
     body = {
-        "systemInstruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
+        "systemInstruction": {"parts": [{"text": instruction}]},
         "contents": [{"role": "user", "parts": [{
             "text": json.dumps(data, ensure_ascii=False, separators=(",", ":")),
         }]}],
@@ -88,7 +95,7 @@ def _request_body(document: dict) -> bytes:
     return encoded
 
 
-def _response_text(raw: bytes) -> str:
+def _response_text(raw: bytes, *, max_chars: int = MAX_SUMMARY_CHARS) -> str:
     try:
         result = json.loads(raw)
     except (ValueError, UnicodeError, RecursionError):
@@ -137,7 +144,7 @@ def _response_text(raw: bytes) -> str:
     text = "".join(texts).strip()
     if not text:
         raise SummaryError("no_output")
-    if len(text) > MAX_SUMMARY_CHARS or CONTROL.search(text):
+    if len(text) > max_chars or CONTROL.search(text):
         raise SummaryError("invalid_output")
     try:
         text.encode("utf-8")
@@ -157,6 +164,15 @@ class GeminiSummarizer:
         self._closed = False
 
     async def summarize(self, document: dict) -> str:
+        return await self._summarize(document, instruction=SYSTEM_INSTRUCTION,
+                                     max_chars=MAX_SUMMARY_CHARS)
+
+    async def summarize_brief(self, document: dict) -> str:
+        """Generate a separate brief overview from the finalized transcript."""
+        return await self._summarize(document, instruction=BRIEF_SYSTEM_INSTRUCTION,
+                                     max_chars=MAX_BRIEF_SUMMARY_CHARS)
+
+    async def _summarize(self, document: dict, *, instruction: str, max_chars: int) -> str:
         if self._closed:
             raise SummaryError("closed")
         if not isinstance(self._api_key, str) or not self._api_key or self._api_key == "REPLACE_ME":
@@ -165,7 +181,7 @@ class GeminiSummarizer:
                 or len(self._api_key) > 512
                 or any(not 33 <= ord(char) <= 126 for char in self._api_key)):
             raise SummaryError("invalid_configuration")
-        body = _request_body(document)
+        body = _request_body(document, instruction=instruction)
         if self._client is None:
             self._client = httpx.AsyncClient(trust_env=False)
         try:
@@ -199,7 +215,7 @@ class GeminiSummarizer:
                         if len(raw) + len(chunk) > MAX_RESPONSE_BYTES:
                             raise SummaryError("response_too_large")
                         raw.extend(chunk)
-                    return _response_text(bytes(raw))
+                    return _response_text(bytes(raw), max_chars=max_chars)
         except (TimeoutError, httpx.TimeoutException):
             raise SummaryError("timeout", retryable=True) from None
         except httpx.RequestError:

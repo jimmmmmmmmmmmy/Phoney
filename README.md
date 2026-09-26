@@ -1,14 +1,20 @@
 ```sh
-python3 scripts/dev.py status
+python3 scripts/server.py status
 ```
 
 # Passive Operator — Build 0
 
 **Build 0:** call the configured Twilio number and hear **“New College Data Science Team”**. The call then ends. FastAPI serves the voice webhook through ngrok. Build 1 is a separate implementation: connect two humans in a conference, with no AI. Follow [the Build 1 plan](docs/BUILD_1.md) when Build 0 passes the phone test.
 
+Push changes to `main` in [fictional-rotary-phone](https://github.com/jimmmmmmmmmmmy/fictional-rotary-phone) to update the code running on the server Mac automatically. While idle, the server checks signed GitHub push events every second, with a 30-second polling fallback. Each revision must install, pass tests, and become healthy before it stays active. Read [the server guide](docs/SERVER.md) for setup, teammate access, status, and recovery.
+
+The server Mac needs to be running, connected to the internet, and logged in. Repository writers can cause code to run with that Mac user's local file and credential access; invite trusted teammates only. A public repository link does not grant push access.
+
 ## Start locally
 
 Allow about 5 minutes with Python, ngrok, and Twilio credentials ready.
+
+These commands are for manual development. Use [server mode](docs/SERVER.md) for automatic deployment; both modes use port `8000`, so run one mode at a time.
 
 1. Create the Python environment and install dependencies:
 

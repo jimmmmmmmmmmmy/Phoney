@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""Supervise deployments of this repository's main branch without editing the checkout."""
+import argparse
+from contextlib import contextmanager
+from datetime import datetime, timezone
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+from dotenv import dotenv_values
+
+try:
+    from . import dev
+except ImportError:
+    import dev
+
+ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY = "jimmmmmmmmmmmy/fictional-rotary-phone"
+REMOTE = "https://github.com/" + REPOSITORY + ".git"
+
+
+class DeploymentStopped(BaseException):
+    """Stop an in-progress build without treating shutdown as a bad commit."""
+
+
+def timestamp():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def validate_sha(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise ValueError("Expected a full lowercase Git commit SHA.")
+    return value
+
+
+def atomic_json(path, data):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        os.chmod(temporary, 0o600)
+        json.dump(data, handle, indent=2)
+    os.replace(temporary, path)
+
+
+@contextmanager
+def exclusive_lock(path):
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("A deployment supervisor is already running.") from None
+        yield
+    finally:
+        os.close(descriptor)
+
+
+class Supervisor:
+    def __init__(self, root=ROOT):
+        self.root = Path(root).resolve()
+        self.runtime = self.root / ".runtime"
+        self.directory = self.runtime / "deploy"
+        self.releases = self.directory / "releases"
+        self.mirror = self.directory / "repo.git"
+        self.state_path = self.directory / "state.json"
+        self.trigger = self.runtime / "deploy.trigger"
+        self.retry_path = self.directory / "retry"
+        for path in (self.runtime, self.directory, self.releases):
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(path, 0o700)
+        self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {}
+        self.stopping = False
+
+    def save(self, **changes):
+        self.state.update(changes)
+        atomic_json(self.state_path, self.state)
+
+    def environment(self, sha=None):
+        environment = dict(os.environ)
+        environment.update({key: value for key, value in dotenv_values(self.root / ".env").items()
+                            if value is not None})
+        repository = environment.get("DEPLOY_REPOSITORY", REPOSITORY)
+        if repository not in {REPOSITORY, REMOTE, REMOTE.removesuffix(".git")}:
+            raise RuntimeError("DEPLOY_REPOSITORY must identify " + REPOSITORY)
+        environment["DEPLOY_REPOSITORY"] = REPOSITORY
+        environment["DEPLOY_TRIGGER_PATH"] = str(self.trigger)
+        if sha:
+            environment["DEPLOY_COMMIT"] = validate_sha(sha)
+        return environment
+
+    def build_environment(self):
+        # Test/install subprocesses do not inherit the application's production secrets.
+        return {key: value for key, value in os.environ.items()
+                if key in {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "SSL_CERT_FILE"}}
+
+    def command(self, arguments, cwd=None, timeout=180):
+        log = self.directory / "build.log"
+        descriptor = os.open(log, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        with os.fdopen(descriptor, "ab") as output:
+            process = subprocess.Popen([str(item) for item in arguments], cwd=cwd or self.root,
+                                       env=self.build_environment(), stdin=subprocess.DEVNULL,
+                                       stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+            deadline = time.monotonic() + timeout
+            try:
+                while process.poll() is None:
+                    if self.stopping:
+                        raise DeploymentStopped()
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Deployment command timed out; inspect .runtime/deploy/build.log.")
+                    try:
+                        process.wait(timeout=min(1, max(0.01, deadline - time.monotonic())))
+                    except subprocess.TimeoutExpired:
+                        pass
+                result = process.returncode
+            except BaseException:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+                raise
+            if result:
+                raise RuntimeError("Deployment command failed; inspect .runtime/deploy/build.log.")
+
+    def fetch(self):
+        self.environment()  # Validate the configured repository before reaching the network.
+        if not self.mirror.exists():
+            self.command(["git", "init", "--bare", self.mirror])
+        self.command(["git", "--git-dir", self.mirror, "fetch", "--no-tags", REMOTE,
+                      "+refs/heads/main:refs/heads/main"], timeout=90)
+        result = subprocess.run(["git", "--git-dir", str(self.mirror), "rev-parse", "refs/heads/main"],
+                                check=True, capture_output=True, text=True, timeout=10,
+                                env=self.build_environment())
+        return validate_sha(result.stdout.strip())
+
+    def ensure_tunnel(self):
+        state = dev.read_state()
+        data = dev.request(dev.TUNNELS)
+        url = dev.public_url(data)
+        if not url:
+            if dev.owned(state.get("ngrok")):
+                raise RuntimeError("The recorded ngrok process has no healthy tunnel; retrying in 30 seconds.")
+            if data is not None or not dev.available(4040):
+                raise RuntimeError("Port 4040 has an unrelated listener; it was left running.")
+            executable = shutil.which("ngrok")
+            if not executable:
+                raise RuntimeError("ngrok is not installed or is not on PATH.")
+            process = dev.spawn("ngrok", [executable, "http", dev.BASE, "--log", "stdout",
+                                           "--log-format", "json"], state)
+            deadline = time.monotonic() + 25
+            while not url and process.poll() is None and time.monotonic() < deadline:
+                if self.stopping:
+                    raise DeploymentStopped()
+                time.sleep(0.3)
+                url = dev.public_url(dev.request(dev.TUNNELS))
+            if not url:
+                raise RuntimeError("ngrok did not provide a tunnel; inspect .runtime/ngrok.log.")
+        if self.environment().get("PUBLIC_BASE_URL") != url:
+            dev.persist_url(url)
+        state["public_url"] = url
+        dev.write_state(state)
+        return url
+
+    def configure_hooks(self, url):
+        if self.state.get("configured_public_url") == url:
+            return
+        python = self.root / ".venv/bin/python"
+        for script in ("configure_twilio.py", "configure_github.py"):
+            self.command([python, self.root / "scripts" / script, "--apply"], timeout=90)
+        self.save(configured_public_url=url)
+
+    def prepare(self, sha):
+        release = self.releases / validate_sha(sha)
+        if not release.exists():
+            self.command(["git", "clone", "--shared", "--no-checkout", self.mirror, release])
+            self.command(["git", "checkout", "--detach", sha], cwd=release)
+        if release.is_symlink():
+            raise RuntimeError("Release directory must not be a symlink.")
+        actual = subprocess.run(["git", "rev-parse", "HEAD"], cwd=release, check=True,
+                                capture_output=True, text=True, timeout=10).stdout.strip()
+        if actual != sha:
+            raise RuntimeError("Release checkout does not match its commit.")
+        python = release / ".venv/bin/python"
+        if not python.exists():
+            self.command([sys.executable, "-m", "venv", release / ".venv"])
+        requirements = release / "requirements-lock.txt"
+        if not requirements.exists():
+            requirements = release / "requirements-dev.txt"
+        self.command([python, "-m", "pip", "install", "--disable-pip-version-check", "-r", requirements],
+                     cwd=release, timeout=600)
+        self.command([python, "-m", "pytest", "-q", "tests"], cwd=release, timeout=180)
+        self.probe(release, sha)
+        return release
+
+    def spawn(self, release, sha, port):
+        log = self.runtime / ("app.log" if port == 8000 else "deploy/candidate.log")
+        descriptor = os.open(log, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        with os.fdopen(descriptor, "ab") as output:
+            process = subprocess.Popen([str(release / ".venv/bin/python"), "-m", "uvicorn", "main:app",
+                                        "--host", "127.0.0.1", "--port", str(port), "--no-access-log"],
+                                       cwd=release, env=self.environment(sha), stdin=subprocess.DEVNULL,
+                                       stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+        record = {"pid": process.pid, "identity": dev.identity(process.pid), "release": str(release),
+                  "commit": sha, "public_url": self.environment().get("PUBLIC_BASE_URL")}
+        return process, record
+
+    def healthy(self, sha, port=8000):
+        result = dev.request("http://127.0.0.1:" + str(port) + "/health")
+        return isinstance(result, dict) and result.get("status") == "ok" and result.get("commit") == sha
+
+    def wait_healthy(self, process, sha, port):
+        deadline = time.monotonic() + 20
+        while process.poll() is None and time.monotonic() < deadline:
+            if port == 8001 and self.stopping:
+                raise DeploymentStopped()
+            if self.healthy(sha, port):
+                return
+            time.sleep(0.25)
+        raise RuntimeError("Release did not become healthy; inspect .runtime/app.log or deploy/candidate.log.")
+
+    def probe(self, release, sha):
+        if not dev.available(8001):
+            raise RuntimeError("Candidate port 8001 is in use; the active app was left running.")
+        process, record = self.spawn(release, sha, 8001)
+        self.save(candidate_process=record)
+        try:
+            self.wait_healthy(process, sha, 8001)
+        finally:
+            dev.terminate(record)
+            process.wait(timeout=2)
+            self.save(candidate_process=None)
+
+    def launch(self, release, sha, state):
+        if not dev.available(8000):
+            raise RuntimeError("Port 8000 is occupied; no untracked process was stopped.")
+        process, record = self.spawn(release, sha, 8000)
+        state["app"] = record
+        dev.write_state(state)  # Record ownership before waiting so a crash remains recoverable.
+        try:
+            self.wait_healthy(process, sha, 8000)
+        except BaseException:
+            dev.terminate(record)
+            process.wait(timeout=2)
+            raise
+
+    def activate(self, release, sha):
+        state = dev.read_state()
+        previous = self.state.get("active_commit")
+        previous_record = state.get("app")
+        if not dev.owned(previous_record) and not dev.available(8000):
+            raise RuntimeError("Port 8000 belongs to an untracked process; deployment was not activated.")
+        dev.terminate(previous_record)
+        try:
+            self.launch(release, sha, state)
+        except Exception:
+            if previous:
+                self.launch(self.releases / validate_sha(previous), previous, state)
+            elif previous_record and not previous_record.get("commit"):
+                # First deployment may be adopting the original dev.py checkout.
+                python = self.root / ".venv/bin/python"
+                if python.exists():
+                    dev.spawn("app", [str(python), "-m", "uvicorn", "main:app", "--host", "127.0.0.1",
+                                      "--port", "8000", "--no-access-log"], state)
+            raise
+        self.save(active_commit=sha, active_release=str(release), status="running", failed_commit=None,
+                  deployed_at=timestamp(), last_error=None, candidate_commit=None)
+
+    def recover(self):
+        sha = self.state.get("active_commit")
+        if not sha:
+            return
+        state = dev.read_state()
+        if (dev.owned(state.get("app")) and self.healthy(sha)
+                and state["app"].get("public_url") == self.environment().get("PUBLIC_BASE_URL")):
+            return
+        dev.terminate(state.get("app"))
+        self.launch(self.releases / validate_sha(sha), sha, state)
+        self.save(status="running", recovered_at=timestamp())
+
+    def check(self):
+        self.save(checked_at=timestamp())
+        if self.retry_path.exists():
+            self.retry_path.unlink()
+            self.save(failed_commit=None)
+        sha = None
+        try:
+            url = self.ensure_tunnel()
+            self.recover()
+            self.configure_hooks(url)
+            sha = self.fetch()
+            self.save(remote_commit=sha)
+            if sha == self.state.get("active_commit"):
+                self.save(status="running", last_error=None)
+                return
+            if sha == self.state.get("failed_commit"):
+                return
+            self.save(status="preparing", candidate_commit=sha)
+            release = self.prepare(sha)
+            if self.stopping:
+                raise DeploymentStopped()
+            self.activate(release, sha)
+            print("Deployed " + sha, flush=True)
+        except Exception as error:
+            changes = {"status": "error", "last_error": str(error), "failed_at": timestamp()}
+            if sha:
+                changes["failed_commit"] = sha
+            self.save(**changes)
+            print("Deployment error: " + str(error), flush=True)
+
+    def run(self):
+        with exclusive_lock(self.directory / "supervisor.lock"):
+            def stop(signum, frame):
+                self.stopping = True
+            signal.signal(signal.SIGTERM, stop)
+            signal.signal(signal.SIGINT, stop)
+            self.save(supervisor_pid=os.getpid())
+            dev.terminate(self.state.get("candidate_process"))
+            self.save(candidate_process=None)
+            next_check, last_signal = 0, None
+            try:
+                while not self.stopping:
+                    marker = self.trigger.stat().st_mtime_ns if self.trigger.exists() else None
+                    if time.monotonic() >= next_check or marker != last_signal or self.retry_path.exists():
+                        # A signal arriving during this check remains visible next iteration.
+                        last_signal = marker
+                        self.check()
+                        next_check = time.monotonic() + 30
+                    time.sleep(1)
+            except DeploymentStopped:
+                pass
+            finally:
+                dev.terminate(self.state.get("candidate_process"))
+                self.save(supervisor_pid=None, candidate_process=None)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=("run", "status", "retry"))
+    args = parser.parse_args()
+    supervisor = Supervisor()
+    if args.command == "run":
+        supervisor.run()
+    elif args.command == "retry":
+        supervisor.retry_path.touch(mode=0o600)
+        print("Retry requested; the running supervisor will check within one second.")
+    else:
+        print(json.dumps(supervisor.state, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, RuntimeError) as error:
+        print("Error: " + str(error), file=sys.stderr)
+        sys.exit(1)

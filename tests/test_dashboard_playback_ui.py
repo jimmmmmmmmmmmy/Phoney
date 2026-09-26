@@ -1,6 +1,7 @@
 """Browser-side recording controls, using a DOM/audio fake with no network or playback."""
 
 from html.parser import HTMLParser
+import json
 from pathlib import Path
 import re
 import shutil
@@ -18,6 +19,7 @@ class AudioMarkup(HTMLParser):
         self.players = []
         self.ids = []
         self.details = {}
+        self.attributes = {}
 
     def handle_starttag(self, tag, attributes):
         attributes = dict(attributes)
@@ -25,6 +27,7 @@ class AudioMarkup(HTMLParser):
             self.players.append(attributes)
         if "id" in attributes:
             self.ids.append(attributes["id"])
+            self.attributes[attributes["id"]] = attributes
         if tag == "details":
             self.details[attributes["id"]] = attributes
 
@@ -38,9 +41,29 @@ def test_one_native_player_is_accessible_and_never_autoplays_or_preloads_audio()
     assert "controls" in player and "autoplay" not in player and "src" not in player
     assert player["aria-label"] and player["aria-describedby"] == "audio-status"
     assert len(parsed.ids) == len(set(parsed.ids))
-    assert {"audio-track", "audio-download", "audio-status", "recording-warning"} <= set(parsed.ids)
+    assert {"audio-panel", "audio-download", "audio-status", "recording-warning"} <= set(parsed.ids)
+    assert not {"audio-track", "audio-option-combined", "audio-option-inbound", "audio-option-outbound",
+                "session-badge", "session-detail", "audio-heading"} & set(parsed.ids)
+    assert parsed.ids.index("transcript-title") < parsed.ids.index("summary-panel") < parsed.ids.index("transcript")
+    assert parsed.attributes["audio-download"]["aria-label"] == "Download WAV"
     assert "open" in parsed.details["recent-calls"]
     assert "open" not in parsed.details["voicemail-section"]
+
+
+def test_playback_dock_stays_outside_scrolling_content_with_mobile_safe_area_space():
+    html = HTML.read_text()
+    css = re.search(r"<style>(.*?)</style>", html, re.S).group(1)
+    dock = re.search(r"\.audio-panel\s*\{([^}]+)\}", css).group(1)
+    assert re.search(r"position\s*:\s*fixed(?:;|$)", dock)
+    assert re.search(r"inset\s*:\s*auto\s+0\s+0(?:;|$)", dock)
+    assert "safe-area-inset-bottom" in dock
+    assert html.index("</main>") < html.index('id="audio-panel"')
+    # Reserve space below the page at desktop and mobile widths so fixed audio
+    # controls do not cover the final transcript/sidebar content.
+    main_rules = re.findall(r"(?<![\w-])main\s*\{([^}]+)\}", css)
+    assert sum("safe-area-inset-bottom" in rule for rule in main_rules) >= 2
+    assert re.search(r"@media\s*\(max-width:\s*\d+px\)\s*\{\s*\.audio-panel\s*\{"
+                     r"[^}]*safe-area-inset-bottom", css)
 
 
 HARNESS = r'''
@@ -62,7 +85,7 @@ class Element {
  load() {this.loads++;this.currentTime=0;this.paused=true;this.ended=false;}
  play() {this.plays++;this.paused=false;this.events.play?.();}
 }
-const document = {activeElement:null,getElementById(id) {if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},
+const document = {activeElement:null,getElementById(id) {assert.ok(markupIds.has(id),'Markup is missing #'+id);if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},
  createElement(tag) {return new Element(tag);},createDocumentFragment() {return new Element('fragment');}};
 const window = {addEventListener(name,fn) {handlers.set(name,fn);}};
 function setTimeout() {return 1;}
@@ -86,12 +109,14 @@ def run_browser_logic(tmp_path, assertions):
     if node is None:
         pytest.skip("Node.js is needed for the DOM/audio regression check")
     html = HTML.read_text()
+    parsed = AudioMarkup()
+    parsed.feed(html)
     script = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
     assert script.rstrip().endswith("poll();")
     # Keep the actual UI code and event handlers; suppress only its initial network poll.
     script = script.rsplit("    poll();", 1)[0]
     path = tmp_path / "playback-check.js"
-    path.write_text(HARNESS + script + "\n" + assertions)
+    path.write_text("const markupIds = new Set(" + json.dumps(parsed.ids) + ");\n" + HARNESS + script + "\n" + assertions)
     result = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
 
@@ -126,7 +151,7 @@ assert.equal($('connection').attributes['aria-label'],'Connected');
 ''')
 
 
-def test_polling_preserves_playback_until_call_or_direction_changes(tmp_path):
+def test_polling_preserves_combined_playback_until_selected_call_changes(tmp_path):
     run_browser_logic(tmp_path, r'''
 state.snapshot=snapshot([session()],[recording()]);render();
 const audio=$('call-audio');
@@ -136,17 +161,15 @@ audio.play();audio.currentTime=17;
 assert.equal(state.playbackPinned,SID);
 for(let i=0;i<5;i++){state.snapshot.sessions[0].segments[0].text='update '+i;render();}
 assert.equal($('call-audio'),audio);assert.equal(audio.loads,1);assert.equal(audio.pauses,1);
-assert.equal(audio.currentTime,17);assert.equal(audio.paused,false);assert.ok($('audio-status').textContent.startsWith('Playing'));
+assert.equal(audio.currentTime,17);assert.equal(audio.paused,false);assert.equal($('audio-status').hidden,true);
+assert.equal($('audio-status').textContent,'');
 state.snapshot.sessions.unshift({...session(OTHER),started_at:'2026-09-26T13:00:00Z',ended_at:null,status:'live'});
 state.snapshot.recordings.recordings.push(recording(OTHER));render();
 assert.equal(state.selected,SID);assert.equal(audio.loads,1);
 state.selected=OTHER;render();
 assert.equal(audio.src,`/api/recordings/${OTHER}/audio?track=combined`);assert.equal(audio.loads,2);assert.equal(audio.paused,true);
-$('audio-track').value='inbound';$('audio-track').events.change();
-assert.equal(audio.src,`/api/recordings/${OTHER}/audio?track=inbound`);assert.equal(audio.loads,3);
-render();assert.equal(audio.loads,3);assert.equal(audio.plays,1);
-$('audio-track').value='__proto__';$('audio-track').events.change();assert.equal(audio.loads,3);
-assert.equal($('audio-download').href,audio.src);assert.equal($('audio-download').download,`${OTHER}-inbound.wav`);
+render();assert.equal(audio.loads,2);assert.equal(audio.plays,1);
+assert.equal($('audio-download').href,audio.src);assert.equal($('audio-download').download,`${OTHER}-combined.wav`);
 ''')
 
 
@@ -156,30 +179,36 @@ const entry=recording();entry.url='https://attacker.invalid/collect';entry.track
 state.snapshot=snapshot([],[entry]);state.snapshot.enabled=false;render();
 assert.equal(state.selected,SID);assert.equal($('call-list').children.length,1);
 assert.equal($('call-list').children.length,1);assert.equal($('sidebar-empty').hidden,true);
-assert.equal($('transcript-title').textContent,'Call recording');assert.equal($('empty-title').textContent,'No transcript for this recording.');
+assert.equal($('transcript-title').textContent,'Call transcript');assert.equal($('empty-title').textContent,'No transcript for this recording.');
 assert.equal($('export-json').attributes['aria-disabled'],'true');assert.ok(!$('export-json').href);
 assert.equal($('call-audio').src,`/api/recordings/${SID}/audio?track=combined`);
 assert.equal($('audio-download').href,$('call-audio').src);
-$('audio-track').value='inbound';$('audio-track').events.change();
-assert.equal($('call-audio').src,`/api/recordings/${SID}/audio?track=inbound`);
 state.snapshot.recordings.recordings=[{...entry,call_sid:'../secret'}];render();
 assert.equal(state.selected,null);assert.equal($('call-audio').src,'');assert.equal($('call-audio').hidden,true);
 assert.equal($('audio-download').attributes['aria-disabled'],'true');assert.ok(!$('audio-download').href);
 ''')
 
 
-def test_finalization_missing_tracks_and_playback_errors_remain_clear(tmp_path):
+def test_combined_audio_availability_and_playback_errors_remain_clear(tmp_path):
     run_browser_logic(tmp_path, r'''
+state.snapshot=snapshot();render();assert.equal($('audio-panel').hidden,true);
 state.snapshot=snapshot([{...session(),ended_at:null,status:'live'}]);render();
-assert.equal($('call-audio').hidden,true);assert.ok($('audio-status').textContent.includes('not finalized'));
+assert.equal($('audio-panel').hidden,false);assert.equal($('call-audio').hidden,true);
+assert.ok($('audio-status').textContent.includes('not finalized'));assert.equal($('audio-status').hidden,false);
 const entry=recording();entry.status='partial';entry.url=null;entry.tracks.outbound.url=null;
 state.snapshot.recordings.recordings=[entry];render();
-assert.equal($('audio-track').value,'inbound');assert.equal($('audio-option-combined').disabled,true);
-assert.equal($('audio-option-outbound').disabled,true);assert.equal($('audio-option-inbound').disabled,false);
-assert.ok($('audio-status').textContent.includes('Partial recording'));
+// The remaining individual track must not silently become the conversation player.
+assert.equal($('call-audio').hidden,true);assert.equal($('call-audio').src,'');
+assert.equal($('audio-download').attributes['aria-disabled'],'true');
+entry.url=`/api/recordings/${SID}/audio?track=combined`;render();
+assert.equal($('call-audio').src,entry.url);assert.equal($('call-audio').hidden,false);
+assert.equal($('audio-status').hidden,false);assert.ok($('audio-status').textContent.includes('incomplete'));
+entry.status='completed';render();
+$('call-audio').events.canplay();assert.equal($('audio-status').hidden,true);assert.equal($('audio-status').textContent,'');
 const loads=$('call-audio').loads;$('call-audio').events.error();render();
 assert.ok($('audio-status').textContent.includes('could not be loaded'));assert.equal($('call-audio').loads,loads);
-entry.tracks.inbound.url=null;entry.status='failed';render();
+assert.equal($('audio-status').hidden,false);
+entry.url=null;entry.tracks.inbound.url=null;entry.status='failed';render();
 assert.equal($('call-audio').hidden,true);assert.ok($('audio-status').textContent.includes('could not be finalized'));
 state.snapshot.recordings.storage_error='/private/path';render();
 assert.equal($('recording-warning').hidden,false);assert.ok(!$('recording-warning').textContent.includes('/private/path'));
@@ -188,7 +217,7 @@ assert.ok(voicemailDescriptions.processing.includes('has not been confirmed'));
 ''')
 
 
-def test_line_highlights_follow_overlaps_seek_direction_and_each_track_duration(tmp_path):
+def test_combined_line_highlights_follow_overlap_seek_and_each_track_duration(tmp_path):
     run_browser_logic(tmp_path, r'''
 const call=session();call.tracks={inbound:{interim:'Unfinished text'}};
 call.segments=[
@@ -208,10 +237,8 @@ audio.currentTime=2.5;audio.events.seeked();assert.deepEqual(highlighted(),['inp
 audio.currentTime=3;audio.events.timeupdate();assert.deepEqual(highlighted(),[]); // End time is exclusive.
 audio.currentTime=4.5;audio.events.timeupdate();assert.deepEqual(highlighted(),['later']);
 audio.currentTime=5;audio.events.timeupdate();assert.deepEqual(highlighted(),[]); // No highlight beyond the saved audio.
-$('audio-track').value='outbound';$('audio-track').events.change();assert.deepEqual(highlighted(),[]);
-audio.currentTime=1.5;audio.events.seeking();assert.deepEqual(highlighted(),['playback']);
-audio.paused=true;audio.events.pause();assert.deepEqual(highlighted(),['playback']);
-$('audio-track').value='combined';$('audio-track').events.change();assert.deepEqual(highlighted(),[]);
+audio.currentTime=1.5;audio.events.seeking();assert.deepEqual(highlighted(),['input','playback']);
+audio.paused=true;audio.events.pause();assert.deepEqual(highlighted(),['input','playback']);
 audio.play();audio.currentTime=1.5;audio.events.timeupdate();assert.deepEqual(highlighted(),['input','playback']);
 audio.ended=true;audio.events.ended();assert.deepEqual(highlighted(),[]);render();assert.deepEqual(highlighted(),[]);
 audio.ended=false;audio.currentTime=1.5;audio.events.seeked();assert.deepEqual(highlighted(),['input','playback']);
@@ -281,7 +308,6 @@ render();assert.equal($('voicemail-section').open,false);assert.equal($('voicema
 const visible=node=>node.textContent+' '+node.children.map(visible).join(' ');
 assert.ok(!visible($('call-list')).includes(SID.slice(-12)));
 assert.ok(!visible($('voicemail-list')).includes(SID.slice(-12)));
-assert.ok(!$('session-detail').textContent.includes(SID));
 ''')
 
 
@@ -334,5 +360,5 @@ assert.equal(state.selected,SID);assert.equal($('call-list').children.length,1);
 assert.equal($('call-list').children[0].children[0].textContent,'+14155550222');
 assert.equal($('call-summary').textContent,'Saved summary without live transcription.');
 assert.equal($('export-json').attributes['aria-disabled'],'true');assert.equal($('call-audio').hidden,true);
-assert.equal(trackNames.outbound,'New College');assert.equal(audioTracks.outbound,'New College');
+assert.equal(trackNames.outbound,'New College');
 ''')

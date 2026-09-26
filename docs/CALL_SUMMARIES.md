@@ -1,8 +1,8 @@
 # Caller details and saved summaries
 
-Run `.venv/bin/python scripts/open_dashboard.py`, select a call, and read its caller number, time, duration, and saved summary below the recording.
+Run `.venv/bin/python scripts/open_dashboard.py`, select a call, and read its caller number, time, duration, and saved summary directly under **Call transcript**. The audio player stays in the bottom dock.
 
-Gemini automatically summarizes ended calls when configured. Locally authored summaries remain supported and are preserved when they match the transcript. **Caller details and summaries are public to anyone with the ngrok URL**, alongside the transcript and finalized recorded audio. Twilio and deployment mutation routes keep their existing authentication.
+Gemini automatically summarizes ended calls when configured. Locally authored summaries remain supported and are preserved when they match the transcript. **Caller details and summaries are public to anyone with the public URL**, alongside the transcript and finalized recorded audio. Twilio and deployment mutation routes keep their existing authentication.
 
 ## Configure persistent call details
 
@@ -34,7 +34,7 @@ Requests run serially. The Gemini HTTP operation has a 30-second total deadline.
 
 After restart, the worker catches up on eligible calls in the transcript manager's bounded recent history: up to ten restored transcripts. It does not scan the entire archive. A changed transcript is a new fingerprint; old summaries remain hidden and a new attempt can qualify. Summary failure leaves the call, recording, and Deepgram transcript usable. The dashboard shows a small pending or failed state; there is no public endpoint to generate, edit, or retry a summary.
 
-The result is limited to 2,000 characters and contains no voice synthesis or deepfake decision. Gemini and ElevenLabs dialogue/takeover adapters remain future work in [VOICE_STACK.md](VOICE_STACK.md). The real Gemini API check returned **HTTP 402: prepayment credits depleted**, so successful generation is not yet verified. The existing authored summaries are not Gemini-generated examples. Real-phone end-to-end acceptance also remains pending.
+The result is limited to 2,000 characters and contains no voice synthesis or deepfake decision. Gemini and ElevenLabs dialogue/takeover adapters remain future work in [VOICE_STACK.md](VOICE_STACK.md). The latest retry on September 26 again returned **HTTP 402**, stored as `billing_required`; the provider still reports a billing failure. The installed service uses the current configured key; successful generation is still blocked and unverified. The existing authored summaries are not Gemini-generated examples. Real-phone end-to-end acceptance also remains pending.
 
 ## Retry after repairing billing or configuration
 
@@ -74,7 +74,7 @@ The helper looks up Twilio metadata only for call SIDs present in the bounded lo
      summarize CA00000000000000000000000000000000 --text-file /absolute/private/path/to/summary.txt
    ```
 
-4. Open the selected call in the dashboard. Its summary appears below the recording while the saved summary still matches the finalized transcript. The running store refreshes external file updates every two seconds; the next dashboard poll then displays the change.
+4. Open the selected call in the dashboard. Its summary appears directly under **Call transcript** while the saved summary still matches the finalized transcript. The running store refreshes external file updates every two seconds; the next dashboard poll then displays the change.
 
 The helper loads the ended call with finalized text and saves its transcript fingerprint with the summary. Ended `partial` or `failed` transcripts with finalized segments are eligible; the author must account for missing coverage rather than describe an incomplete record as complete. A missing, unfinished, empty, or changed transcript does not expose a stale summary. `source: "agent"` identifies this authored-summary workflow; it does not mean Gemini generated the text. This helper works without a Gemini key and makes no Gemini request. The public API has no mutation endpoint for summaries.
 

@@ -15,7 +15,7 @@
     .brand{display:flex;align-items:center;gap:13px}.brand-mark{width:44px;height:44px;border-radius:13px;background:var(--ink);color:#fff;display:grid;place-items:center;font-size:15px;font-weight:800;letter-spacing:-1px}
     .brand-name{font-size:14px;font-weight:730;letter-spacing:-.2px}.brand-sub{font-size:11px;color:var(--muted);letter-spacing:1.6px;text-transform:uppercase;margin-top:2px}
 
-    main{max-width:1450px;margin:0 auto;padding:30px 5vw 32px}h1,h2,p{margin:0}
+    main{max-width:1450px;margin:0 auto;padding:30px 5vw calc(126px + env(safe-area-inset-bottom))}h1,h2,p{margin:0}
 
     .banner{padding:12px 16px;border-radius:11px;background:#fff4df;color:#74541a;font-size:13px;margin-bottom:18px;border:1px solid #e9d8b1}.banner[data-tone="bad"]{background:var(--red-light);color:var(--red);border-color:#f1d2cc}
     .desk{display:grid;grid-template-columns:245px minmax(0,1fr);gap:22px;align-items:start}.sidebar{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:19px 13px;max-height:calc(100vh - 230px);overflow:auto}
@@ -25,20 +25,21 @@
     .sidebar-empty{font-size:12px;color:var(--muted);padding:8px 9px 4px;line-height:1.8}.voicemail-note{color:var(--muted);font-size:11px;line-height:1.7;margin-top:11px}
     .transcript-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}.card-heading{padding:23px 26px 19px;border-bottom:1px solid var(--line)}
     .card-row{display:flex;align-items:center;justify-content:space-between;gap:16px}.card-title{display:flex;align-items:center;gap:11px;flex-wrap:wrap}.card-title h2{font-size:19px;font-weight:720;letter-spacing:-.5px}.badge{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:750;color:var(--teal);background:var(--teal-light);border-radius:20px;padding:5px 9px;text-transform:uppercase;letter-spacing:.4px}.badge[data-tone="bad"]{color:var(--red);background:var(--red-light)}.badge[data-tone="neutral"]{color:var(--muted);background:#edf2ef}
-    .session-detail{font-size:11px;color:var(--muted);margin-top:7px;overflow-wrap:anywhere}.exports{display:flex;gap:5px;flex:0 0 auto}.export{font-size:10px;border:1px solid var(--line);border-radius:7px;padding:6px 8px;color:var(--muted);text-decoration:none;font-weight:700}.export:hover{color:var(--teal);background:#f0f7f3}.export[aria-disabled="true"]{pointer-events:none;opacity:.4}
-    .audio-panel{margin:18px 26px 0;padding:17px 18px;background:#f2f8f5;border:1px solid #d7e7df;border-radius:13px}.audio-heading{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap}.audio-heading h2{font-size:13px;font-weight:750}.audio-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.audio-actions select{max-width:100%;padding:6px 28px 6px 9px;border:1px solid #cdded4;border-radius:7px;color:var(--ink);background:white;font-size:11px}.audio-actions select:disabled{color:var(--muted)}.audio-panel audio{display:block;width:100%;height:42px;margin-top:13px}.audio-status{font-size:12px;color:var(--ink);margin-top:11px}.audio-status[data-tone="bad"]{color:var(--red)}.audio-download{background:white;white-space:nowrap}
+    .exports{display:flex;gap:5px;flex:0 0 auto}.export{font-size:10px;border:1px solid var(--line);border-radius:7px;padding:6px 8px;color:var(--muted);text-decoration:none;font-weight:700}.export:hover{color:var(--teal);background:#f0f7f3}.export[aria-disabled="true"]{pointer-events:none;opacity:.4}
+    .audio-panel{position:fixed;inset:auto 0 0;z-index:20;background:#ffffffed;border-top:1px solid var(--line);box-shadow:0 -8px 28px #153c340a;padding:16px 5vw calc(16px + env(safe-area-inset-bottom));backdrop-filter:blur(16px)}.audio-inner{max-width:1040px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) 44px;gap:16px;align-items:center}.audio-panel audio{display:block;width:100%;min-width:0;height:44px}.audio-download{display:grid;place-items:center;width:44px;height:44px;color:var(--muted);border:1px solid var(--line);border-radius:50%;text-decoration:none}.audio-download:hover{color:var(--teal);background:var(--teal-light)}.audio-download svg{width:19px;height:19px}.audio-status{max-width:1040px;margin:0 auto;font-size:12px;color:var(--muted)}.audio-status:not([hidden]){padding:8px 0}.audio-status[data-tone="bad"]{color:var(--red)}
+
     .track-error{margin-top:7px;font-size:11px;color:var(--red);overflow-wrap:anywhere}
     .transcript-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:21px 26px 12px;color:var(--muted);font-size:10px}.live-label{display:flex;align-items:center;gap:6px;letter-spacing:1px;text-transform:uppercase;font-weight:700}
     .transcript{height:clamp(340px,49vh,680px);overflow:auto;padding:3px 26px 23px;scroll-behavior:smooth;scrollbar-width:thin;scrollbar-color:#c7d8cf transparent}.messages{display:flex;flex-direction:column;gap:20px}.message{display:grid;grid-template-columns:44px minmax(0,1fr);gap:12px}.timestamp{font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#8d9c95;padding-top:3px;font-variant-numeric:tabular-nums}.message-meta{display:flex;align-items:center;gap:8px;margin-bottom:5px}.speaker{font-size:10px;color:var(--teal);font-weight:800;letter-spacing:.1px}.message[data-track="outbound"] .speaker{color:#596a91}.confidence{font-size:9px;color:#94a29c}.message-text{font-size:15px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;max-width:760px}.interim .message-text{color:#89968f}.interim .speaker{color:#81968c}.interim-label{font-size:9px;background:#f0f4f1;color:#84918a;padding:2px 5px;border-radius:4px}
     .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:100%;min-height:260px;padding:20px}.empty-icon{display:grid;place-items:center;width:55px;height:55px;border-radius:17px;background:#e9f3ee;color:var(--teal);margin-bottom:17px}.empty h2{font-size:17px;font-weight:650;letter-spacing:-.4px;margin-bottom:8px}.empty p{font-size:12px;color:var(--muted);max-width:305px;line-height:1.8}.empty svg{width:25px;height:25px}.page-foot{display:flex;justify-content:space-between;gap:15px;color:#81948a;font-size:10px;padding:21px 2px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
     @media(min-width:1450px){main{padding-left:55px;padding-right:55px}.topbar{padding-left:calc((100vw - 1340px)/2);padding-right:calc((100vw - 1340px)/2)}}
     @media(max-width:850px){.desk{grid-template-columns:195px minmax(0,1fr);gap:15px}.card-heading{padding-left:19px;padding-right:19px}.transcript,.transcript-toolbar{padding-left:19px;padding-right:19px}.card-row{align-items:start}}
-    @media(max-width:650px){.topbar{height:77px;padding:0 20px}.brand-name{font-size:11px}.brand-sub{font-size:9px;letter-spacing:1px}.brand-mark{width:36px;height:36px;border-radius:11px}main{padding:29px 20px 20px}.desk{display:block}.sidebar{max-height:none;padding:14px;margin-bottom:15px}.call-list{flex-direction:row;overflow:auto;max-height:110px;padding-bottom:3px}.call-option{width:165px;flex:0 0 165px}.sidebar-empty{padding:0 6px 4px}.transcript{height:51vh;min-height:320px}.message{grid-template-columns:37px minmax(0,1fr);gap:8px}.message-text{font-size:14px}.card-heading{padding-top:18px;padding-bottom:15px}.card-title h2{font-size:17px}.badge{font-size:8px;padding:4px 7px}.page-foot{flex-wrap:wrap;font-size:9px}.exports{gap:4px}.export{padding:5px 6px}.session-detail{font-size:10px}}
+    @media(max-width:650px){.topbar{height:77px;padding:0 20px}.brand-name{font-size:11px}.brand-sub{font-size:9px;letter-spacing:1px}.brand-mark{width:36px;height:36px;border-radius:11px}main{padding:29px 20px calc(126px + env(safe-area-inset-bottom))}.desk{display:block}.sidebar{max-height:none;padding:14px;margin-bottom:15px}.call-list{flex-direction:row;overflow:auto;max-height:110px;padding-bottom:3px}.call-option{width:165px;flex:0 0 165px}.sidebar-empty{padding:0 6px 4px}.transcript{height:51vh;min-height:320px}.message{grid-template-columns:37px minmax(0,1fr);gap:8px}.message-text{font-size:14px}.card-heading{padding-top:18px;padding-bottom:15px}.card-title h2{font-size:17px}.badge{font-size:8px;padding:4px 7px}.page-foot{flex-wrap:wrap;font-size:9px}.exports{gap:4px}.export{padding:5px 6px}}
     @media(prefers-reduced-motion:reduce){.transcript{scroll-behavior:auto}}
     .message{border-radius:10px;padding:8px 10px;margin:0 -10px;border-left:3px solid transparent}.message.playing-line{background:#e3f3e9;border-left-color:var(--teal)}.message.playing-line .message-text{color:var(--ink)}.message[data-track="outbound"].playing-line{background:#ecf0fa;border-left-color:#677bad}
-    @media(max-width:850px){.audio-panel{margin-left:19px;margin-right:19px}}@media(max-width:650px){.audio-panel{padding:13px;margin-top:14px}.audio-heading{gap:10px}.audio-actions{gap:7px}.audio-status{font-size:11px}}
-    .summary-panel{margin:18px 26px 0;padding:0 0 17px;border-bottom:1px solid var(--line)}.summary-panel h2{font-size:13px;font-weight:750;margin-bottom:8px}.summary-text{font-size:13px;line-height:1.8;color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere}.summary-text[data-empty="true"]{color:var(--muted)}
-    @media(max-width:850px){.summary-panel{margin-left:19px;margin-right:19px}}
+    @media(max-width:650px){.audio-panel{padding:12px 16px calc(12px + env(safe-area-inset-bottom))}.audio-inner{gap:10px}.audio-status{font-size:11px}}
+    .summary-panel{margin-top:16px}.summary-text{font-size:13px;line-height:1.8;color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;max-width:800px}.summary-text[data-empty="true"]{color:var(--muted)}
+
   </style>
 </head>
 <body>
@@ -56,13 +57,11 @@
       <div class="desk">
         <aside class="sidebar" aria-label="Call selection"><details id="recent-calls" class="sidebar-group" open><summary class="section-summary">Recent calls</summary><div id="call-list" class="call-list"></div><p id="sidebar-empty" class="sidebar-empty">No calls yet.</p></details><details id="voicemail-section" class="sidebar-group voicemail-group"><summary class="section-summary">Voicemail</summary><div id="voicemail-list" class="call-list"></div></details></aside>
         <section class="transcript-card" aria-labelledby="transcript-title">
-          <div class="card-heading"><div class="card-row"><div><div class="card-title"><h2 id="transcript-title">Waiting for a call</h2><span id="session-badge" class="badge" data-tone="neutral">Ready</span><span id="voicemail-badge" class="badge" data-tone="neutral" hidden></span></div><p id="session-detail" class="session-detail">Transcripts will appear as people speak.</p></div><div class="exports" aria-label="Export selected call"><a id="export-txt" class="export" aria-disabled="true" tabindex="-1">TXT <span aria-hidden="true">↓</span></a><a id="export-json" class="export" aria-disabled="true" tabindex="-1">JSON <span aria-hidden="true">↓</span></a></div></div><p id="voicemail-detail" class="voicemail-note" hidden></p><p id="session-storage-warning" class="track-error" role="status" hidden></p></div>
-          <section id="audio-panel" class="audio-panel" aria-labelledby="audio-heading">
-            <div class="audio-heading"><h2 id="audio-heading">Call recording</h2><div class="audio-actions"><label class="sr-only" for="audio-track">Audio direction</label><select id="audio-track" disabled><option id="audio-option-combined" value="combined">Both</option><option id="audio-option-inbound" value="inbound">Caller</option><option id="audio-option-outbound" value="outbound">New College</option></select><a id="audio-download" class="export audio-download" aria-disabled="true" tabindex="-1">Download WAV <span aria-hidden="true">↓</span></a></div></div>
-            <audio id="call-audio" controls preload="none" aria-label="Play selected call recording" aria-describedby="audio-status" hidden></audio>
-            <p id="audio-status" class="audio-status" role="status">Select a recorded call to listen.</p>
-          </section>
-          <section id="summary-panel" class="summary-panel" aria-labelledby="summary-heading"><h2 id="summary-heading">Summary</h2><p id="call-summary" class="summary-text" data-empty="true">No summary yet.</p></section>
+          <div class="card-heading">
+            <div class="card-row"><div class="card-title"><h2 id="transcript-title">Waiting for a call</h2><span id="voicemail-badge" class="badge" data-tone="neutral" hidden></span></div><div class="exports" aria-label="Export selected call"><a id="export-txt" class="export" aria-disabled="true" tabindex="-1">TXT <span aria-hidden="true">↓</span></a><a id="export-json" class="export" aria-disabled="true" tabindex="-1">JSON <span aria-hidden="true">↓</span></a></div></div>
+            <section id="summary-panel" class="summary-panel" aria-labelledby="summary-heading"><h3 id="summary-heading" class="sr-only">Summary</h3><p id="call-summary" class="summary-text" data-empty="true">No summary yet.</p></section>
+            <p id="voicemail-detail" class="voicemail-note" hidden></p><p id="session-storage-warning" class="track-error" role="status" hidden></p>
+          </div>
           <div class="transcript-toolbar"><span class="live-label">Transcript</span></div>
           <div id="transcript" class="transcript" tabindex="0" aria-label="Call transcript">
             <div id="empty" class="empty"><div class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4M8 22h8"></path></svg></div><h2 id="empty-title">Ready when you are.</h2><p id="empty-description">When a call connects, its transcript will appear here. The view updates automatically.</p></div>
@@ -74,6 +73,13 @@
     </section>
     <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
   </main>
+  <section id="audio-panel" class="audio-panel" aria-label="Call playback" hidden>
+    <div class="audio-inner">
+      <audio id="call-audio" controls preload="none" aria-label="Play selected call recording" aria-describedby="audio-status" hidden></audio>
+      <a id="audio-download" class="audio-download" aria-label="Download WAV" title="Download WAV" aria-disabled="true" tabindex="-1" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4"></path></svg></a>
+    </div>
+    <p id="audio-status" class="audio-status" role="status" hidden></p>
+  </section>
   <script>
     "use strict";
     const $ = id => document.getElementById(id);
@@ -84,7 +90,7 @@
       audioUrl: "", audioPhase: "idle", audioSession: null, highlightEnabled: false,
       transcriptRows: [], renderedCall: null, voicemailInitialized: false};
     const callSidPattern = /^CA[0-9a-fA-F]{32}$/;
-    const audioTracks = {combined: "Both", inbound: "Caller", outbound: "New College"};
+    const audioTracks = {combined: "Call audio"};
     const endedStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
     const voicemailLabels = {awaiting: "Awaiting recording", recording: "Recording", processing: "Unconfirmed recording",
       completed: "Recorded", absent: "No recording", failed: "Recording failed"};
@@ -190,29 +196,23 @@
     function updateAudioStatus() {
       const session = state.audioSession;
       const recording = session && session.recording;
-      let message;
+      let message = "";
       if (state.audioUrl) {
-        const seconds = state.audioTrack === "combined" ? recording.duration_seconds
-          : recording.tracks && recording.tracks[state.audioTrack] && recording.tracks[state.audioTrack].duration_seconds;
-        const details = [audioTracks[state.audioTrack], Number.isFinite(seconds) && seconds >= 0
-          ? timestamp(seconds * 1000) : "", recording.status === "partial" ? "Partial recording" : ""].filter(Boolean).join(" · ");
-        const labels = {idle: "Press play to listen", loading: "Loading audio…", ready: "Ready to play",
-          playing: "Playing", paused: "Paused", buffering: "Buffering audio…", ended: "Playback finished"};
-        message = state.audioPhase === "error"
-          ? "Audio could not be loaded. Try the WAV download or select another direction."
-          : `${labels[state.audioPhase] || labels.idle} · ${details}`;
-      } else if (!session) {
-        message = "Select a recorded call to listen.";
-      } else if (state.snapshot && state.snapshot.recordings && state.snapshot.recordings.enabled === false) {
-        message = "Call recording is disabled on this server.";
-      } else if (recording && recording.status === "failed") {
-        message = "This call’s audio recording could not be finalized.";
-      } else if (isActive(session) || (recording && ["recording", "capturing", "processing", "pending", "live"].includes(recording.status))) {
-        message = "Audio is not finalized yet. Playback will appear after the recording finishes.";
-      } else {
-        message = "No finalized audio is available for this call.";
+        if (state.audioPhase === "error") message = "Audio could not be loaded. Try downloading the WAV.";
+        else if (recording.status === "partial") message = "This recording is incomplete.";
+      } else if (session) {
+        if (state.snapshot && state.snapshot.recordings && state.snapshot.recordings.enabled === false) {
+          message = "Audio recording is disabled on this server.";
+        } else if (recording && recording.status === "failed") {
+          message = "This call’s audio recording could not be finalized.";
+        } else if (isActive(session) || (recording && ["recording", "capturing", "processing", "pending", "live"].includes(recording.status))) {
+          message = "Audio is not finalized yet. Playback will appear after the recording finishes.";
+        } else {
+          message = "No complete recording is available for this call.";
+        }
       }
       $("audio-status").textContent = message;
+      $("audio-status").hidden = !message;
       $("audio-status").dataset.tone = state.audioPhase === "error" ? "bad" : "neutral";
     }
     function renderAudio(session) {
@@ -226,12 +226,8 @@
         state.audioTrack = "combined";
       }
       state.audioSession = session || null;
-      const available = Object.keys(audioTracks).filter(track => recordingUrl(recording, track));
-      if (!available.includes(state.audioTrack) && available.length) state.audioTrack = available[0];
-      for (const track of Object.keys(audioTracks)) $("audio-option-" + track).disabled = !available.includes(track);
-      $("audio-track").disabled = available.length === 0;
-      $("audio-track").value = state.audioTrack;
-      const url = recordingUrl(recording, state.audioTrack);
+      const url = recordingUrl(recording, "combined");
+      $("audio-panel").hidden = !session;
       const audio = $("call-audio");
       if (url !== state.audioUrl) {
         state.highlightEnabled = false;
@@ -244,8 +240,9 @@
         state.audioPhase = "idle";
       }
       audio.hidden = !url;
-      audio.setAttribute("aria-label", `Play call recording: ${audioTracks[state.audioTrack]}`);
+      audio.setAttribute("aria-label", "Play selected call recording");
       const download = $("audio-download");
+      download.hidden = !url;
       download.setAttribute("aria-disabled", String(!url));
       if (url) {
         download.href = url;
@@ -408,9 +405,7 @@
       const noTranscript = Boolean(session && session.transcript_unavailable);
       const loading = session && !noTranscript && typeof state.snapshot.selected_call_sid === "string"
         && state.snapshot.selected_call_sid !== session.call_sid;
-      $("transcript-title").textContent = noTranscript && session.recording ? "Call recording" : voicemailOnly ? "Voicemail details"
-        : session ? (active ? "Current conversation" : "Call transcript") : "Waiting for a call";
-      $("session-badge").textContent = noTranscript ? "No transcript" : session ? readable(session.status) : enabled ? "Ready" : "Off";
+      $("transcript-title").textContent = voicemailOnly ? "Voicemail" : session ? "Call transcript" : "Waiting for a call";
       $("voicemail-badge").hidden = !voicemail;
       $("voicemail-badge").textContent = voicemail ? "Voicemail · " + voicemailLabel(voicemail) : "";
       $("voicemail-badge").dataset.tone = voicemail && ["absent", "failed"].includes(voicemail.recording_status)
@@ -419,11 +414,6 @@
       $("voicemail-detail").textContent = voicemail
         ? [voicemailDescriptions[voicemail.recording_status] || "Recording status is unavailable.",
           voicemailDuration(voicemail) ? "Duration: " + voicemailDuration(voicemail) + "." : ""].filter(Boolean).join(" ") : "";
-      $("session-badge").dataset.tone = noTranscript ? "neutral"
-        : session && ["error", "failed"].includes(session.status) ? "bad" : active ? "good" : "neutral";
-      $("session-detail").textContent = session
-        ? `${clockTime(session.started_at, true)}${session.ended_at ? " · Ended " + clockTime(session.ended_at) : ""}`
-        : "Transcripts will appear as people speak.";
       for (const format of ["txt", "json"]) {
         const link = $("export-" + format);
         link.setAttribute("aria-disabled", String(!session || noTranscript));
@@ -473,7 +463,7 @@
           : loading ? "Loading this conversation…" : !enabled ? "Transcription is switched off."
           : !session ? "Ready when you are." : active ? "Listening for the conversation…" : "No speech was finalized.";
         $("empty-description").textContent = noTranscript && session.recording
-          ? "Use the call recording player above to listen when audio is available."
+          ? "Use the player at the bottom of the page when audio is available."
           : voicemailOnly
           ? "Recording status is shown above. A recording can exist even when live transcription is unavailable."
           : loading ? "Fetching the selected call’s transcript."
@@ -599,12 +589,6 @@
     }
     $("voicemail-section").addEventListener("toggle", () => {
       state.voicemailInitialized = true;
-    });
-    $("audio-track").addEventListener("change", () => {
-      const selected = $("audio-track").value;
-      if (!Object.hasOwn(audioTracks, selected)) return;
-      state.audioTrack = selected;
-      renderAudio(state.audioSession);
     });
     for (const [event, phase] of Object.entries({loadstart: "loading", loadedmetadata: "ready",
       canplay: "ready", playing: "playing", waiting: "buffering", ended: "ended", error: "error"})) {

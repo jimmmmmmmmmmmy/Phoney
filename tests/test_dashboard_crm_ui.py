@@ -1,4 +1,4 @@
-"""Contact categories, caller matching, and browser-local change notifications."""
+"""Contact editing, categories, caller matching, and browser-local persistence."""
 
 from pathlib import Path
 import shutil
@@ -27,6 +27,7 @@ class Element {
   replaceChildren(...elements) {for (const child of this.children) child.parentNode = null; this.children = []; this.append(...elements);}
   setAttribute(key, value) {this.attributes[key] = String(value);}
   getAttribute(key) {return this.attributes[key] ?? null;}
+  removeAttribute(key) {delete this.attributes[key];}
   contains(target) {return target === this || this.children.some(child => child.contains(target));}
   addEventListener(type, listener) {(this.listeners[type] ||= []).push(listener);}
   dispatch(type, event = {}) {
@@ -43,7 +44,8 @@ class Element {
       selector === 'button:not(:disabled)' ? child.tagName === 'BUTTON' && !child.disabled : child.tagName === selector.toUpperCase());
   }
   querySelector(selector) {return this.querySelectorAll(selector)[0] || null;}
-  reset() {for (const item of this.all()) if (['INPUT', 'TEXTAREA'].includes(item.tagName)) item.value = '';}
+  reset() {for (const item of this.all()) if (['INPUT', 'TEXTAREA', 'SELECT'].includes(item.tagName)) item.value = '';}
+  remove() {if (this.parentNode) {this.parentNode.children = this.parentNode.children.filter(child => child !== this); this.parentNode = null;}}
   showModal() {this.open = true;}
   close() {this.open = false; this.dispatch('close');}
 }
@@ -91,6 +93,9 @@ const hasClass = (element, name) => element.className.split(/\s+/).includes(name
 const hasMetrics = () => contactRoot.all().some(element => hasClass(element, 'crm-metrics'));
 const searchInput = () => contactRoot.all().find(element => element.getAttribute('aria-label') === 'Search contacts');
 const search = value => {searchInput().value = value; searchInput().dispatch('input');};
+const navigate = hash => {window.location.hash = hash; window.DashboardCRM.render();};
+const dialogButton = label => $('crm-create-contact').all().find(element => element.tagName === 'BUTTON' && text(element).trim() === label);
+const editContact = () => {$('crm-edit-contact').click(); assert.equal($('crm-create-contact').open, true);};
 const assertSelectedTab = label => {
   assert.equal(byRole('tabpanel').length, 1);
   const panel = byRole('tabpanel')[0];
@@ -296,3 +301,191 @@ assert.deepEqual(names(), ['Maya Patel']);
 assert.equal(hasMetrics(), false);
 assert.equal(writes, 0);
 """, before="window.location.hash = '#contacts';")
+
+
+def test_profile_removes_notices_relationship_and_id_and_exposes_editable_details():
+    run_crm(r"""
+assert.equal(contactRoot.all().some(element => hasClass(element, 'crm-notice')), false);
+const metrics = contactRoot.all().find(element => hasClass(element, 'crm-metrics'));
+assert.equal(metrics.children.length, 3);
+assert.deepEqual(metrics.children.map(item => text(item.children[0])), ['Conversations', 'Talk time', 'Last contact']);
+assert.doesNotMatch(text(contactRoot), /Relationship|Contact ID|local-12345678|This browser|not shared with other devices/);
+assert.equal($('crm-edit-contact').getAttribute('aria-label'), 'Edit contact details');
+assert.equal($('crm-edit-contact').all().some(element => element.tagName === 'SVG'), true);
+editContact();
+assert.equal(text($('crm-dialog-title')), 'Edit contact');
+assert.ok(dialogButton('Save changes'));
+for (const [key, value] of Object.entries({firstName: 'Avery', lastName: 'Chen', phone: CONTACT.phone,
+  email: CONTACT.email, address: '', website: '', company: '', createdAt: '2026-09-26', status: 'New', labels: ''})) {
+  assert.ok($('crm-' + key), key + ' exists');
+  assert.equal($('crm-' + key).value, value, key + ' is prefilled');
+}
+assert.equal($('crm-createdAt').type, 'date');
+assert.equal($('crm-status').tagName, 'SELECT');
+assert.equal(document.activeElement, $('crm-firstName'));
+dialogButton('Cancel').click();
+assert.equal($('crm-create-contact').open, false);
+assert.equal(writes, 0);
+""", before="window.location.hash = '#contacts/' + CONTACT.id; storeContacts([CONTACT]);")
+
+
+def test_edit_saves_every_contact_field_and_refreshes_matching_categories_and_reload():
+    run_crm(r"""
+window.addEventListener('dashboard-contacts-changed', () => window.DashboardCRM.render());
+editContact();
+const newPhone = '+16562520999';
+for (const [key, value] of Object.entries({firstName: ' Avery Updated ', lastName: ' Lee ', phone: '+1 (656) 252-0999',
+  email: 'avery.lee@example.com', address: '123 Example Lane', website: 'https://example.com/avery',
+  company: 'Example Legal', createdAt: '2026-08-12', status: 'Active', labels: 'Legal, Customers'})) $('crm-' + key).value = value;
+submit();
+assert.equal(writes, 1);
+assert.equal($('crm-create-contact').open, false);
+assert.equal(notifications.length, 2);
+assert.equal(notifications.at(-1).caller, null);
+assert.equal(window.DashboardCRM.findContactByPhone(CONTACT.phone), null);
+assert.deepEqual(window.DashboardCRM.findContactByPhone(newPhone), {id: CONTACT.id, name: 'Avery Updated Lee', phone: newPhone});
+let data = JSON.parse(stored);
+assert.equal(data.version, 1);
+assert.equal(data.contacts.length, 1);
+const saved = data.contacts[0];
+assert.equal(saved.id, CONTACT.id);
+for (const [key, value] of Object.entries({firstName: 'Avery Updated', lastName: 'Lee', phone: newPhone,
+  email: 'avery.lee@example.com', address: '123 Example Lane', website: 'https://example.com/avery',
+  company: 'Example Legal', status: 'Active'})) assert.equal(saved[key], value, key);
+assert.deepEqual(saved.labels, ['Legal', 'Customers']);
+assert.equal(saved.createdAt.slice(0, 10), '2026-08-12');
+navigate('#contacts/' + CONTACT.id);
+assert.match(text(contactRoot), /Avery Updated Lee updated\./);
+assert.match(text(contactRoot), /Example Legal/);
+assert.match(text(contactRoot), /123 Example Lane/);
+changeStorage();
+editContact();
+assert.equal($('crm-createdAt').value, '2026-08-12');
+assert.equal($('crm-status').value, 'Active');
+assert.equal($('crm-labels').value, 'Legal, Customers');
+assert.equal($('crm-company').value, 'Example Legal');
+dialogButton('Cancel').click();
+navigate('#contacts');
+tab('Legal').click();
+assert.deepEqual(names(), ['Avery Updated Lee', 'Casey Reed']);
+tab('Customers').click();
+assert.deepEqual(names(), ['Avery Updated Lee', 'Maya Patel', 'Jordan Ellis']);
+assert.equal(writes, 1);
+""", before="window.location.hash = '#contacts/' + CONTACT.id; storeContacts([CONTACT]);")
+
+
+def test_edit_allows_unchanged_phone_and_preserves_original_creation_timestamp():
+    run_crm(r"""
+editContact();
+$('crm-firstName').value = 'Renamed';
+submit();
+assert.equal(writes, 1);
+const saved = JSON.parse(stored).contacts[0];
+assert.equal(saved.id, CONTACT.id);
+assert.equal(saved.createdAt, CONTACT.createdAt);
+assert.equal(saved.phone, CONTACT.phone);
+assert.equal(notifications.at(-1).caller.name, 'Renamed Chen');
+navigate('#contacts/' + CONTACT.id);
+editContact();
+$('crm-phone').value = '+1 (941) 555-0101';
+submit();
+assert.equal(writes, 1);
+assert.equal(notifications.length, 2);
+assert.equal($('crm-create-contact').open, true);
+assert.match(text($('crm-create-contact')), /already exists/);
+assert.equal(window.DashboardCRM.findContactByPhone(CONTACT.phone).name, 'Renamed Chen');
+assert.equal(window.DashboardCRM.findContactByPhone('+19415550101').name, 'Alex Morgan');
+dialogButton('Cancel').click();
+assert.equal(writes, 1);
+""", before="window.location.hash = '#contacts/' + CONTACT.id; storeContacts([CONTACT]);")
+
+
+def test_edit_cancel_validation_and_failed_storage_leave_contact_unchanged():
+    run_crm(r"""
+const original = stored;
+editContact();
+$('crm-firstName').value = 'Unsaved';
+dialogButton('Cancel').click();
+assert.equal(stored, original);
+assert.equal(window.DashboardCRM.findContactByPhone(CONTACT.phone).name, 'Avery Chen');
+editContact();
+assert.equal($('crm-firstName').value, 'Avery');
+for (const [key, value] of [['firstName', ''], ['phone', '6562520233'], ['website', 'javascript:alert(1)'],
+  ['address', 'a'.repeat(401)], ['company', 'c'.repeat(401)], ['createdAt', 'not-a-date'], ['createdAt', '2026-02-30'],
+  ['status', 'Not a status'], ['labels', 'a'.repeat(41)], ['labels', Array.from({length: 11}, (_, index) => 'Label ' + index).join(', ')]]) {
+  const input = $('crm-' + key), previous = input.value;
+  input.value = value;
+  submit();
+  assert.equal(writes, 0, key + ' validation blocks writes');
+  assert.equal(notifications.length, 1, key + ' validation does not notify');
+  assert.equal(stored, original);
+  assert.equal($('crm-create-contact').open, true);
+  input.value = previous;
+}
+const email = $('crm-email');
+email.value = 'invalid-email'; email.validity.valid = false; submit();
+assert.equal(writes, 0); email.value = CONTACT.email; email.validity.valid = true;
+$('crm-firstName').value = 'Unsaved';
+failWrites = true;
+submit();
+assert.equal(writes, 0);
+assert.equal(notifications.length, 1);
+assert.equal(stored, original);
+assert.equal($('crm-create-contact').open, true);
+assert.match(text($('crm-create-contact')), /has not been saved/);
+assert.equal(window.DashboardCRM.findContactByPhone(CONTACT.phone).name, 'Avery Chen');
+dialogButton('Cancel').click();
+editContact();
+assert.equal($('crm-firstName').value, 'Avery');
+""", before="window.location.hash = '#contacts/' + CONTACT.id; storeContacts([CONTACT]);")
+
+
+def test_demo_edits_persist_as_overrides_without_losing_sample_history_or_local_contacts():
+    run_crm(r"""
+assert.match(text(contactRoot), /Consultation follow-up/);
+const originalPhone = '+19415550101', changedPhone = '+19415550999';
+editContact();
+assert.equal($('crm-labels').value, 'Real Estate');
+$('crm-firstName').value = 'Alex Updated';
+$('crm-phone').value = changedPhone;
+$('crm-status').value = 'Active';
+$('crm-labels').value = 'Legal';
+submit();
+assert.equal(writes, 1);
+const data = JSON.parse(stored);
+assert.equal(data.contacts.length, 1);
+assert.equal(data.contacts[0].id, CONTACT.id);
+assert.equal(data.demoOverrides.length, 1);
+assert.equal(data.demoOverrides[0].id, 'demo-alex-morgan');
+assert.equal(data.demoOverrides[0].firstName, 'Alex Updated');
+assert.equal(window.DashboardCRM.findContactByPhone(originalPhone), null);
+assert.equal(window.DashboardCRM.findContactByPhone(changedPhone).name, 'Alex Updated Morgan');
+navigate('#contacts/demo-alex-morgan');
+changeStorage();
+assert.match(text(contactRoot), /Consultation follow-up/);
+assert.match(text(contactRoot), /Sample transcript/);
+assert.match(text(contactRoot), /Alex reviewed the consultation options/);
+assert.match(text(contactRoot), /Alex Updated Morgan/);
+assert.equal(contactRoot.all().some(element => hasClass(element, 'crm-notice')), false);
+assert.equal(window.DashboardCRM.findContactByPhone(changedPhone).name, 'Alex Updated Morgan');
+editContact();
+assert.equal($('crm-status').value, 'Active');
+assert.equal($('crm-labels').value, 'Legal');
+dialogButton('Cancel').click();
+navigate('#contacts');
+assert.equal(names().filter(name => name.includes('Alex')).length, 1);
+assert.equal(names().includes('Avery Chen'), true);
+tab('Legal').click();
+assert.deepEqual(names(), ['Alex Updated Morgan', 'Casey Reed']);
+tab('Real Estate').click();
+assert.deepEqual(names(), []);
+assert.equal(writes, 1);
+window.DashboardCRM.openCreateContact();
+$('crm-firstName').value = 'New'; $('crm-lastName').value = 'Person'; $('crm-phone').value = '+19415550888';
+submit();
+assert.equal(writes, 2);
+assert.equal(JSON.parse(stored).contacts.length, 2);
+assert.equal(JSON.parse(stored).demoOverrides.length, 1);
+changeStorage();
+assert.equal(window.DashboardCRM.findContactByPhone(changedPhone).name, 'Alex Updated Morgan');
+""", before="window.location.hash = '#contacts/demo-alex-morgan'; storeContacts([CONTACT]);")

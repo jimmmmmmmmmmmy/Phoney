@@ -15,20 +15,22 @@
     {id: "demo-call-aug04", contactId: "demo-casey-reed", title: "Workshop planning", startedAt: "2026-08-04T19:00:00Z", duration: 362, direction: "Outbound", outcome: "Follow-up needed", summary: "Casey discussed the workshop format and estimated a group of eight. The final attendee count still needs confirmation.", transcript: [["New College", "Hi Casey, do you have a few minutes to discuss the workshop?"], ["Casey", "Yes. We’re expecting around eight people, though I’m still waiting on two replies."], ["New College", "We can plan for eight. Would a hands-on session work for your group?"], ["Casey", "Definitely. A short introduction followed by time to try it would be ideal."], ["New College", "That works. Please confirm the final number when you have it."], ["Casey", "I’ll send the final count before our next check-in."]]},
     {id: "demo-call-jul17", contactId: "demo-maya-patel", title: "Welcome conversation", startedAt: "2026-07-17T17:45:00Z", duration: 218, direction: "Inbound", outcome: "Completed", summary: "Maya introduced the market’s community outreach work. Contact details and a preference for afternoon calls were confirmed.", transcript: [["New College", "Hello, thanks for reaching out. Who am I speaking with?"], ["Maya", "This is Maya from Harbor Community Market. I’d like to learn more about your project."], ["New College", "We’re building tools to help teams manage calls and follow-up conversations."], ["Maya", "That could be helpful for our outreach. Afternoon calls are usually easiest for me."], ["New College", "Thanks, we’ve noted that preference and your contact information."], ["Maya", "Thank you. I’m looking forward to hearing more."]]}
   ];
-  let localContacts = [], storageWarning = "", realCalls = [], revision = 0, renderedKey = "";
+  let localContacts = [], demoOverrides = [], storageWarning = "", realCalls = [], lastSessions = [], revision = 0, renderedKey = "";
   let listFilter = "all", searchText = "", root, dialog, form, opener, successMessage = "", savedContactId = "", listUI = null, renderedRoute = "";
+  let editingContactId = null;
   const expandedCalls = new Set();
+  const contactStatuses = ["New", "Active", "Follow up"];
   const phonePattern = /^\+[1-9][0-9]{7,14}$/;
-  const iconPaths = {plus: ["M12 5v14M5 12h14"], close: ["m6 6 12 12M6 18 18 6"], search: ["m16 16 5 5"], chevron: ["m6 9 6 6 6-6"], phone: ["M7 3H4a1 1 0 0 0-1 1c0 9.4 7.6 17 17 17a1 1 0 0 0 1-1v-3l-5-2-2 2a13 13 0 0 1-7-7l2-2-2-5Z"], email: ["M3 5h18v14H3z", "m3 6 9 7 9-7"], address: ["M20 10c0 6-8 11-8 11S4 16 4 10a8 8 0 1 1 16 0Z"], website: ["M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"]};
+  const iconPaths = {pencil: ["m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15v5Z"], plus: ["M12 5v14M5 12h14"], close: ["m6 6 12 12M6 18 18 6"], search: ["m16 16 5 5"], chevron: ["m6 9 6 6 6-6"], phone: ["M7 3H4a1 1 0 0 0-1 1c0 9.4 7.6 17 17 17a1 1 0 0 0 1-1v-3l-5-2-2 2a13 13 0 0 1-7-7l2-2-2-5Z"], email: ["M3 5h18v14H3z", "m3 6 9 7 9-7"], address: ["M20 10c0 6-8 11-8 11S4 16 4 10a8 8 0 1 1 16 0Z"], website: ["M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"]};
   function node(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text != null) el.textContent = String(text); return el; }
   function icon(name) { const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); for (const [key, value] of Object.entries({viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", class: "crm-icon"})) svg.setAttribute(key, value); for (const d of iconPaths[name] || []) { const p = document.createElementNS(svg.namespaceURI, "path"); p.setAttribute("d", d); svg.append(p); } if (["search", "address", "website"].includes(name)) { const c = document.createElementNS(svg.namespaceURI, "circle"); c.setAttribute("cx", name === "search" ? "10.5" : "12"); c.setAttribute("cy", name === "search" ? "10.5" : name === "address" ? "10" : "12"); c.setAttribute("r", name === "search" ? "6.5" : name === "address" ? "2.5" : "9"); svg.append(c); } return svg; }
   function button(text, className, action) { const b = node("button", className, text); b.type = "button"; if (action) b.addEventListener("click", action); return b; }
   function link(text, href, className) { const a = node("a", className, text); a.href = href; return a; }
   function fullName(contact) { return `${contact.firstName} ${contact.lastName}`; }
-  function badge(contact) { return node("span", `crm-demo${contact.demo ? "" : " crm-local"}`, contact.demo ? "Demo" : "This browser"); }
+  function badge() { return node("span", "crm-demo", "Demo"); }
   function contactLabels(contact) { return (contact.labels || []).map(label => node("span", "crm-label", label)); }
   function initials(contact) { return (contact.firstName.slice(0, 1) + contact.lastName.slice(0, 1)).toUpperCase(); }
-  function contacts() { return [...localContacts, ...demoContacts]; }
+  function contacts() { return [...localContacts, ...demoContacts.map(contact => ({...contact, ...demoOverrides.find(override => override.id === contact.id), demo: true}))]; }
   function normalizePhone(value) { return typeof value === "string" ? value.replace(/[\s().-]/g, "") : ""; }
   function findContactByPhone(rawPhone) {
     const phone = normalizePhone(rawPhone);
@@ -43,8 +45,32 @@
   function callsFor(contact) { return [...demoCalls.filter(c => c.contactId === contact.id), ...realCalls.filter(c => c.phone === contact.phone)].sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt)); }
   function metric(label, value, caption) { const box = node("div", "crm-metric"), dd = node("dd", "", value); if (caption) dd.append(node("small", "", caption)); box.append(node("dt", "", label), dd); return box; }
   function status(contact) { return node("span", `crm-status ${contact.status === "Follow up" ? "crm-status-followup" : contact.status === "New" ? "crm-status-new" : ""}`, contact.status); }
-  function validStoredContact(value) { return value && typeof value === "object" && /^local-[a-zA-Z0-9-]{8,80}$/.test(value.id) && ["firstName", "lastName"].every(k => typeof value[k] === "string" && value[k].trim() && value[k].length <= 80) && phonePattern.test(value.phone) && typeof value.createdAt === "string" && Number.isFinite(Date.parse(value.createdAt)) && ["email", "address", "website"].every(k => value[k] === undefined || (typeof value[k] === "string" && value[k].length <= 400)) && (!value.website || /^https?:\/\//i.test(value.website)); }
-  function readStorage() { try { const raw = localStorage.getItem(STORAGE_KEY); if (!raw) return; const data = JSON.parse(raw); if (!data || data.version !== 1 || !Array.isArray(data.contacts) || data.contacts.length > MAX_CONTACTS || !data.contacts.every(validStoredContact)) throw new Error("invalid"); const ids = new Set(); localContacts = data.contacts.filter(c => { if (ids.has(c.id)) return false; ids.add(c.id); return true; }).map(c => ({id: c.id, firstName: c.firstName.trim(), lastName: c.lastName.trim(), phone: c.phone, email: c.email || "", address: c.address || "", website: c.website || "", createdAt: c.createdAt, status: "New", demo: false})); } catch (_) { storageWarning = "Saved contacts could not be loaded from this browser. Demo contacts are still available. New contacts cannot be saved until browser storage is available."; } }
+  function validContactFields(value) {
+    return value && typeof value === "object" && ["firstName", "lastName"].every(key => typeof value[key] === "string" && value[key].trim() && value[key].length <= 80) &&
+      typeof value.phone === "string" && phonePattern.test(value.phone) && typeof value.createdAt === "string" && Number.isFinite(Date.parse(value.createdAt)) &&
+      ["email", "address", "website", "company"].every(key => value[key] === undefined || (typeof value[key] === "string" && value[key].length <= 400)) &&
+      (!value.website || /^https?:\/\//i.test(value.website)) && (value.status === undefined || contactStatuses.includes(value.status)) &&
+      (value.labels === undefined || (Array.isArray(value.labels) && value.labels.length <= 10 && value.labels.every(label => typeof label === "string" && label.trim() && label.length <= 40)));
+  }
+  function validStoredContact(value) { return validContactFields(value) && /^local-[a-zA-Z0-9-]{8,80}$/.test(value.id); }
+  function storedContact(value, defaults = {}) {
+    return {...defaults, id: value.id, firstName: value.firstName.trim(), lastName: value.lastName.trim(), phone: value.phone,
+      email: value.email || "", address: value.address || "", website: value.website || "", company: value.company || "",
+      createdAt: value.createdAt, status: value.status || defaults.status || "New",
+      labels: [...new Set((value.labels || defaults.labels || []).map(label => label.trim()))], demo: Boolean(defaults.demo)};
+  }
+  function readStorage() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw), overrides = data?.demoOverrides === undefined ? [] : data.demoOverrides;
+      if (!data || data.version !== 1 || !Array.isArray(data.contacts) || data.contacts.length > MAX_CONTACTS || !data.contacts.every(validStoredContact) ||
+        !Array.isArray(overrides) || overrides.length > demoContacts.length || !overrides.every(value => validContactFields(value) && demoContacts.some(contact => contact.id === value.id))) throw new Error("invalid");
+      const ids = new Set();
+      localContacts = data.contacts.filter(contact => { if (ids.has(contact.id)) return false; ids.add(contact.id); return true; }).map(contact => storedContact(contact));
+      demoOverrides = overrides.filter(contact => { if (ids.has(contact.id)) return false; ids.add(contact.id); return true; }).map(contact => storedContact(contact, demoContacts.find(original => original.id === contact.id)));
+    } catch (_) { storageWarning = "Saved contacts could not be loaded from this browser. Demo contacts are still available. Contacts cannot be saved until browser storage is available."; }
+  }
   function filteredContacts() {
     const query = searchText.trim().toLowerCase();
     const category = contactCategories.find(([key]) => key === listFilter)?.[1];
@@ -127,7 +153,59 @@
       content.append(transcriptLink);
     } else { content.append(node("p", "crm-conversation-note", "Sample transcript · Fictional conversation · No audio recording")); const transcript = node("div", "crm-transcript"); transcript.setAttribute("aria-label", `Sample transcript with ${fullName(contact)}`); for (const [speaker, text] of call.transcript) { const turn = node("div", "crm-turn"); turn.append(node("strong", "", speaker), node("p", "", text)); transcript.append(turn); } content.append(transcript); } item.append(summary, content); return item; }
   function detailItem(label, value) { const item = node("div"), dd = node("dd"); dd.append(value instanceof Node ? value : document.createTextNode(value || "—")); item.append(node("dt", "", label), dd); return item; }
-  function renderProfile(contact) { const section = node("div", "crm"), heading = node("div", "crm-profile-heading"); heading.append(link("← All contacts", "#contacts", "crm-link crm-back")); const title = node("div", "crm-profile-title"), titleText = node("div"), titleLine = node("div", "crm-profile-name"); const profileTitle = node("h2", "", fullName(contact)); profileTitle.id = "crm-profile-title"; profileTitle.tabIndex = -1; titleLine.append(profileTitle, badge(contact)); titleText.append(titleLine, node("p", "crm-profile-subtitle", contact.company || contact.phone)); title.append(node("span", "crm-avatar", initials(contact)), titleText); heading.append(title); section.append(heading); if (successMessage && contact.id === savedContactId) { const saved = node("p", "crm-save-status", successMessage); saved.setAttribute("role", "status"); section.append(saved); } const notice = node("div", "crm-notice"); notice.append(badge(contact), node("p", "", contact.demo ? "This is a fictional contact with sample call history. No calls have been placed to this number." : "Saved in this browser. This contact is not shared with other devices.")); section.append(notice); const history = callsFor(contact), sum = history.reduce((total, c) => total + (c.duration || 0), 0), metrics = node("dl", "crm-metrics"); metrics.append(metric("Conversations", history.length, history.length ? "Inbound and outbound calls" : "No conversations yet"), metric("Talk time", duration(sum), "Total conversation time"), metric("Last contact", history.length ? date(history[0].startedAt, false) : "—", history.length ? String(new Date(history[0].startedAt).getFullYear()) : "No calls yet"), metric("Relationship", contact.status, contact.status === "Follow up" ? "A next step is pending" : contact.demo ? "Demo contact" : "New contact")); section.append(metrics); const layout = node("div", "crm-profile-layout"), main = node("section"), callHeading = node("div", "crm-section-title"), historyList = node("div", "crm-history"); callHeading.append(node("h3", "", "Conversations"), node("span", "", `${history.length} ${history.length === 1 ? "call" : "calls"}`)); main.append(callHeading); if (history.length) history.forEach(c => historyList.append(historyCard(c, contact))); else { const empty = node("div", "crm-empty"); empty.append(node("strong", "", "No conversations yet"), node("p", "", "Calls from this phone number will appear here when available.")); historyList.append(empty); } main.append(historyList); if (contact.note) { const note = node("div", "crm-note"); note.append(node("strong", "", "Next step"), node("p", "", contact.note)); main.append(note); } const aside = node("section", "crm-profile-details"), detailsHeading = node("div", "crm-section-title"), details = node("dl", "crm-details"); detailsHeading.append(node("h3", "", "Contact details")); details.append(detailItem("Phone number", contact.phone), detailItem("Email", contact.email), detailItem("Address", contact.address), detailItem("Website", contact.website), detailItem("Contact since", date(contact.createdAt)), detailItem("Status", status(contact)), ...((contact.labels || []).length ? [detailItem("Labels", contact.labels.join(", "))] : []), detailItem("Contact ID", contact.id)); aside.append(detailsHeading, details); layout.append(main, aside); section.append(layout); return section; }
+  function renderProfile(contact) {
+    const section = node("div", "crm"), heading = node("div", "crm-profile-heading");
+    heading.append(link("← All contacts", "#contacts", "crm-link crm-back"));
+    const title = node("div", "crm-profile-title"), titleText = node("div"), titleLine = node("div", "crm-profile-name");
+    const profileTitle = node("h2", "", fullName(contact));
+    profileTitle.id = "crm-profile-title";
+    profileTitle.tabIndex = -1;
+    titleLine.append(profileTitle);
+    if (contact.demo) titleLine.append(badge());
+    titleText.append(titleLine, node("p", "crm-profile-subtitle", contact.company || contact.phone));
+    title.append(node("span", "crm-avatar", initials(contact)), titleText);
+    heading.append(title);
+    section.append(heading);
+    if (successMessage && contact.id === savedContactId) {
+      const saved = node("p", "crm-save-status", successMessage);
+      saved.setAttribute("role", "status");
+      section.append(saved);
+    }
+    const history = callsFor(contact), sum = history.reduce((total, call) => total + (call.duration || 0), 0), metrics = node("dl", "crm-metrics crm-profile-metrics");
+    metrics.append(metric("Conversations", history.length, history.length ? "Inbound and outbound calls" : "No conversations yet"),
+      metric("Talk time", duration(sum), "Total conversation time"),
+      metric("Last contact", history.length ? date(history[0].startedAt, false) : "—", history.length ? String(new Date(history[0].startedAt).getFullYear()) : "No calls yet"));
+    section.append(metrics);
+    const layout = node("div", "crm-profile-layout"), main = node("section"), callHeading = node("div", "crm-section-title"), historyList = node("div", "crm-history");
+    callHeading.append(node("h3", "", "Conversations"), node("span", "", `${history.length} ${history.length === 1 ? "call" : "calls"}`));
+    main.append(callHeading);
+    if (history.length) history.forEach(call => historyList.append(historyCard(call, contact)));
+    else {
+      const empty = node("div", "crm-empty");
+      empty.append(node("strong", "", "No conversations yet"), node("p", "", "Calls from this phone number will appear here when available."));
+      historyList.append(empty);
+    }
+    main.append(historyList);
+    if (contact.note) {
+      const note = node("div", "crm-note");
+      note.append(node("strong", "", "Next step"), node("p", "", contact.note));
+      main.append(note);
+    }
+    const aside = node("section", "crm-profile-details"), detailsHeading = node("div", "crm-section-title"), details = node("dl", "crm-details");
+    const edit = button("", "crm-icon-button crm-edit-button", () => openEditContact(contact.id));
+    edit.id = "crm-edit-contact";
+    edit.setAttribute("aria-label", "Edit contact details");
+    edit.title = "Edit contact details";
+    edit.append(icon("pencil"));
+    detailsHeading.append(node("h3", "", "Contact details"), edit);
+    details.append(detailItem("Phone number", contact.phone), detailItem("Email", contact.email), detailItem("Address", contact.address), detailItem("Website", contact.website),
+      ...(contact.company ? [detailItem("Company", contact.company)] : []), detailItem("Contact since", date(contact.createdAt)), detailItem("Status", status(contact)),
+      ...((contact.labels || []).length ? [detailItem("Labels", contact.labels.join(", "))] : []));
+    aside.append(detailsHeading, details);
+    layout.append(main, aside);
+    section.append(layout);
+    return section;
+  }
   function render() {
     if (!root) return;
     const route = window.location.hash;
@@ -155,19 +233,206 @@
     }
     root.scrollTop = sameRoute ? scrollTop : 0;
   }
-  function field(key, label, type, placeholder, required, optional) { const wrap = node("div", "crm-field"), labelEl = node("label", "", label); labelEl.htmlFor = `crm-${key}`; const input = node(key === "address" ? "textarea" : "input"); input.id = `crm-${key}`; input.name = key; if (input.tagName === "INPUT") input.type = type; input.placeholder = placeholder || ""; input.required = Boolean(required); input.maxLength = key === "address" || key === "website" ? 400 : key === "email" ? 254 : key === "phone" ? 40 : 80; input.autocomplete = {firstName: "given-name", lastName: "family-name", phone: "tel", email: "email", address: "street-address", website: "url"}[key]; if (optional) { const labelRow = node("div", "crm-field-label"); labelRow.append(labelEl, button("Remove", "crm-remove", () => { wrap.remove(); syncAdditionalMenu(); additionalToggle.focus(); })); wrap.append(labelRow); } else wrap.append(labelEl); wrap.append(input); return wrap; }
-  let optionalFields, additionalToggle, additionalMenu, errorMessage;
+  function field(key, label, type, placeholder, required, optional) {
+    const wrap = node("div", "crm-field"), labelEl = node("label", "", label);
+    labelEl.htmlFor = `crm-${key}`;
+    const input = node(key === "address" ? "textarea" : key === "status" ? "select" : "input");
+    input.id = `crm-${key}`;
+    input.name = key;
+    if (input.tagName === "INPUT") input.type = type;
+    if (key === "status") for (const value of contactStatuses) { const option = node("option", "", value); option.value = value; input.append(option); }
+    input.placeholder = placeholder || "";
+    input.required = Boolean(required);
+    input.maxLength = key === "labels" ? 418 : ["address", "website", "company"].includes(key) ? 400 : key === "email" ? 254 : key === "phone" ? 40 : 80;
+    input.autocomplete = {firstName: "given-name", lastName: "family-name", phone: "tel", email: "email", address: "street-address", website: "url", company: "organization"}[key];
+    if (optional) {
+      const labelRow = node("div", "crm-field-label");
+      labelRow.append(labelEl, button("Remove", "crm-remove", () => { wrap.remove(); syncAdditionalMenu(); additionalToggle.focus(); }));
+      wrap.append(labelRow);
+    } else wrap.append(labelEl);
+    wrap.append(input);
+    return wrap;
+  }
+  const optionalContactFields = [["email", "Email", "email", "alex@example.com"], ["address", "Address", "text", "Street, city, state, postal code"], ["website", "Website", "url", "https://example.com"]];
+  let optionalFields, editFields, additional, additionalToggle, additionalMenu, errorMessage, dialogTitle, dialogDescription, dialogClose, submitButton;
   function closeAdditionalMenu() { additionalMenu.hidden = true; additionalToggle.setAttribute("aria-expanded", "false"); }
   function syncAdditionalMenu() { for (const item of additionalMenu.children) item.disabled = Boolean(form.elements.namedItem(item.dataset.field)); }
-  function buildDialog() { dialog = node("dialog", "crm-dialog"); dialog.id = "crm-create-contact"; dialog.setAttribute("aria-labelledby", "crm-dialog-title"); dialog.setAttribute("aria-describedby", "crm-dialog-description"); form = node("form"); form.noValidate = true; const header = node("div", "crm-dialog-header"), text = node("div"), title = node("h2", "", "Create contact"), description = node("p", "", "Keep contact details and conversations together. Saved only in this browser."); title.id = "crm-dialog-title"; description.id = "crm-dialog-description"; text.append(title, description); const close = button("", "crm-icon-button", closeDialog); close.setAttribute("aria-label", "Close create contact"); close.append(icon("close")); header.append(text, close); const body = node("div", "crm-form-body"), nameGrid = node("div", "crm-field-grid"); nameGrid.append(field("firstName", "First name", "text", "Alex", true), field("lastName", "Last name", "text", "Morgan", true)); const phone = field("phone", "Phone number", "tel", "+1 941 555 0123", true), phoneHelp = node("span", "crm-field-help", "Include the country code, for example +1 for the United States."); phoneHelp.id = "crm-phone-help"; phone.querySelector("input").setAttribute("aria-describedby", phoneHelp.id); phone.append(phoneHelp); optionalFields = node("div"); const additional = node("div", "crm-additional"); additionalToggle = button("Additional contact info", "crm-additional-toggle", () => { const opening = additionalMenu.hidden; additionalMenu.hidden = !opening; additionalToggle.setAttribute("aria-expanded", String(opening)); if (opening) additionalMenu.querySelector("button:not(:disabled)")?.focus(); }); additionalToggle.prepend(icon("plus")); additionalToggle.append(icon("chevron")); additionalToggle.setAttribute("aria-controls", "crm-additional-menu"); additionalToggle.setAttribute("aria-expanded", "false"); additionalMenu = node("div", "crm-additional-menu"); additionalMenu.id = "crm-additional-menu"; additionalMenu.hidden = true; additionalMenu.setAttribute("aria-label", "Additional contact fields"); for (const [key, label, type, placeholder] of [["email", "Email", "email", "alex@example.com"], ["address", "Address", "text", "Street, city, state, postal code"], ["website", "Website", "url", "https://example.com"]]) { const option = button(label, "", () => { optionalFields.append(field(key, label, type, placeholder, false, true)); syncAdditionalMenu(); closeAdditionalMenu(); form.elements.namedItem(key).focus(); }); option.dataset.field = key; option.prepend(icon(key)); additionalMenu.append(option); } additional.append(additionalToggle, additionalMenu); errorMessage = node("p", "crm-error crm-form-error"); errorMessage.hidden = true; errorMessage.setAttribute("role", "alert"); body.append(nameGrid, phone, optionalFields, additional, errorMessage); const footer = node("div", "crm-dialog-footer"), submit = button("Create contact", "crm-button crm-button-primary"); submit.type = "submit"; footer.append(button("Cancel", "crm-button", closeDialog), submit); form.append(header, body, footer); dialog.append(form); document.body.append(dialog); form.addEventListener("submit", saveContact); dialog.addEventListener("cancel", () => { closeAdditionalMenu(); }); dialog.addEventListener("close", () => { closeAdditionalMenu(); opener?.focus({preventScroll: true}); }); dialog.addEventListener("click", event => { if (event.target === dialog) { const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) closeDialog(); } if (!additional.contains(event.target)) closeAdditionalMenu(); }); dialog.addEventListener("keydown", event => { if (event.key === "Escape" && !additionalMenu.hidden) { event.preventDefault(); event.stopPropagation(); closeAdditionalMenu(); additionalToggle.focus(); } }); }
+  function buildDialog() {
+    dialog = node("dialog", "crm-dialog");
+    dialog.id = "crm-create-contact";
+    dialog.setAttribute("aria-labelledby", "crm-dialog-title");
+    dialog.setAttribute("aria-describedby", "crm-dialog-description");
+    form = node("form");
+    form.noValidate = true;
+    const header = node("div", "crm-dialog-header"), text = node("div");
+    dialogTitle = node("h2", "", "Create contact");
+    dialogDescription = node("p", "", "Keep contact details and conversations together. Saved only in this browser.");
+    dialogTitle.id = "crm-dialog-title";
+    dialogDescription.id = "crm-dialog-description";
+    text.append(dialogTitle, dialogDescription);
+    dialogClose = button("", "crm-icon-button", closeDialog);
+    dialogClose.setAttribute("aria-label", "Close create contact");
+    dialogClose.append(icon("close"));
+    header.append(text, dialogClose);
+    const body = node("div", "crm-form-body"), nameGrid = node("div", "crm-field-grid");
+    nameGrid.append(field("firstName", "First name", "text", "Alex", true), field("lastName", "Last name", "text", "Morgan", true));
+    const phone = field("phone", "Phone number", "tel", "+1 941 555 0123", true), phoneHelp = node("span", "crm-field-help", "Include the country code, for example +1 for the United States.");
+    phoneHelp.id = "crm-phone-help";
+    phone.querySelector("input").setAttribute("aria-describedby", phoneHelp.id);
+    phone.append(phoneHelp);
+    optionalFields = node("div");
+    editFields = node("div", "crm-edit-fields");
+    editFields.hidden = true;
+    additional = node("div", "crm-additional");
+    additionalToggle = button("Additional contact info", "crm-additional-toggle", () => {
+      const opening = additionalMenu.hidden;
+      additionalMenu.hidden = !opening;
+      additionalToggle.setAttribute("aria-expanded", String(opening));
+      if (opening) additionalMenu.querySelector("button:not(:disabled)")?.focus();
+    });
+    additionalToggle.prepend(icon("plus"));
+    additionalToggle.append(icon("chevron"));
+    additionalToggle.setAttribute("aria-controls", "crm-additional-menu");
+    additionalToggle.setAttribute("aria-expanded", "false");
+    additionalMenu = node("div", "crm-additional-menu");
+    additionalMenu.id = "crm-additional-menu";
+    additionalMenu.hidden = true;
+    additionalMenu.setAttribute("aria-label", "Additional contact fields");
+    for (const [key, label, type, placeholder] of optionalContactFields) {
+      const option = button(label, "", () => {
+        optionalFields.append(field(key, label, type, placeholder, false, true));
+        syncAdditionalMenu();
+        closeAdditionalMenu();
+        form.elements.namedItem(key).focus();
+      });
+      option.dataset.field = key;
+      option.prepend(icon(key));
+      additionalMenu.append(option);
+    }
+    additional.append(additionalToggle, additionalMenu);
+    errorMessage = node("p", "crm-error crm-form-error");
+    errorMessage.hidden = true;
+    errorMessage.setAttribute("role", "alert");
+    body.append(nameGrid, phone, optionalFields, editFields, additional, errorMessage);
+    const footer = node("div", "crm-dialog-footer");
+    submitButton = button("Create contact", "crm-button crm-button-primary");
+    submitButton.type = "submit";
+    footer.append(button("Cancel", "crm-button", closeDialog), submitButton);
+    form.append(header, body, footer);
+    dialog.append(form);
+    document.body.append(dialog);
+    form.addEventListener("submit", saveContact);
+    dialog.addEventListener("cancel", closeAdditionalMenu);
+    dialog.addEventListener("close", () => { closeAdditionalMenu(); editingContactId = null; opener?.focus({preventScroll: true}); });
+    dialog.addEventListener("click", event => {
+      if (event.target === dialog) {
+        const rect = dialog.getBoundingClientRect();
+        if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) closeDialog();
+      }
+      if (!additional.contains(event.target)) closeAdditionalMenu();
+    });
+    dialog.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !additionalMenu.hidden) {
+        event.preventDefault(); event.stopPropagation(); closeAdditionalMenu(); additionalToggle.focus();
+      }
+    });
+  }
   function closeDialog() { if (dialog.open) dialog.close(); }
-  function openCreateContact() { if (!dialog) return; opener = document.activeElement; form.reset(); optionalFields.replaceChildren(); errorMessage.hidden = true; closeAdditionalMenu(); syncAdditionalMenu(); dialog.showModal(); form.elements.namedItem("firstName").focus(); }
+  function prepareDialog(contact) {
+    opener = document.activeElement;
+    form.reset();
+    optionalFields.replaceChildren();
+    editFields.replaceChildren();
+    editingContactId = contact?.id || null;
+    dialogTitle.textContent = contact ? "Edit contact" : "Create contact";
+    submitButton.textContent = contact ? "Save changes" : "Create contact";
+    dialogDescription.textContent = contact ? "Update contact details and labels." : "Keep contact details and conversations together. Saved only in this browser.";
+    dialogClose.setAttribute("aria-label", contact ? "Close edit contact" : "Close create contact");
+    additional.hidden = Boolean(contact);
+    editFields.hidden = !contact;
+    errorMessage.hidden = true;
+    errorMessage.textContent = "";
+    closeAdditionalMenu();
+    if (contact) {
+      for (const [key, label, type, placeholder] of optionalContactFields) optionalFields.append(field(key, label, type, placeholder));
+      editFields.append(field("company", "Company", "text"), field("createdAt", "Contact since", "date", "", true), field("status", "Status", "text", "", true), field("labels", "Labels", "text", "Real Estate, Legal, Customers"));
+      const help = node("span", "crm-field-help", "Separate labels with commas. Up to 10 labels, 40 characters each.");
+      help.id = "crm-labels-help";
+      editFields.append(help);
+      form.elements.namedItem("labels").setAttribute("aria-describedby", help.id);
+      for (const key of ["firstName", "lastName", "phone", "email", "address", "website", "company", "status"]) form.elements.namedItem(key).value = contact[key] || "";
+      form.elements.namedItem("createdAt").value = dateInputValue(contact.createdAt);
+      form.elements.namedItem("labels").value = (contact.labels || []).join(", ");
+    }
+    syncAdditionalMenu();
+    dialog.showModal();
+    form.elements.namedItem("firstName").focus();
+  }
+  function dateInputValue(value) {
+    const parsed = new Date(value);
+    return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
+  }
+  function openCreateContact() { if (dialog) prepareDialog(null); }
+  function openEditContact(id) { const contact = contacts().find(candidate => candidate.id === id); if (dialog && contact) prepareDialog(contact); }
   function formError(message, input) { errorMessage.textContent = message; errorMessage.hidden = false; input?.focus(); }
-  function saveContact(event) { event.preventDefault(); const data = new FormData(form), get = name => String(data.get(name) || "").trim(); const firstName = get("firstName"), lastName = get("lastName"), phone = normalizePhone(get("phone")); for (const [name, value, label] of [["firstName", firstName, "first name"], ["lastName", lastName, "last name"]]) { if (!value || value.length > 80) { formError(`Enter a ${label} of up to 80 characters.`, form.elements.namedItem(name)); return; } } if (!phonePattern.test(phone)) { formError("Enter a valid phone number with a + country code, such as +1 941 555 0123.", form.elements.namedItem("phone")); return; } const email = get("email"), address = get("address"), website = get("website"); if (email && (!form.elements.namedItem("email").validity.valid || email.length > 254)) { formError("Enter a valid email address.", form.elements.namedItem("email")); return; } if (website) { try { const url = new URL(website); if (!["https:", "http:"].includes(url.protocol) || !url.hostname || website.length > 400) throw new Error("invalid"); } catch (_) { formError("Enter a website beginning with https:// or http://.", form.elements.namedItem("website")); return; } } if (address.length > 400) { formError("Use 400 characters or fewer for the address.", form.elements.namedItem("address")); return; } if (contacts().some(c => c.phone === phone)) { formError("A contact with this phone number already exists.", form.elements.namedItem("phone")); return; } if (storageWarning) { formError("Browser storage is unavailable or saved contact data could not be read. Your contact has not been saved."); return; } if (localContacts.length >= MAX_CONTACTS) { formError("This browser has reached its limit of 500 contacts. Your contact has not been saved."); return; } const contact = {id: `local-${crypto.randomUUID()}`, firstName, lastName, phone, email, address, website, createdAt: new Date().toISOString(), status: "New", demo: false}; const next = [contact, ...localContacts]; try { localStorage.setItem(STORAGE_KEY, JSON.stringify({version: 1, contacts: next})); } catch (_) { formError("Browser storage is unavailable or full. Your contact has not been saved. Allow site storage and try again."); return; } localContacts = next; revision += 1; notifyContactsChanged(); successMessage = `${fullName(contact)} created. Saved in this browser.`; savedContactId = contact.id; listFilter = "all"; searchText = ""; closeDialog(); window.location.hash = `contacts/${contact.id}`; render(); setTimeout(() => document.getElementById("crm-profile-title")?.focus({preventScroll: true}), 0); }
+  function saveContact(event) {
+    event.preventDefault();
+    const data = new FormData(form), get = name => String(data.get(name) || "").trim();
+    const editing = editingContactId !== null, original = editing ? contacts().find(contact => contact.id === editingContactId) : null;
+    if (editing && !original) { formError("This contact is no longer available. Close this dialog and reopen the contacts list."); return; }
+    const firstName = get("firstName"), lastName = get("lastName"), phone = normalizePhone(get("phone"));
+    for (const [name, value, label] of [["firstName", firstName, "first name"], ["lastName", lastName, "last name"]]) {
+      if (!value || value.length > 80) { formError(`Enter a ${label} of up to 80 characters.`, form.elements.namedItem(name)); return; }
+    }
+    if (!phonePattern.test(phone)) { formError("Enter a valid phone number with a + country code, such as +1 941 555 0123.", form.elements.namedItem("phone")); return; }
+    const email = get("email"), address = get("address"), website = get("website"), company = get("company");
+    if (email && (!form.elements.namedItem("email").validity.valid || email.length > 254)) { formError("Enter a valid email address.", form.elements.namedItem("email")); return; }
+    if (website) {
+      try { const url = new URL(website); if (!["https:", "http:"].includes(url.protocol) || !url.hostname || website.length > 400) throw new Error("invalid"); }
+      catch (_) { formError("Enter a website beginning with https:// or http://.", form.elements.namedItem("website")); return; }
+    }
+    for (const [key, value] of [["address", address], ["company", company]]) {
+      if (value.length > 400) { formError(`Use 400 characters or fewer for the ${key}.`, form.elements.namedItem(key)); return; }
+    }
+    let createdAt = original?.createdAt || new Date().toISOString(), contactStatus = "New", labels = [];
+    if (editing) {
+      const inputDate = get("createdAt"), parsed = new Date(`${inputDate}T12:00:00Z`);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(inputDate) || !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== inputDate) {
+        formError("Enter a valid contact date.", form.elements.namedItem("createdAt")); return;
+      }
+      if (inputDate !== dateInputValue(original.createdAt)) createdAt = parsed.toISOString();
+      contactStatus = get("status");
+      if (!contactStatuses.includes(contactStatus)) { formError("Choose a valid contact status.", form.elements.namedItem("status")); return; }
+      labels = [...new Set(get("labels").split(",").map(label => label.trim()).filter(Boolean))];
+      if (labels.length > 10 || labels.some(label => label.length > 40)) { formError("Use up to 10 labels, with 40 characters or fewer per label.", form.elements.namedItem("labels")); return; }
+    }
+    if (contacts().some(contact => contact.id !== original?.id && contact.phone === phone)) { formError("A contact with this phone number already exists.", form.elements.namedItem("phone")); return; }
+    if (storageWarning) { formError("Browser storage is unavailable or saved contact data could not be read. Your contact has not been saved."); return; }
+    if (!editing && localContacts.length >= MAX_CONTACTS) { formError("This browser has reached its limit of 500 contacts. Your contact has not been saved."); return; }
+    const contact = {...original, id: original?.id || `local-${crypto.randomUUID()}`, firstName, lastName, phone, email, address, website, company, createdAt, status: contactStatus, labels, demo: Boolean(original?.demo)};
+    const nextContacts = contact.demo ? localContacts : editing ? localContacts.map(current => current.id === contact.id ? contact : current) : [contact, ...localContacts];
+    const nextOverrides = contact.demo ? [...demoOverrides.filter(current => current.id !== contact.id), contact] : demoOverrides;
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({version: 1, contacts: nextContacts, ...(nextOverrides.length ? {demoOverrides: nextOverrides} : {})})); }
+    catch (_) { formError("Browser storage is unavailable or full. Your contact has not been saved. Allow site storage and try again."); return; }
+    localContacts = nextContacts;
+    demoOverrides = nextOverrides;
+    setSessions(lastSessions);
+    revision += 1;
+    successMessage = editing ? `${fullName(contact)} updated.` : `${fullName(contact)} created. Saved in this browser.`;
+    savedContactId = contact.id;
+    notifyContactsChanged();
+    listFilter = "all";
+    searchText = "";
+    closeDialog();
+    window.location.hash = `contacts/${contact.id}`;
+    render();
+    setTimeout(() => document.getElementById("crm-profile-title")?.focus({preventScroll: true}), 0);
+  }
   function setSessions(sessions) {
+    lastSessions = Array.isArray(sessions) ? sessions : [];
     const knownPhones = new Set(contacts().map(contact => contact.phone));
     const terminalStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
-    const next = (Array.isArray(sessions) ? sessions : []).filter(session => session && /^CA[0-9a-fA-F]{32}$/.test(session.call_sid) && knownPhones.has(normalizePhone(session.call_detail?.caller_number))).map(session => {
+    const next = lastSessions.filter(session => session && /^CA[0-9a-fA-F]{32}$/.test(session.call_sid) && knownPhones.has(normalizePhone(session.call_detail?.caller_number))).map(session => {
       const detail = session.call_detail;
       const live = !session.ended_at && !detail.ended_at && !terminalStatuses.has(session.status);
       const failed = ["failed", "error"].includes(session.status);
@@ -188,13 +453,15 @@
     window.addEventListener("storage", event => {
       if ((event.storageArea && event.storageArea !== localStorage) || (event.key !== STORAGE_KEY && event.key !== null)) return;
       localContacts = [];
+      demoOverrides = [];
       storageWarning = "";
       readStorage();
+      setSessions(lastSessions);
       revision += 1;
       notifyContactsChanged();
       render();
     });
   }
-  window.DashboardCRM = {openCreateContact, render, setSessions, findContactByPhone};
+  window.DashboardCRM = {openCreateContact, openEditContact, render, setSessions, findContactByPhone};
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initialize, {once: true}); else initialize();
 })();

@@ -49,7 +49,7 @@ Installation takes about 2–5 minutes when Python 3.11+, authenticated ngrok, a
 
 4. Run `python3 scripts/server.py status`, then call the Twilio number. For Build 0, expect **“New College Data Science Team”** and the call to end.
 
-The installer creates the separate service checkout and Python environment. On first installation it copies the project's `.env` privately and migrates existing runner and webhook metadata so the current ngrok tunnel can be reused. Subsequent configuration changes belong in **`~/Library/Application Support/NewCollegeOperator/.env`**; editing the project's `.env` does not change the installed service's settings.
+The installer creates the separate service checkout and Python environment. On first installation it copies the project's `.env` privately and migrates existing runner and webhook metadata so the current ngrok tunnel can be reused. Reinstalling preserves the service's `.env`. Subsequent configuration changes belong in **`~/Library/Application Support/NewCollegeOperator/.env`**; editing the project's `.env` does not change the installed service's settings. After editing the active configuration, run `python3 scripts/server.py stop`, then `python3 scripts/server.py start` from the project to restart the application with those settings.
 
 The service runs as the macOS LaunchAgent `com.newcollege.passive-operator`. It starts at login and restarts if its supervisor exits. It starts or recovers the local app and ngrok tunnel and updates the Twilio voice webhook and GitHub push webhook when the public tunnel URL changes. Repository administration access is required to create or update the GitHub hook.
 
@@ -60,7 +60,7 @@ cd "$HOME/Library/Application Support/NewCollegeOperator"
 .venv/bin/python scripts/configure_github.py --apply
 ```
 
-It creates or updates the repository's push webhook using the current `PUBLIC_BASE_URL` and the secret in the service's `.env`. Running it without `--apply` inspects configuration. From the same service directory, the Twilio equivalent is `.venv/bin/python scripts/configure_twilio.py --apply`.
+It creates or updates the repository's push webhook using the current `PUBLIC_BASE_URL` and the secret in the service's `.env`. Run this helper after rotating `GITHUB_WEBHOOK_SECRET`, too. Running it without `--apply` inspects configuration. From the same service directory, the Twilio equivalent is `.venv/bin/python scripts/configure_twilio.py --apply`.
 
 ## Operate and recover
 
@@ -94,7 +94,7 @@ Run `python3 scripts/server.py stop` to disable the supervisor and stop the mana
 
 To undo a published application change, push a new commit that restores the intended code. The supervisor deploys that revision through the same dependency, test, and health checks. It does not rewrite GitHub history.
 
-The supervisor uses deployment-management scripts from the installed service checkout. Changes to those scripts require a deliberate service update and reinstall; deploying application releases does not replace the running supervisor. Keep the service's `.env` when maintaining it. Before updating your editable project checkout, finish or preserve local edits and confirm `git status` is clean.
+The supervisor uses deployment-management scripts from the installed service checkout. Changes to those scripts require a deliberate service update and reinstall; deploying application releases does not replace the running supervisor. After publishing an infrastructure change, rerun `python3 scripts/server.py install` from the project to update the clean service checkout from GitHub and reinstall it. The service's `.env` is preserved. Before updating your editable project checkout, finish or preserve local edits and confirm `git status` is clean.
 
 ## Keep the Mac available
 

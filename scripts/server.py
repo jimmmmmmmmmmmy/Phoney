@@ -171,7 +171,7 @@ def status():
     print("Login service: " + ("loaded" if result.returncode == 0 else "stopped"))
     if result.returncode == 0:
         for line in result.stdout.splitlines():
-            if line.strip().startswith(("state =", "pid =", "last exit code =")):
+            if line.startswith(("\tstate =", "\tpid =", "\tlast exit code =")):
                 print(line.strip())
     subprocess.run([str(PYTHON), str(ROOT / "scripts/deploy.py"), "status"], check=False, timeout=10)
     subprocess.run([str(PYTHON), str(ROOT / "scripts/dev.py"), "status"], check=False, timeout=10)

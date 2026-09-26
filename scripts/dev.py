@@ -57,6 +57,9 @@ def write_state(state):
 def available(port):
     try:
         with socket.socket() as sock:
+            # Match uvicorn's reuse policy: a closed HTTP connection in TIME_WAIT
+            # must not prevent a replacement server from taking this port.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind(("127.0.0.1", port))
         return True
     except OSError:

@@ -2,6 +2,7 @@
 import json
 import os
 import signal
+import socket
 import subprocess
 from unittest.mock import Mock
 
@@ -201,3 +202,29 @@ def test_shutdown_after_preparation_never_activates(supervisor, monkeypatch):
         supervisor.check()
     activate.assert_not_called()
     assert supervisor.state.get("failed_commit") is None
+
+
+def test_available_refuses_an_active_listener():
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        assert not deploy.dev.available(listener.getsockname()[1])
+
+
+def test_available_allows_rebind_after_server_closes_connection():
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        address = listener.getsockname()
+        listener.listen()
+        with socket.create_connection(address, timeout=2) as client:
+            connection, _ = listener.accept()
+            with connection:
+                connection.settimeout(2)
+                # Server sends the first FIN, leaving its port in TIME_WAIT.
+                connection.shutdown(socket.SHUT_WR)
+                assert client.recv(1) == b""
+                client.shutdown(socket.SHUT_WR)
+                assert connection.recv(1) == b""
+    assert deploy.dev.available(address[1])

@@ -1,10 +1,10 @@
 # Build the operator with a Python audio bridge
 
-**Partner reference only:** current implementation work is limited to Twilio routing and passive capture. AI detection and voice-agent code remain partner-owned; use [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md) for the implemented integration seam.
+**Future agent reference:** the implemented baseline includes Twilio routing, passive capture, and [Build 3 live Deepgram transcripts](BUILD_3.md). Detection, Gemini dialogue, ElevenLabs voice generation, and keypad takeover remain partner work. Use [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md) for the available audio and text interfaces.
 
 **Start by implementing two Twilio call legs connected through Python. Get two people talking through that bridge, then replace one direction with the cloned voice pipeline.**
 
-This is the selected implementation recipe for the [final product](FINAL_BUILD.md). It describes code to add, not features already running. Build 2 includes the conference, passive capture, ngrok, signed webhooks, and GitHub deployment. Keep [Build 1](BUILD_1.md) as the small conference smoke test; its final-build successor uses the bridge below. Budget roughly 4–8 focused hours for the bridge/keypad prototype and another 8–16 for provider integration and failure tests, assuming working provider accounts and two test phones. These are engineering estimates, not measured build times.
+This is the selected implementation recipe for the [final product](FINAL_BUILD.md). It describes code to add, not features already running. Build 3 includes the conference, passive capture, observational Deepgram transcription, an authenticated transcript viewer, ngrok, signed webhooks, and GitHub deployment. Its current caller-playback transcript is not the isolated owner input drawn below. Keep [Build 1](BUILD_1.md) as the small conference smoke test; its final-build successor uses the bridge below. Budget roughly 4–8 focused hours for the bridge/keypad prototype and another 8–16 for provider integration and failure tests, assuming working provider accounts and two test phones. These are engineering estimates, not measured build times.
 
 ## Use this architecture
 
@@ -51,8 +51,8 @@ All paths in this table are **implementation targets**, except existing `app.py`
 | `operator_service/routes.py`, `sessions.py` | Authenticated call-start API, TwiML, role binding, call callbacks, session locks, deadlines and cleanup. Mount from `create_app` in `app.py`. |
 | `operator_service/audio.py`, `codecs.py` | Two WebSocket readers, bounded queues, paced writers, owner monitor mix, interruption, generation checks. |
 | `operator_service/controls.py`, `profiles.json` | Owner keypad parser, prompt selection, IVR digits, mode controller, owner notification. |
-| `operator_service/stt.py`, `llm.py`, `tts.py` | Provider adapters from [VOICE_STACK.md](VOICE_STACK.md), ordered transcripts and reply pipeline. |
-| `scripts/call.py`, `clone_voice.py`, `send_dtmf.py`; `tests/test_operator_*.py` | Local CLI wrappers, sample enrollment, deterministic fake-stream/provider tests. Extend `scripts/deploy.py` with call draining before activation. |
+| `operator_service/stt.py`, `llm.py`, `tts.py` | Adapt the existing observational `transcription/` transport for the future isolated call legs; add Gemini/TTS adapters from [VOICE_STACK.md](VOICE_STACK.md), ordered context and reply pipeline. |
+| `scripts/call.py`, `clone_voice.py`, `send_dtmf.py`; `tests/test_operator_*.py` | Local CLI wrappers, sample enrollment, deterministic fake-stream/provider tests. Preserve existing call/capture/transcription deployment draining and add the future bridge's work counts. |
 
 Use `operator_service`, not `operator`, to avoid shadowing Python's standard library. Pin Python 3.11 for this prototype if using its `audioop` codec/mixer. Before a newer-Python upgrade, replace that module or add a tested compatible dependency: `audioop` was removed in Python 3.13. [Python audioop lifecycle](https://docs.python.org/3/library/audioop.html).
 

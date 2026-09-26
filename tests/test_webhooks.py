@@ -59,8 +59,9 @@ def test_wrong_account_or_call_rejected(client):
 
 
 def test_routes_and_status(client):
-    assert client.get("/health").json() == {"status": "ok", "service": "passive-operator", "build": 2,
-                                           "switchboard_ready": False, "media_capture_enabled": False}
+    assert client.get("/health").json() == {"status": "ok", "service": "passive-operator", "build": 3,
+                                           "switchboard_ready": False, "media_capture_enabled": False,
+                                           "transcription_enabled": False}
     assert client.get("/voice").status_code == 405
     assert client.post("/voice", json=FORM).status_code == 415
     assert signed_post(client, "/status", {**FORM, "CallStatus": "completed"}).status_code == 204

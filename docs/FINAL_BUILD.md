@@ -1,12 +1,12 @@
 # Final build — put your AI on the call
 
-**Partner reference only:** current implementation work is limited to Twilio routing and passive capture. AI detection and voice-agent code remain partner-owned; use [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md) for the implemented integration seam.
+**Future agent reference:** the implemented baseline includes Twilio routing, passive capture, and [Build 3 live Deepgram transcripts](BUILD_3.md). Detection, Gemini dialogue, ElevenLabs voice generation, and keypad takeover remain partner work. Use [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md) for the available audio and text interfaces.
 
 **Call a business, press `#1`, and let an agent using a clone of your own voice continue the conversation. Press another shortcut to change its instructions, or take the conversation back.**
 
 This is the modern version of putting someone on hold: instead of leaving them with elevator music while you step away, your AI representative stays in the conversation. It sounds like you, knows what has already been said, and works on the task you assigned.
 
-**Status: specified for implementation.** The running [Build 2](BUILD_2.md) connects two humans in a conference and adds passive audio capture; its real-phone capture check is pending. Build the final behavior with the selected [Python bridge recipe](IMPLEMENTATION.md) and [voice API adapters](VOICE_STACK.md). This extends the original inbound screening concept to user-controlled delegation on both inbound and outbound calls.
+**Status: specified for implementation.** The [Build 3 baseline](BUILD_3.md) connects two humans, captures audio, and supplies observational Deepgram transcripts with an HTML viewer; actual phone capture/transcription acceptance remains pending. Build the final behavior with the selected [Python bridge recipe](IMPLEMENTATION.md) and [voice API adapters](VOICE_STACK.md). This extends the original inbound screening concept to user-controlled delegation on both inbound and outbound calls.
 
 ## Example: calling a car dealership
 

@@ -1,25 +1,27 @@
 ```sh
-python3 scripts/server.py status
+.venv/bin/python scripts/open_dashboard.py
 ```
 
 # Passive Operator
 
-**Build 2:** the Twilio number still rings the fixed teammate in `CALLEE_NUMBER`; a passive Media Stream now saves the caller's input and playback into separate private WAV files. The caller hears **“New College Data Science Team”** and a recording notice. Human audio stays in the Twilio conference even if capture fails. Read [the Build 2 guide](docs/BUILD_2.md) for configuration, file locations, and phone checks.
+**Build 3:** the existing two-human Twilio call now has optional live **Deepgram Nova-3 transcription**, an HTML dashboard, authenticated JSON/text exports, and saved private transcript JSON. The same media tap continues writing the two original WAV tracks. Open the viewer with the command above; it reads the installed server's private configuration without printing its access token. See [the Build 3 guide](docs/BUILD_3.md) for setup, output contracts, and acceptance checks.
 
-**Today's scope is Twilio only.** AI detection, transcription, voice cloning, and voice-agent implementation belong to our partners. This repository provides [typed audio contracts and an offline replay tool](docs/PARTNER_HANDOFF.md) so partners can develop without modifying the phone bridge or making another call. No AI-provider dependencies or calls were added.
+**Current scope: Twilio calling, capture, and observational speech-to-text.** Deepfake detection, Gemini dialogue, ElevenLabs voice cloning, and keypad takeover remain partner work. Partners can consume [saved transcripts and typed audio replay](docs/PARTNER_HANDOFF.md) while the people continue talking through the Twilio conference.
 
-**Verification (2026-09-26):** 212 automated tests pass. A real local Uvicorn/WebSocket test accepted the signed upgrade and wrote two correctly formatted WAV tracks. Build 1's real-phone audio and cleanup tests passed; Build 2's real Twilio capture check is pending.
+**Verification (2026-09-26):** 255 automated tests pass. Generated speech passed a real Deepgram 8 kHz probe and a local Uvicorn test using signed Twilio-protocol media: both directions produced live browser text, finalized segments, JSON/text exports, and completed WAV capture. Browser inspection found no JavaScript errors. **Real phone capture/transcription acceptance remains pending.** Build 1's two-human phone audio and cleanup checks already passed. Check the deployed revision with `python3 scripts/server.py status` and `/health`.
 
-**Partner implementation guides:** [Gemini + ElevenLabs voice stack](docs/VOICE_STACK.md), [deepfake detection architecture and implementation](docs/DEEPFAKE_DETECTION.md), [Modulate API adapters](docs/MODULATE.md), and [alternative detection APIs and local models](docs/DETECTION_ALTERNATIVES.md). These are build instructions for partners; provider integrations are not running. Browse the [documentation index](docs/README.md) to pick a starting point.
+**Choose a guide:** [live transcript dashboard](docs/BUILD_3.md), [audio quality and VoIP](docs/AUDIO_QUALITY.md), [Gemini + ElevenLabs voice stack](docs/VOICE_STACK.md), or [deepfake detection implementation](docs/DEEPFAKE_DETECTION.md). The detector's [Modulate adapters](docs/MODULATE.md) and [alternative models/APIs](docs/DETECTION_ALTERNATIVES.md) are documented partner targets. Browse the [documentation index](docs/README.md) for all starting points.
 
 ## Partner starting point
 
-1. Make a short recorded test call through the Twilio number and hang up.
-2. Open the completed capture under `MEDIA_STORAGE_DIR/<CallSid>/` and check `manifest.json` has `status: completed`.
-3. Run `.venv/bin/python scripts/replay_capture.py /absolute/path/to/manifest.json` for a local summary.
-4. Implement `AudioConsumer.on_frame` / `on_end` using [the handoff examples](docs/PARTNER_HANDOFF.md). Replay delivers mono PCM16 at 8 kHz with track IDs and timestamps.
+1. Open the dashboard and select an available transcript. Export JSON for structured segments or text for a readable conversation.
+2. For acoustic work, open the matching completed capture under `MEDIA_STORAGE_DIR/<CallSid>/`; check `manifest.json` reports `status: completed`.
+3. Run `.venv/bin/python scripts/replay_capture.py /absolute/path/to/manifest.json` for a local audio summary.
+4. Implement `AudioConsumer.on_frame` / `on_end` using [the handoff examples](docs/PARTNER_HANDOFF.md), or consume the authenticated transcript API for text. The replay tool itself makes no network requests.
 
-`inbound.wav` is the caller microphone. `outbound.wav` is what that caller heard, including the teammate and hold audio. Captures stay on this Mac, outside Git. The replay tool makes no network requests.
+`inbound.wav` and **Caller input** refer to the caller microphone. `outbound.wav` and **Caller playback** refer to what that caller heard, including the teammate, hold music, and prompts. Playback is not an isolated teammate microphone. WAVs remain PCM16 at 8 kHz; [switching an endpoint to VoIP does not increase Media Streams' export rate](docs/AUDIO_QUALITY.md).
+
+Private transcript JSON is saved at `TRANSCRIPT_STORAGE_DIR/<CallSid>.json`; captures and transcripts stay outside Git and have no automatic deletion. Transcription supports two active calls at once, with two provider streams per call. Additional calls continue normally and show a visible transcription capacity failure. The dashboard retains ten recent finished sessions in memory/reloads; those history limits do not delete older disk files.
 
 **Final-build vision:** call someone through the operator, press `#1`, and let an agent using a clone of your own voice take over. `#2`, `#3`, and `#4` switch its saved prompts while the call continues. This is a modern version of being on hold: your AI representative keeps the conversation going while you step away. Outbound calls, inbound calls, voice enrollment, and returning control to the human are specified in [the final-build plan](docs/FINAL_BUILD.md). These features are planned, not yet implemented.
 
@@ -50,7 +52,7 @@ Use **Python/FastAPI + two Twilio bidirectional Media Streams + Deepgram + Googl
 
 [**Implementation recipe →**](docs/IMPLEMENTATION.md) has exact modules, API routes, TwiML/Python examples, keypad parsing, audio mixing, timing policies, failure recovery, and a phone test for each stage. [**Voice provider adapters →**](docs/VOICE_STACK.md) has the actual cloning, STT, text-generation, and speech-streaming requests. [**Product behavior →**](docs/FINAL_BUILD.md) describes the dealership experience and acceptance criteria.
 
-The design includes workarounds for the platform gaps: Python supplies the audio switch, Twilio call updates supply phone-menu digits, and FFmpeg supplies format conversion when needed. **These are later-build reference plans, outside today’s Twilio scope.** The implemented system is the conference bridge and passive capture; partner work starts from the replay interface above.
+The design includes workarounds for the platform gaps: Python supplies the audio switch, Twilio call updates supply phone-menu digits, and FFmpeg supplies format conversion when needed. **These are later-build reference plans.** The implemented system is the conference bridge, passive capture, and Deepgram transcript viewer. Agent routing, cloned playback, and keypad controls still need implementation; partners can start with the audio and text outputs above.
 
 ## GitHub and the running server
 
@@ -75,7 +77,7 @@ These commands are for manual development. Use [server mode](docs/SERVER.md) for
 
    `requirements-lock.txt` pins the verified environment, including tests. `requirements.txt` and `requirements-dev.txt` list the direct dependencies for intentional upgrades. Use Python 3.11 or newer.
 
-2. Fill in `.env` using `.env.example` as the reference. Set `CALLEE_NUMBER` to the teammate’s full E.164 number, different from `TWILIO_NUMBER`. Preserve existing credentials; `TWILIO_AUTH_TOKEN` validates callbacks. For automatic deployment, also set a random `DEPLOY_CONTROL_TOKEN` of at least 32 characters. Install ngrok and authenticate it if needed.
+2. Fill in `.env` using `.env.example` as the reference. Enable capture/transcription and set private viewer/provider settings using [Build 3 configuration](docs/BUILD_3.md#configure-the-installed-server) when you want live text; both optional features can remain disabled for a basic bridge test. Set `CALLEE_NUMBER` to the teammate’s full E.164 number, different from `TWILIO_NUMBER`. Preserve existing credentials; `TWILIO_AUTH_TOKEN` validates callbacks. For automatic deployment, also set a random `DEPLOY_CONTROL_TOKEN` of at least 32 characters. Install ngrok and authenticate it if needed.
 
 3. Start the app and tunnel:
 
@@ -101,6 +103,7 @@ Keep this computer awake while testing. The local app and ngrok must both remain
 
 | Action | Command |
 | --- | --- |
+| Open the private transcript viewer | `.venv/bin/python scripts/open_dashboard.py` |
 | Check processes and current webhook URL | `python3 scripts/dev.py status` |
 | Stop managed app and tunnel | `python3 scripts/dev.py stop` |
 | Run automated checks | `.venv/bin/python -m pytest` |
@@ -110,8 +113,8 @@ An unsigned request to `/voice` is rejected. Browser visits and ordinary `curl` 
 
 Private process state and logs live in `.runtime/`. The configuration helper saves the prior Twilio settings there before applying a change. If startup fails, inspect `.runtime/app.log` or `.runtime/ngrok.log`.
 
-## Build 2 boundary
+## Build 3 boundary
 
-This build provides the two-human conference, one fixed outgoing destination, signed callbacks and media WebSockets, private audio capture, an offline partner interface, timeout cleanup, and automatic deployment that waits for calls and capture work. It does not transcribe, clone voices, detect bots, generate speech, or implement an agent. Session state is in memory; explicit stop or a process crash ends continuity. The [server guide](docs/SERVER.md) covers operation and recovery.
+This build provides the two-human conference, one fixed outgoing destination, signed callbacks/media WebSockets, private audio capture, optional live Deepgram transcription, a protected HTML viewer, transcript exports, offline PCM replay, timeout cleanup, and deployment draining for outstanding work. It does not clone voices, detect deepfakes or conversational bots, generate replies, or implement an agent. Session state is in memory; explicit stop or a process crash ends continuity. The [server guide](docs/SERVER.md) covers operation and recovery.
 
-The initial roadmap comes from [the shared Grok conversation](https://grok.com/share/bGVnYWN5_618ab7b3-9c27-4570-9709-edd7bee0bc21). The conference baseline is in [docs/BUILD_1.md](docs/BUILD_1.md); current audio-capture checks are in [docs/BUILD_2.md](docs/BUILD_2.md). The expanded product direction is in [docs/FINAL_BUILD.md](docs/FINAL_BUILD.md).
+The initial roadmap comes from [the shared Grok conversation](https://grok.com/share/bGVnYWN5_618ab7b3-9c27-4570-9709-edd7bee0bc21). The conference baseline is in [docs/BUILD_1.md](docs/BUILD_1.md); audio-capture checks are in [docs/BUILD_2.md](docs/BUILD_2.md), and current transcript checks are in [docs/BUILD_3.md](docs/BUILD_3.md). The expanded product direction is in [docs/FINAL_BUILD.md](docs/FINAL_BUILD.md).

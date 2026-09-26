@@ -1,4 +1,4 @@
-"""Build 2: a signed Twilio switchboard with optional passive audio capture."""
+"""Build 3: a signed Twilio switchboard, capture, and private live transcripts."""
 
 import hashlib
 import hmac
@@ -18,6 +18,8 @@ from config import Settings
 from webhooks import require_sid, twilio_validator, valid_media_signature
 from switchboard.service import SessionRejected, Switchboard
 from media_capture import CaptureManager
+from transcription import TranscriptionManager
+from dashboard import register_dashboard
 
 logger = logging.getLogger("uvicorn.error")
 MAX_GITHUB_BODY_BYTES = 1024 * 1024
@@ -40,8 +42,9 @@ def write_deploy_trigger(path: str, delivery_id: str) -> None:
             os.unlink(temporary)
 
 
-def create_app(settings: Settings, gateway=None) -> FastAPI:
-    media_capture = CaptureManager(settings)
+def create_app(settings: Settings, gateway=None, transcription_connector=None) -> FastAPI:
+    transcription = TranscriptionManager(settings, connector=transcription_connector)
+    media_capture = CaptureManager(settings, observer=transcription)
     switchboard = Switchboard(settings, gateway=gateway, on_end=media_capture.finish)
 
     @asynccontextmanager
@@ -49,19 +52,23 @@ def create_app(settings: Settings, gateway=None) -> FastAPI:
         yield
         await switchboard.close()
         await media_capture.close()
+        await transcription.close()
 
-    app = FastAPI(title="Passive Operator — Build 2", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Passive Operator — Build 3", docs_url=None, redoc_url=None,
                   openapi_url=None, redirect_slashes=False, lifespan=lifespan)
     app.state.switchboard = switchboard
     app.state.media_capture = media_capture
+    app.state.transcription = transcription
+    register_dashboard(app, settings, transcription)
     validate_twilio = twilio_validator(settings)
 
     @app.get("/health")
     @app.get("/")
     async def health():
-        result = {"status": "ok", "service": "passive-operator", "build": 2,
+        result = {"status": "ok", "service": "passive-operator", "build": 3,
                   "switchboard_ready": settings.switchboard_ready,
-                  "media_capture_enabled": settings.media_capture_enabled and settings.switchboard_ready}
+                  "media_capture_enabled": settings.media_capture_enabled and settings.switchboard_ready,
+                  "transcription_enabled": settings.transcription_enabled and settings.switchboard_ready}
         if settings.deploy_commit:
             result["commit"] = settings.deploy_commit
         return result
@@ -78,7 +85,7 @@ def create_app(settings: Settings, gateway=None) -> FastAPI:
         return JSONResponse({"draining": switchboard.draining,
                              "active_sessions": switchboard.active_count,
                              "pending_work": switchboard.pending_count + media_capture.active_count
-                                             + media_capture.pending_count},
+                                             + media_capture.pending_count + transcription.active_count},
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/internal/deploy", dependencies=[Depends(validate_deploy_control)])
@@ -162,7 +169,9 @@ def create_app(settings: Settings, gateway=None) -> FastAPI:
                     # Passive capture must not prevent the two humans talking.
                     logger.error("capture_reservation_failed type=%s", type(exc).__name__)
                 else:
-                    response.say("This demo call records audio for testing.", language="en-US")
+                    notice = ("This demo call records and transcribes audio for testing."
+                              if settings.transcription_enabled else "This demo call records audio for testing.")
+                    response.say(notice, language="en-US")
                     stream = response.start().stream(
                         url=settings.public_base_url.replace("https://", "wss://", 1)
                             + f"/media/{call_sid}/",

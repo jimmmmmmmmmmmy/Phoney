@@ -29,6 +29,11 @@ class Settings:
     media_capture_enabled: bool = False
     media_storage_dir: str = ""
     media_max_seconds: int = 1800
+    transcription_enabled: bool = False
+    deepgram_api_key: str = field(default="", repr=False)
+    deepgram_model: str = "nova-3"
+    transcript_storage_dir: str = ""
+    dashboard_token: str = field(default="", repr=False)
 
     def __post_init__(self):
         if not self.account_sid.startswith("AC") or len(self.account_sid) != 34:
@@ -63,6 +68,21 @@ class Settings:
             raise ValueError("Set MEDIA_STORAGE_DIR to an absolute private directory before enabling capture.")
         if type(self.media_max_seconds) is not int or not 1 <= self.media_max_seconds <= 3600:
             raise ValueError("MEDIA_MAX_SECONDS must be between 1 and 3600 seconds.")
+        if type(self.transcription_enabled) is not bool:
+            raise ValueError("TRANSCRIPTION_ENABLED must be true or false.")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", self.deepgram_model):
+            raise ValueError("DEEPGRAM_MODEL must be a model identifier.")
+        if self.dashboard_token and not 32 <= len(self.dashboard_token) <= 256:
+            raise ValueError("DASHBOARD_TOKEN must contain 32 to 256 characters.")
+        if self.transcription_enabled:
+            if not self.media_capture_enabled:
+                raise ValueError("Enable MEDIA_CAPTURE_ENABLED before live transcription.")
+            if not self.deepgram_api_key or self.deepgram_api_key == "REPLACE_ME":
+                raise ValueError("Set DEEPGRAM_API_KEY before enabling transcription.")
+            if not Path(self.transcript_storage_dir).is_absolute():
+                raise ValueError("TRANSCRIPT_STORAGE_DIR must be an absolute private directory.")
+            if not self.dashboard_token:
+                raise ValueError("Set DASHBOARD_TOKEN before enabling transcription.")
 
     @property
     def switchboard_ready(self):
@@ -74,6 +94,9 @@ class Settings:
         capture_flag = os.getenv("MEDIA_CAPTURE_ENABLED", "false").strip().lower()
         if capture_flag not in {"true", "false"}:
             raise ValueError("MEDIA_CAPTURE_ENABLED must be true or false.")
+        transcription_flag = os.getenv("TRANSCRIPTION_ENABLED", "false").strip().lower()
+        if transcription_flag not in {"true", "false"}:
+            raise ValueError("TRANSCRIPTION_ENABLED must be true or false.")
         return cls(
             account_sid=os.getenv("TWILIO_ACCOUNT_SID", "").strip(),
             auth_token=os.getenv("TWILIO_AUTH_TOKEN", "").strip(),
@@ -91,4 +114,9 @@ class Settings:
             media_capture_enabled=capture_flag == "true",
             media_storage_dir=os.getenv("MEDIA_STORAGE_DIR", "").strip(),
             media_max_seconds=int(os.getenv("MEDIA_MAX_SECONDS", "1800")),
+            transcription_enabled=transcription_flag == "true",
+            deepgram_api_key=os.getenv("DEEPGRAM_API_KEY", "").strip(),
+            deepgram_model=os.getenv("DEEPGRAM_MODEL", "nova-3").strip(),
+            transcript_storage_dir=os.getenv("TRANSCRIPT_STORAGE_DIR", "").strip(),
+            dashboard_token=os.getenv("DASHBOARD_TOKEN", "").strip(),
         )

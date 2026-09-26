@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="referrer" content="no-referrer">
+  <title>Call desk · New College Data Science Team</title>
+  <style>
+    :root{--ink:#132c38;--muted:#627780;--teal:#087e83;--teal-light:#e3f3ef;--paper:#f3f6f4;--line:#dce5e1;--red:#aa4238;--red-light:#fff0ed;--shadow:0 12px 40px #153c3410;--radius:20px}
+    *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    button,input{font:inherit}button,a,input{touch-action:manipulation}button,a{ -webkit-tap-highlight-color:transparent}button{cursor:pointer}button:disabled{cursor:default;opacity:.5}
+    a{color:var(--teal)}[hidden]{display:none!important}button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #55b8b7;outline-offset:3px}
+    .topbar{height:92px;display:flex;align-items:center;justify-content:space-between;gap:20px;border-bottom:1px solid var(--line);padding:0 5vw;background:#ffffffb3}
+    .brand{display:flex;align-items:center;gap:13px}.brand-mark{width:44px;height:44px;border-radius:13px;background:var(--ink);color:#fff;display:grid;place-items:center;font-size:15px;font-weight:800;letter-spacing:-1px}
+    .brand-name{font-size:14px;font-weight:730;letter-spacing:-.2px}.brand-sub{font-size:11px;color:var(--muted);letter-spacing:1.6px;text-transform:uppercase;margin-top:2px}
+    .top-actions{display:flex;align-items:center;gap:14px}.connection{display:inline-flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap}
+    .dot{width:7px;height:7px;border-radius:50%;background:#a4b4af;flex:0 0 auto}.connection[data-tone="good"] .dot{background:#0b9180;box-shadow:0 0 0 4px #e0f3ed}.connection[data-tone="bad"] .dot{background:var(--red)}
+    .quiet-button{padding:9px 13px;border:1px solid var(--line);border-radius:10px;color:var(--ink);background:white;font-size:12px;font-weight:650}.quiet-button:hover{background:#edf4f0}
+    main{max-width:1450px;margin:0 auto;padding:42px 5vw 32px}.eyebrow{color:var(--teal);font-size:11px;font-weight:750;letter-spacing:2px;text-transform:uppercase}
+    h1,h2,p{margin:0}h1{font-size:clamp(29px,3vw,40px);letter-spacing:-1.4px;line-height:1.15;font-weight:720}.intro{display:flex;justify-content:space-between;align-items:end;gap:20px;margin:9px 0 28px}.intro p{color:var(--muted);margin-top:10px}
+    .count{font-size:12px;white-space:nowrap;color:var(--muted);padding-bottom:3px}.count strong{font-size:23px;color:var(--ink);margin-right:5px;font-weight:600;font-variant-numeric:tabular-nums}
+    .login-layout{display:grid;grid-template-columns:1fr 1fr;gap:0;background:white;border:1px solid var(--line);border-radius:25px;overflow:hidden;box-shadow:var(--shadow);max-width:1030px;margin:36px auto}
+    .login-story{background:var(--ink);color:white;padding:52px 42px;display:flex;flex-direction:column;min-height:400px;justify-content:space-between}.login-story .eyebrow{color:#81d1bf}.login-story h1{font-size:39px;margin:20px 0 15px;letter-spacing:-1.5px;max-width:340px}.login-story p{color:#bed0d3;max-width:310px;font-size:14px;line-height:1.8}
+    .wave{display:flex;align-items:center;gap:5px;height:55px;margin-top:34px}.wave span{display:block;width:5px;border-radius:5px;background:#76c9b6}.wave span:nth-child(4n+1){height:16px}.wave span:nth-child(4n+2){height:31px}.wave span:nth-child(4n+3){height:48px}.wave span:nth-child(4n){height:24px}
+    .login-panel{padding:52px 42px;align-self:center}.login-panel h2{font-size:24px;letter-spacing:-.6px;margin-bottom:8px}.login-panel p{color:var(--muted);font-size:14px;margin-bottom:26px}.login-panel label{display:block;font-size:12px;font-weight:700;margin-bottom:9px}
+    .login-panel input{display:block;width:100%;padding:13px 14px;border:1px solid #cbd9d3;background:#fafcfb;border-radius:10px;color:var(--ink);min-width:0}.primary{border:0;border-radius:10px;padding:13px 18px;background:var(--teal);color:white;font-weight:700;font-size:13px}.primary:hover{background:#086d73}.login-panel .primary{width:100%;margin-top:13px}
+    .login-help{font-size:11px!important;margin:17px 0 0!important}.form-error{font-size:12px;color:var(--red);margin-top:12px;min-height:18px}.banner{padding:12px 16px;border-radius:11px;background:#fff4df;color:#74541a;font-size:13px;margin-bottom:18px;border:1px solid #e9d8b1}.banner[data-tone="bad"]{background:var(--red-light);color:var(--red);border-color:#f1d2cc}
+    .desk{display:grid;grid-template-columns:245px minmax(0,1fr);gap:22px;align-items:start}.sidebar{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:19px 13px;max-height:calc(100vh - 230px);overflow:auto}
+    .sidebar-heading{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:0 6px 17px}.sidebar-heading h2{font-size:13px;font-weight:750}.follow{border:0;background:#edf3f0;border-radius:8px;color:var(--muted);padding:6px 8px;font-size:10px;font-weight:700}.follow[aria-pressed="true"]{background:var(--teal-light);color:var(--teal)}
+    .call-list{display:flex;flex-direction:column;gap:6px}.call-option{padding:13px 12px;border:1px solid transparent;border-radius:12px;text-align:left;background:transparent;color:var(--ink);width:100%}.call-option:hover{background:#f3f7f4}.call-option[aria-pressed="true"]{background:#eaf5f0;border-color:#c8e5d9}
+    .call-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.call-title{font-size:12px;font-weight:700}.call-time{font-size:10px;color:var(--muted);margin-top:4px}.call-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#85938e;font-size:10px;margin-top:5px}.call-state{width:6px;height:6px;background:#94a7a0;border-radius:100%;flex:0 0 auto}.call-state.live{background:#0b9180}.call-state.error{background:var(--red)}
+    .sidebar-empty{font-size:12px;color:var(--muted);padding:8px 9px 18px;line-height:1.8}.sidebar-note{border-top:1px solid var(--line);margin:16px 6px 0;padding-top:15px;font-size:10px;color:var(--muted);line-height:1.7}
+    .transcript-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}.card-heading{padding:23px 26px 19px;border-bottom:1px solid var(--line)}
+    .card-row{display:flex;align-items:center;justify-content:space-between;gap:16px}.card-title{display:flex;align-items:center;gap:11px;flex-wrap:wrap}.card-title h2{font-size:19px;font-weight:720;letter-spacing:-.5px}.badge{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:750;color:var(--teal);background:var(--teal-light);border-radius:20px;padding:5px 9px;text-transform:uppercase;letter-spacing:.4px}.badge[data-tone="bad"]{color:var(--red);background:var(--red-light)}.badge[data-tone="neutral"]{color:var(--muted);background:#edf2ef}
+    .session-detail{font-size:11px;color:var(--muted);margin-top:7px;overflow-wrap:anywhere}.exports{display:flex;gap:5px;flex:0 0 auto}.export{font-size:10px;border:1px solid var(--line);border-radius:7px;padding:6px 8px;color:var(--muted);text-decoration:none;font-weight:700}.export:hover{color:var(--teal);background:#f0f7f3}.export[aria-disabled="true"]{pointer-events:none;opacity:.4}
+    .tracks{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 26px 0}.track{border:1px solid var(--line);padding:12px 13px;border-radius:12px;background:#fbfcfb;min-width:0}.track-label{display:flex;justify-content:space-between;gap:10px;align-items:center;font-size:11px;font-weight:700}.track-label .direction{width:20px;height:20px;display:inline-grid;place-items:center;border-radius:6px;background:#dff1eb;color:var(--teal);margin-right:5px}.track[data-track="outbound"] .direction{background:#e8edf7;color:#586994}.track-status{font-size:10px;color:var(--muted);font-weight:500}.track-note{font-size:10px;color:var(--muted);margin-top:6px}.track-error{margin-top:7px;font-size:11px;color:var(--red);overflow-wrap:anywhere}
+    .transcript-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:21px 26px 12px;color:var(--muted);font-size:10px}.live-label{display:flex;align-items:center;gap:6px;letter-spacing:1px;text-transform:uppercase;font-weight:700}.auto-scroll{display:inline-flex;align-items:center;gap:6px;cursor:pointer}.auto-scroll input{accent-color:var(--teal);margin:0}
+    .transcript{height:clamp(340px,49vh,680px);overflow:auto;padding:3px 26px 23px;scroll-behavior:smooth;scrollbar-width:thin;scrollbar-color:#c7d8cf transparent}.messages{display:flex;flex-direction:column;gap:20px}.message{display:grid;grid-template-columns:44px minmax(0,1fr);gap:12px}.timestamp{font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#8d9c95;padding-top:3px;font-variant-numeric:tabular-nums}.message-meta{display:flex;align-items:center;gap:8px;margin-bottom:5px}.speaker{font-size:10px;color:var(--teal);font-weight:800;letter-spacing:.1px}.message[data-track="outbound"] .speaker{color:#596a91}.confidence{font-size:9px;color:#94a29c}.message-text{font-size:15px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;max-width:760px}.interim .message-text{color:#89968f}.interim .speaker{color:#81968c}.interim-label{font-size:9px;background:#f0f4f1;color:#84918a;padding:2px 5px;border-radius:4px}
+    .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:100%;min-height:260px;padding:20px}.empty-icon{display:grid;place-items:center;width:55px;height:55px;border-radius:17px;background:#e9f3ee;color:var(--teal);margin-bottom:17px}.empty h2{font-size:17px;font-weight:650;letter-spacing:-.4px;margin-bottom:8px}.empty p{font-size:12px;color:var(--muted);max-width:305px;line-height:1.8}.empty svg{width:25px;height:25px}.foot{display:flex;justify-content:space-between;gap:18px;padding:12px 26px;border-top:1px solid var(--line);font-size:10px;color:var(--muted);background:#fcfdfb}.foot span{overflow-wrap:anywhere}.page-foot{display:flex;justify-content:space-between;gap:15px;color:#81948a;font-size:10px;padding:21px 2px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    @media(min-width:1450px){main{padding-left:55px;padding-right:55px}.topbar{padding-left:calc((100vw - 1340px)/2);padding-right:calc((100vw - 1340px)/2)}}
+    @media(max-width:850px){.desk{grid-template-columns:195px minmax(0,1fr);gap:15px}.card-heading,.tracks{padding-left:19px;padding-right:19px}.transcript,.transcript-toolbar{padding-left:19px;padding-right:19px}.card-row{align-items:start}.tracks{gap:8px}.track-label{align-items:start;flex-direction:column;gap:3px}.login-story,.login-panel{padding:35px 28px}.login-story h1{font-size:32px}}
+    @media(max-width:650px){.topbar{height:77px;padding:0 20px}.brand-name{font-size:11px}.brand-sub{font-size:9px;letter-spacing:1px}.brand-mark{width:36px;height:36px;border-radius:11px}.top-actions{gap:9px}.connection{font-size:10px}.quiet-button{padding:7px 9px;font-size:10px}main{padding:29px 20px 20px}.intro{margin-bottom:22px;align-items:start}.intro p{font-size:12px;max-width:235px}.count{font-size:10px}.count strong{font-size:20px}.desk{display:block}.sidebar{max-height:none;padding:14px;margin-bottom:15px}.sidebar-heading{padding-bottom:10px}.call-list{flex-direction:row;overflow:auto;max-height:110px;padding-bottom:3px}.call-option{width:165px;flex:0 0 165px}.sidebar-empty{padding:0 6px 4px}.sidebar-note{display:none}.tracks{padding-top:13px}.track{padding:9px}.track-note{line-height:1.6}.transcript{height:51vh;min-height:320px}.message{grid-template-columns:37px minmax(0,1fr);gap:8px}.message-text{font-size:14px}.card-heading{padding-top:18px;padding-bottom:15px}.card-title h2{font-size:17px}.badge{font-size:8px;padding:4px 7px}.foot{padding:11px 18px;flex-wrap:wrap;gap:5px}.login-layout{grid-template-columns:1fr;margin:9px auto 20px}.login-story{min-height:220px;padding:28px}.login-story h1{max-width:none;font-size:29px;margin:12px 0}.login-story p{max-width:none;font-size:12px}.wave{display:none}.login-panel{padding:29px}.page-foot{flex-wrap:wrap;font-size:9px}.exports{gap:4px}.export{padding:5px 6px}.session-detail{font-size:10px}}
+    @media(prefers-reduced-motion:reduce){.transcript{scroll-behavior:auto}}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="brand-mark" aria-hidden="true">NC</div><div><div class="brand-name">New College Data Science Team</div><div class="brand-sub">Call desk</div></div></div>
+    <div class="top-actions"><div id="connection" class="connection" data-tone="neutral" role="status"><span class="dot" aria-hidden="true"></span><span id="connection-text">Private viewer</span></div><button id="logout" class="quiet-button" hidden>Sign out</button></div>
+  </header>
+  <main>
+    <section id="login-view" class="login-layout" aria-labelledby="login-heading">
+      <div class="login-story"><div><div class="eyebrow">The conversation, in view</div><h1>Every call.<br>A little clearer.</h1><p>Live transcripts from the team’s phone line, with both audio directions and a simple export.</p></div><div class="wave" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div></div>
+      <div class="login-panel"><h2 id="login-heading">Open the call desk</h2><p>Enter your viewer access code to see call transcripts.</p><form id="login-form"><label for="access-code">Viewer access code</label><input id="access-code" name="token" type="password" autocomplete="off" spellcheck="false" required placeholder="Your private access code" aria-describedby="login-error"><button id="login-submit" class="primary" type="submit">Open transcripts <span aria-hidden="true">↗</span></button><div id="login-error" class="form-error" role="alert"></div></form><p class="login-help">Use the dashboard access code shared by the server owner.</p></div>
+    </section>
+    <section id="dashboard-view" hidden aria-labelledby="desk-heading">
+      <div class="eyebrow">Live transcription</div>
+      <div class="intro"><div><h1 id="desk-heading">A place for the conversation.</h1><p>Follow the current call, or return to a recent one.</p></div><div class="count"><strong id="session-count">0</strong><span id="session-count-label">calls</span></div></div>
+      <div id="banner" class="banner" role="status" hidden></div>
+      <div id="storage-warning" class="banner" data-tone="bad" role="status" hidden></div>
+      <div class="desk">
+        <aside class="sidebar" aria-label="Call selection"><div class="sidebar-heading"><h2>Recent calls</h2><button id="follow-live" class="follow" aria-pressed="true">Following live</button></div><div id="call-list" class="call-list"></div><p id="sidebar-empty" class="sidebar-empty">New calls will appear here automatically.</p><p class="sidebar-note">This view follows the caller’s audio directions. Playback can include the other participant, hold music, and prompts.</p></aside>
+        <section class="transcript-card" aria-labelledby="transcript-title">
+          <div class="card-heading"><div class="card-row"><div><div class="card-title"><h2 id="transcript-title">Waiting for a call</h2><span id="session-badge" class="badge" data-tone="neutral">Ready</span></div><p id="session-detail" class="session-detail">Transcripts will appear as people speak.</p></div><div class="exports" aria-label="Export selected call"><a id="export-txt" class="export" aria-disabled="true" tabindex="-1">TXT <span aria-hidden="true">↓</span></a><a id="export-json" class="export" aria-disabled="true" tabindex="-1">JSON <span aria-hidden="true">↓</span></a></div></div><p id="session-storage-warning" class="track-error" role="status" hidden></p></div>
+          <div class="tracks">
+            <div class="track" data-track="inbound"><div class="track-label"><span><span class="direction" aria-hidden="true">↘</span>Caller input</span><span id="inbound-status" class="track-status">Waiting</span></div><p class="track-note">Audio from the caller’s microphone.</p><p id="inbound-error" class="track-error" hidden></p></div>
+            <div class="track" data-track="outbound"><div class="track-label"><span><span class="direction" aria-hidden="true">↗</span>Caller playback</span><span id="outbound-status" class="track-status">Waiting</span></div><p class="track-note">Audio delivered to the caller.</p><p id="outbound-error" class="track-error" hidden></p></div>
+          </div>
+          <div class="transcript-toolbar"><span class="live-label"><span class="dot" aria-hidden="true"></span>Transcript</span><label class="auto-scroll"><input id="auto-scroll" type="checkbox" checked> Follow new text</label></div>
+          <div id="transcript" class="transcript" tabindex="0" aria-label="Call transcript">
+            <div id="empty" class="empty"><div class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4M8 22h8"></path></svg></div><h2 id="empty-title">Ready when you are.</h2><p id="empty-description">When a call connects, its transcript will appear here. The view updates automatically.</p></div>
+            <div id="messages" class="messages" hidden></div>
+          </div>
+          <div class="foot"><span id="provider-detail">Deepgram · live speech transcription</span><span id="transcript-summary">No finalized text yet</span></div>
+        </section>
+      </div>
+      <footer class="page-foot"><span>New College Data Science Team · Twilio call desk</span><span id="updated-at">Waiting for an update</span></footer>
+    </section>
+    <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
+  </main>
+  <script>
+    "use strict";
+    const $ = id => document.getElementById(id);
+    const trackNames = {inbound: "Caller input", outbound: "Caller playback"};
+    const state = {snapshot: null, selected: null, followLive: true, timer: null,
+      controller: null, authenticated: false, polling: false, renderKey: "", listKey: "",
+      loginBusy: false, generation: 0, refreshRequested: false};
+    const endedStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled"]);
+
+    function text(value, fallback = "") {
+      return typeof value === "string" ? value : fallback;
+    }
+    function isActive(session) {
+      return !session.ended_at && !endedStatuses.has(text(session.status).toLowerCase());
+    }
+    function readable(value) {
+      const name = text(value, "waiting").replace(/[_-]+/g, " ");
+      return name.charAt(0).toUpperCase() + name.slice(1);
+    }
+    function dateValue(value) {
+      if (typeof value === "number") return new Date(value < 1e12 ? value * 1000 : value);
+      return new Date(value);
+    }
+    function clockTime(value, withDate = false) {
+      const date = dateValue(value);
+      if (!value || Number.isNaN(date.getTime())) return "Time unavailable";
+      return new Intl.DateTimeFormat(undefined, withDate
+        ? {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}
+        : {hour: "numeric", minute: "2-digit"}).format(date);
+    }
+    function timestamp(value) {
+      const total = Math.max(0, Math.floor((Number(value) || 0) / 1000));
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor(total / 60) % 60;
+      const seconds = String(total % 60).padStart(2, "0");
+      return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${String(minutes).padStart(2, "0")}:${seconds}`;
+    }
+    function node(tag, className, content) {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (content !== undefined) element.textContent = content;
+      return element;
+    }
+    function connection(label, tone = "neutral") {
+      if ($("connection-text").textContent !== label) $("connection-text").textContent = label;
+      $("connection").dataset.tone = tone;
+    }
+    function banner(message, tone = "neutral") {
+      $("banner").textContent = message;
+      $("banner").dataset.tone = tone;
+      $("banner").hidden = !message;
+    }
+    function stopPolling() {
+      clearTimeout(state.timer);
+      state.timer = null;
+      if (state.controller) state.controller.abort();
+    }
+    function showLogin(message = "") {
+      state.generation += 1;
+      state.authenticated = false;
+      stopPolling();
+      state.snapshot = null;
+      state.selected = null;
+      state.renderKey = "";
+      state.listKey = "";
+      state.refreshRequested = false;
+      $("messages").replaceChildren();
+      $("call-list").replaceChildren();
+      renderStorageWarnings(null);
+      $("dashboard-view").hidden = true;
+      $("login-view").hidden = false;
+      $("logout").hidden = true;
+      $("login-error").textContent = message;
+      connection("Private viewer");
+    }
+    function showDashboard() {
+      state.authenticated = true;
+      $("login-view").hidden = true;
+      $("dashboard-view").hidden = false;
+      $("logout").hidden = false;
+      $("access-code").value = "";
+      $("login-error").textContent = "";
+    }
+    async function login(token) {
+      if (state.loginBusy || !token) return;
+      state.loginBusy = true;
+      state.generation += 1;
+      stopPolling();
+      $("login-submit").disabled = true;
+      $("login-submit").textContent = "Opening…";
+      $("login-error").textContent = "";
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12000);
+      try {
+        const response = await fetch("/dashboard/login", {method: "POST", credentials: "same-origin",
+          headers: {"Content-Type": "application/json"}, body: JSON.stringify({token}), signal: controller.signal});
+        if (!response.ok) {
+          throw new Error(response.status === 429 ? "Too many attempts. Wait a moment and try again."
+            : response.status === 503 ? "The viewer is not configured yet. Ask the server owner for access."
+            : "That access code was not accepted. Check it and try again.");
+        }
+        showDashboard();
+        refresh();
+      } catch (error) {
+        $("login-error").textContent = error.name === "AbortError"
+          ? "The server took too long to respond. Try again."
+          : error instanceof TypeError ? "The server could not be reached. Check your connection."
+          : error.message;
+      } finally {
+        token = "";
+        clearTimeout(timeout);
+        state.loginBusy = false;
+        $("login-submit").disabled = false;
+        $("login-submit").textContent = "Open transcripts ↗";
+      }
+    }
+    function renderCallList(sessions) {
+      const key = JSON.stringify([state.selected, state.followLive,
+        sessions.map(session => [session.call_sid, session.status, session.started_at, session.ended_at])]);
+      if (key === state.listKey) return;
+      state.listKey = key;
+      const focusedCall = document.activeElement && document.activeElement.dataset.callSid;
+      const fragment = document.createDocumentFragment();
+      sessions.forEach(session => {
+        const button = node("button", "call-option");
+        button.type = "button";
+        button.dataset.callSid = session.call_sid;
+        button.setAttribute("aria-pressed", String(session.call_sid === state.selected));
+        const top = node("div", "call-top");
+        const active = isActive(session);
+        top.append(node("span", "call-title", active ? "Current call" : `Call at ${clockTime(session.started_at)}`));
+        const dot = node("span", "call-state" + (active ? " live" : session.status === "error" ? " error" : ""));
+        dot.setAttribute("aria-hidden", "true");
+        top.append(dot);
+        button.append(top, node("div", "call-time", `${clockTime(session.started_at, true)} · ${readable(session.status)}`),
+          node("div", "call-id", text(session.call_sid).slice(-12)));
+        button.addEventListener("click", () => {
+          state.followLive = false;
+          state.selected = session.call_sid;
+          state.renderKey = "";
+          render();
+          refresh();
+        });
+        fragment.append(button);
+      });
+      $("call-list").replaceChildren(fragment);
+      if (focusedCall) {
+        for (const button of $("call-list").children) {
+          if (button.dataset.callSid === focusedCall) button.focus({preventScroll: true});
+        }
+      }
+      $("sidebar-empty").hidden = sessions.length > 0;
+      $("follow-live").setAttribute("aria-pressed", String(state.followLive));
+      $("follow-live").textContent = state.followLive ? "Following live" : "Follow live";
+    }
+    function messageRow(segment, interim = false) {
+      const track = segment.track === "outbound" ? "outbound" : "inbound";
+      const row = node("article", "message" + (interim ? " interim" : ""));
+      row.dataset.track = track;
+      row.append(node("div", "timestamp", timestamp(segment.start_ms)));
+      const content = node("div", "message-content");
+      const meta = node("div", "message-meta");
+      meta.append(node("span", "speaker", trackNames[track]));
+      if (interim) meta.append(node("span", "interim-label", "In progress"));
+      else if (Number.isFinite(segment.confidence) && segment.confidence >= 0 && segment.confidence <= 1) {
+        meta.append(node("span", "confidence", `${Math.round(segment.confidence * 100)}% confidence`));
+      }
+      content.append(meta, node("p", "message-text", text(segment.text)));
+      row.append(content);
+      return row;
+    }
+    function renderStorageWarnings(session) {
+      const globalError = text(state.snapshot && state.snapshot.storage_error);
+      const globalMessage = globalError
+        ? "Saved transcript history could not be loaded. Ask the server owner to check transcript storage. Live text may still appear."
+        : "";
+      $("storage-warning").textContent = globalMessage;
+      $("storage-warning").hidden = !globalMessage;
+      const error = text(session && session.storage_error);
+      const capacity = session && (session.finish_reason === "capacity-limit"
+        || ["inbound", "outbound"].some(track => session.tracks && session.tracks[track]
+          && session.tracks[track].error === "capacity-limit"));
+      const message = error === "not-recorded" && capacity
+        ? "Live transcription capacity was reached. No transcript was created or saved for this call. The phone call was unaffected."
+        : error === "not-recorded"
+          ? "No transcript was saved for this call."
+          : error
+            ? "This transcript could not be saved to the server. Download TXT or JSON now; it may disappear when the server restarts."
+            : "";
+      $("session-storage-warning").textContent = message;
+      $("session-storage-warning").hidden = !message;
+    }
+    function renderSession(session) {
+      renderStorageWarnings(session);
+      const enabled = state.snapshot && state.snapshot.enabled;
+      const active = session && isActive(session);
+      const loading = session && typeof state.snapshot.selected_call_sid === "string"
+        && state.snapshot.selected_call_sid !== session.call_sid;
+      $("transcript-title").textContent = session ? (active ? "Current conversation" : "Call transcript") : "Waiting for a call";
+      $("session-badge").textContent = session ? readable(session.status) : enabled ? "Ready" : "Off";
+      $("session-badge").dataset.tone = session && ["error", "failed"].includes(session.status) ? "bad" : active ? "good" : "neutral";
+      $("session-detail").textContent = session
+        ? `${clockTime(session.started_at, true)}${session.ended_at ? " · Ended " + clockTime(session.ended_at) : ""} · ${text(session.call_sid)}`
+        : "Transcripts will appear as people speak.";
+      for (const format of ["txt", "json"]) {
+        const link = $("export-" + format);
+        link.setAttribute("aria-disabled", String(!session));
+        if (session) {
+          link.href = `/api/transcripts/${encodeURIComponent(session.call_sid)}/export?format=${format}`;
+          link.removeAttribute("tabindex");
+          link.setAttribute("download", "");
+        } else {
+          link.removeAttribute("href");
+          link.setAttribute("tabindex", "-1");
+        }
+      }
+      const interims = [];
+      for (const track of ["inbound", "outbound"]) {
+        const details = session && session.tracks && session.tracks[track] || {};
+        $(track + "-status").textContent = readable(details.status || (session ? "waiting" : "idle"));
+        const error = typeof details.error === "string" ? details.error
+          : details.error && typeof details.error.message === "string" ? details.error.message : "";
+        $(track + "-error").textContent = error === "capacity-limit"
+          ? "Live transcription capacity reached." : error;
+        $(track + "-error").hidden = !error;
+        const value = details.interim;
+        const interim = typeof value === "string" ? {text: value} : value && typeof value === "object" ? value : {};
+        if (text(interim.text).trim()) interims.push({...interim, track});
+      }
+      const segments = session && Array.isArray(session.segments) ? session.segments
+        .filter(segment => segment && typeof segment === "object" && text(segment.text).trim())
+        .slice().sort((a, b) => (Number(a.start_ms) || 0) - (Number(b.start_ms) || 0)) : [];
+      const key = JSON.stringify([session && session.call_sid, segments, interims, enabled, loading, session && session.status]);
+      if (key !== state.renderKey) {
+        const changingCall = state.renderKey === "";
+        const viewport = $("transcript");
+        const previousScroll = viewport.scrollTop;
+        const fragment = document.createDocumentFragment();
+        segments.forEach(segment => fragment.append(messageRow(segment)));
+        interims.forEach(segment => fragment.append(messageRow(segment, true)));
+        $("messages").replaceChildren(fragment);
+        const hasText = segments.length + interims.length > 0;
+        $("messages").hidden = !hasText;
+        $("empty").hidden = hasText;
+        $("empty-title").textContent = loading ? "Loading this conversation…" : !enabled ? "Transcription is switched off."
+          : !session ? "Ready when you are." : active ? "Listening for the conversation…" : "No speech was finalized.";
+        $("empty-description").textContent = loading ? "Fetching the selected call’s transcript."
+          : !enabled ? "The server is connected, but transcription has not been enabled."
+          : !session ? "When a call connects, its transcript will appear here. The view updates automatically."
+          : active ? "Text will appear when speech is recognized. You can check each audio direction’s status above."
+          : "This call has no finalized transcript. Check the audio direction statuses above for details.";
+        if (changingCall || $("auto-scroll").checked) viewport.scrollTop = viewport.scrollHeight;
+        else viewport.scrollTop = previousScroll;
+        state.renderKey = key;
+      }
+      const words = segments.reduce((total, segment) => total + text(segment.text).trim().split(/\s+/).length, 0);
+      $("transcript-summary").textContent = segments.length ? `${segments.length} finalized ${segments.length === 1 ? "segment" : "segments"} · ${words} words` : "No finalized text yet";
+    }
+    function render() {
+      const snapshot = state.snapshot;
+      if (!snapshot) return;
+      const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions.filter(session => session && typeof session.call_sid === "string") : [];
+      sessions.sort((a, b) => (dateValue(b.started_at).getTime() || 0) - (dateValue(a.started_at).getTime() || 0));
+      if (state.followLive) state.selected = (sessions.find(isActive) || sessions[0] || {}).call_sid || null;
+      if (!sessions.some(session => session.call_sid === state.selected)) {
+        state.selected = (sessions.find(session => session.call_sid === snapshot.selected_call_sid)
+          || sessions[0] || {}).call_sid || null;
+      }
+      $("session-count").textContent = String(sessions.length);
+      $("session-count-label").textContent = sessions.length === 1 ? "call" : "calls";
+      $("provider-detail").textContent = `${readable(snapshot.provider || "deepgram")}${snapshot.model ? " · " + text(snapshot.model) : ""} · Speech transcription`;
+      renderCallList(sessions);
+      renderSession(sessions.find(session => session.call_sid === state.selected));
+    }
+    function refresh() {
+      clearTimeout(state.timer);
+      if (state.polling) {
+        state.refreshRequested = true;
+        if (state.controller) state.controller.abort();
+      } else poll();
+    }
+    async function poll() {
+      if (state.polling) return;
+      state.polling = true;
+      const generation = state.generation;
+      const controller = new AbortController();
+      state.controller = controller;
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      try {
+        const query = state.selected ? "?call_sid=" + encodeURIComponent(state.selected) : "";
+        const response = await fetch("/api/transcripts" + query, {credentials: "same-origin", cache: "no-store", signal: controller.signal});
+        if (generation !== state.generation) return;
+        if (response.status === 401 || response.status === 403) {
+          showLogin(state.authenticated ? "Your viewer session expired. Enter the access code to reconnect." : "");
+          return;
+        }
+        if (!response.ok) throw new Error("Snapshot unavailable");
+        const snapshot = await response.json();
+        if (generation !== state.generation) return;
+        if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.sessions)) throw new Error("Invalid snapshot");
+        showDashboard();
+        state.snapshot = snapshot;
+        render();
+        connection("Connected", "good");
+        banner(snapshot.enabled ? "" : "Live transcription is disabled on the server.");
+        $("updated-at").textContent = "Updated " + new Intl.DateTimeFormat(undefined, {hour: "numeric", minute: "2-digit", second: "2-digit"}).format(new Date());
+      } catch (error) {
+        if (generation !== state.generation || state.refreshRequested) return;
+        if (state.authenticated) {
+          connection("Reconnecting", "bad");
+          banner("The server could not be reached. Showing the last update; reconnecting automatically.", "bad");
+        } else {
+          connection("Server unavailable", "bad");
+          $("login-error").textContent = "The server could not be reached. Enter your code to try again.";
+        }
+      } finally {
+        clearTimeout(timeout);
+        state.polling = false;
+        if (state.controller === controller) state.controller = null;
+        if (state.authenticated) state.timer = setTimeout(poll, state.refreshRequested ? 0 : 1000);
+        state.refreshRequested = false;
+      }
+    }
+    $("login-form").addEventListener("submit", event => {
+      event.preventDefault();
+      const token = $("access-code").value.trim();
+      if (token) login(token);
+    });
+    $("follow-live").addEventListener("click", () => {
+      state.followLive = true;
+      state.renderKey = "";
+      render();
+      refresh();
+    });
+    $("auto-scroll").addEventListener("change", () => {
+      if ($("auto-scroll").checked) $("transcript").scrollTop = $("transcript").scrollHeight;
+    });
+    $("logout").addEventListener("click", async () => {
+      $("logout").disabled = true;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      try {
+        const response = await fetch("/dashboard/logout", {method: "POST", credentials: "same-origin", signal: controller.signal});
+        if (!response.ok) throw new Error("Logout failed");
+        showLogin();
+        $("access-code").focus();
+      } catch (error) {
+        banner("Sign out did not complete. Try again.", "bad");
+      } finally {
+        clearTimeout(timeout);
+        $("logout").disabled = false;
+      }
+    });
+    window.addEventListener("pagehide", stopPolling);
+    const fragment = new URLSearchParams(location.hash.slice(1));
+    let initialToken = fragment.get("token");
+    if (initialToken !== null) {
+      history.replaceState(null, "", location.pathname + location.search);
+      fragment.delete("token");
+    }
+    if (initialToken) {
+      login(initialToken);
+      initialToken = null;
+    } else poll();
+  </script>
+</body>
+</html>

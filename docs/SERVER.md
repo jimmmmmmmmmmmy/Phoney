@@ -115,7 +115,7 @@ Build 1 is implemented; perform the real-phone checks in [BUILD_1.md](BUILD_1.md
 
 ## Build 2 capture storage
 
-Set `MEDIA_CAPTURE_ENABLED=true`, an absolute `MEDIA_STORAGE_DIR`, and optionally `MEDIA_MAX_SECONDS` (default 1800) in the installed service's `.env`. This Mac uses the service's `.runtime/recordings` directory, outside its release checkouts. `MEDIA_CAPTURE_ENABLED=false` keeps the two-human conference without recording. The caller hears a recording notice when capture is enabled.
+Set `MEDIA_CAPTURE_ENABLED=true`, an absolute `MEDIA_STORAGE_DIR`, and optionally `MEDIA_MAX_SECONDS` (default 1800) in the installed service's `.env`. This Mac uses the service's `.runtime/recordings` directory, outside its release checkouts. To keep the two-human conference without recording, set both `TRANSCRIPTION_ENABLED=false` and `MEDIA_CAPTURE_ENABLED=false` before restarting. Build 3 requires capture while transcription is enabled; disabling only capture makes configuration invalid. The caller hears a recording notice when capture is enabled.
 
 Capture workers count toward deployment draining until their WAV files are finalized. The supervisor launches Uvicorn with a 64 KiB WebSocket message limit. Updating those launch arguments requires the usual manager reinstall after pushing; application-only revisions still deploy automatically. Explicit service stop ends the call and attempts bounded capture finalization; a process crash can leave incomplete files. Only completed manifests are accepted by partner replay.
 

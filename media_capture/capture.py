@@ -121,11 +121,22 @@ def _private_directory(path: Path) -> int:
         raise
 
 
+def _observe(observer, method: str, *args):
+    """Optional partners cannot break capture, even when their callback fails."""
+    if observer is not None:
+        try:
+            getattr(observer, method)(*args)
+        except Exception:
+            pass
+
+
 class _Recorder:
-    def __init__(self, settings, ticket: CaptureTicket, websocket):
+    def __init__(self, settings, ticket: CaptureTicket, websocket, observer=None):
         self.settings = settings
         self.ticket = ticket
         self.websocket = websocket
+        self.observer = observer
+        self.observer_finished = False
         self.started_at = _now()
         self.started_monotonic = time.monotonic()
         self.frames: queue.Queue[_Frame] = queue.Queue(maxsize=QUEUE_FRAMES)
@@ -133,6 +144,7 @@ class _Recorder:
         self.done: Future = Future()
         self.closed_event = asyncio.Event()
         self.loop = asyncio.get_running_loop()
+        self.done.add_done_callback(self._observer_finished)
         self.finish_reason = "socket-disconnected"
         self.counters = {"media_messages": 0, "rejected_messages": 0, "dropped_messages": 0}
         self.last_chunk = {track: 0 for track in TRACKS}
@@ -145,6 +157,17 @@ class _Recorder:
         }
         self.thread = threading.Thread(target=self._write, name="twilio-capture", daemon=True)
         self.thread.start()
+
+    def _observer_finished(self, future):
+        try:
+            self.loop.call_soon_threadsafe(self._finish_observer)
+        except RuntimeError:
+            pass
+
+    def _finish_observer(self):
+        if not self.observer_finished:
+            self.observer_finished = True
+            _observe(self.observer, "finish", self.ticket.call_sid, self.finish_reason)
 
     def media(self, event: dict) -> str | None:
         """Queue a validated frame; return a reason when capture must stop."""
@@ -181,6 +204,7 @@ class _Recorder:
             return "queue-overflow"
         self.last_chunk[track] = chunk
         self.last_timestamp[track] = timestamp
+        _observe(self.observer, "offer", self.ticket.call_sid, track, timestamp, payload)
         return None
 
     def _write_frame(self, outputs, frame: _Frame):
@@ -322,6 +346,10 @@ class _Recorder:
         if not self.closing.is_set():
             self.finish_reason = reason
             self.closing.set()
+        # A stalled capture writer must not keep a provider stream alive.
+        # The done callback covers independent writer failure; this path covers
+        # call end immediately and is deliberately idempotent.
+        self._finish_observer()
         websocket, self.websocket = self.websocket, None
         if websocket is not None:
             try:
@@ -343,8 +371,9 @@ class _Recorder:
 class CaptureManager:
     """Per-process capture registry. Call IDs are never accepted as file paths."""
 
-    def __init__(self, settings):
+    def __init__(self, settings, observer=None):
         self.settings = settings
+        self.observer = observer
         self.tickets: dict[str, CaptureTicket] = {}
         self.status_tasks: set[asyncio.Task] = set()
         self.closed = False
@@ -486,8 +515,9 @@ class CaptureManager:
                     if not isinstance(start, dict) or event.get("streamSid") != start.get("streamSid"):
                         raise CaptureRejected("Start stream identifier mismatch")
                     ticket = self.validate_start(call_sid, start)
-                    recorder = _Recorder(self.settings, ticket, websocket)
+                    recorder = _Recorder(self.settings, ticket, websocket, self.observer)
                     ticket.session = recorder
+                    _observe(self.observer, "start", call_sid, ticket.stream_sid)
                     continue
                 if recorder is None:
                     raise CaptureRejected("Expected Twilio start")

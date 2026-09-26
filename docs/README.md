@@ -1,8 +1,8 @@
 # Pick your implementation guide
 
-Open [DEEPFAKE_DETECTION.md](DEEPFAKE_DETECTION.md) for the detection partner track, or [VOICE_STACK.md](VOICE_STACK.md) for the Gemini + ElevenLabs track.
+Open [BUILD_3.md](BUILD_3.md) to use the live transcript dashboard. Partners can start with [DEEPFAKE_DETECTION.md](DEEPFAKE_DETECTION.md) for detection or [VOICE_STACK.md](VOICE_STACK.md) for Gemini + ElevenLabs.
 
-**Running today:** Build 2 provides the Twilio conference, passive recording, and offline replay contracts. No detector or voice agent is installed. Build 1 phone tests passed; Build 2's real-phone capture check remains pending. The documentation below does not change that status.
+**Implemented through Build 3:** Twilio conference, passive WAV recording, live Deepgram transcription, authenticated HTML/JSON/text viewing, and offline PCM replay. Synthetic audio passed real Deepgram and local transport/browser checks; actual phone capture/transcription remains pending. No detector, Gemini dialogue, ElevenLabs voice, or keypad agent is installed. See the root [verification status](../README.md) for test and deployment evidence.
 
 | Work | Start here | Concrete outcome |
 | --- | --- | --- |
@@ -10,13 +10,15 @@ Open [DEEPFAKE_DETECTION.md](DEEPFAKE_DETECTION.md) for the detection partner tr
 | Modulate integration | [Exact batch and streaming contracts](MODULATE.md) | API adapters with correct authentication, formats, verdicts, and timestamps. |
 | Other detector choices | [Resemble, Reality Defender, and local baseline](DETECTION_ALTERNATIVES.md) | Alternatives if account access, cost, or accuracy changes the choice. |
 | Conversational voice clone | [Gemini + ElevenLabs voice stack](VOICE_STACK.md) | Transcription → Gemini dialogue/tools → authorized cloned speech. |
-| Audio input for partners | [Partner handoff](PARTNER_HANDOFF.md) | Typed PCM frames, manifest schema, runnable offline replay. |
+| Audio and text inputs for partners | [Partner handoff](PARTNER_HANDOFF.md) | Typed PCM replay, manifest schema, transcript segments and authenticated exports. |
 
 ## Twilio and product references
 
 | Work | Guide |
 | --- | --- |
-| Current recording and acceptance check | [Build 2](BUILD_2.md) |
+| Current live transcript dashboard and acceptance | [Build 3](BUILD_3.md) |
+| Telephone audio quality and higher-rate options | [Audio quality / VoIP](AUDIO_QUALITY.md) |
+| Recording and capture acceptance | [Build 2](BUILD_2.md) |
 | Human-to-human conference | [Build 1](BUILD_1.md) |
 | Keypad delegation and outbound calling | [Final product](FINAL_BUILD.md) and [Python bridge implementation](IMPLEMENTATION.md) |
 | Mac server, ngrok, GitHub deployment | [Server operations](SERVER.md) |

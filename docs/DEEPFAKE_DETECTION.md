@@ -2,7 +2,7 @@
 
 Start with [the Modulate batch adapter](MODULATE.md) and one authorized, completed `inbound.wav`. Verify its returned frames before connecting a detector to a live call. You can develop with local human/synthetic fixtures while the real Build 2 phone-capture test remains pending.
 
-**Status: technical implementation plan for partners, checked September 26, 2026.** Build 2 already supplies Twilio capture and offline replay. None of the detectors, queues, endpoints, configuration variables, or partner modules proposed below runs in the server today. This documentation adds no model dependencies and uploads no recordings. The code blocks are implementation examples, not evidence of successful provider calls.
+**Status: technical implementation plan for partners, checked September 26, 2026.** Build 3 supplies Twilio capture, offline replay, and optional live Deepgram transcription. None of the detector-specific queues, endpoints, configuration variables, or partner modules proposed below runs in the server today. Enabled transcription sends live audio to Deepgram; it does not perform deepfake detection. The detector code blocks below are implementation examples, not evidence of successful detector-provider calls.
 
 ## Choose a concrete first implementation
 
@@ -34,15 +34,15 @@ Name the UI observation **“synthetic speech signal”**, with a time range and
 
 Read [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md) before writing the adapter. The implemented contracts live in [`integrations/contracts.py`](../integrations/contracts.py) and [`integrations/replay.py`](../integrations/replay.py).
 
-| Property | Actual Build 2 contract | Detector consequence |
+| Property | Implemented offline audio contract | Detector consequence |
 | --- | --- | --- |
 | Input track | `inbound`: original caller's incoming audio | Analyze this track for incoming-caller observations. It can still contain background speech or speakerphone leakage. |
 | Playback track | `outbound`: everything played to that caller | Do not mix it into incoming-caller analysis. It includes the teammate, prompts, music, and eventually our own synthetic voice. |
 | Format | Mono, 8000 samples/second, signed PCM16 little-endian | A second contains 16,000 bytes after μ-law decoding. A 20 ms replay frame normally contains 320 bytes. |
 | Time | `timestamp_ms` from the start of the stream timeline | These are media offsets, not UTC timestamps or original packet arrival times. |
-| Availability | Completed WAVs plus final manifest; offline replay | No live consumer or detector route is registered in the app. |
+| Availability | Completed WAVs plus final manifest; offline replay | Build 3 also has a live Deepgram observer. No live detector or detector-results route is registered. |
 
-Twilio's stream wire payload is base64-encoded raw μ-law at 8 kHz. Build 2 already decodes it to PCM before partners see it. **Do not μ-law-decode `AudioFrame.pcm_s16le` again.** Do not send a WAV header to a raw-PCM WebSocket, and do not label raw PCM bytes `audio/wav` in a file upload. [Twilio media payload contract](https://www.twilio.com/docs/voice/media-streams/websocket-messages).
+Twilio's stream wire payload is base64-encoded raw μ-law at 8 kHz. The WAV writer decodes it to PCM for offline replay. **Do not μ-law-decode `AudioFrame.pcm_s16le` again.** The live observer instead receives validated raw μ-law bytes; that is a different contract. Do not send a WAV header to a raw-PCM WebSocket, and do not label raw PCM bytes `audio/wav` in a file upload. [Twilio media payload contract](https://www.twilio.com/docs/voice/media-streams/websocket-messages).
 
 The inbound stream is a call leg, not a diarized identity. If two people share a speakerphone, the detector sees both. An outbound call added in a later build needs an explicit mapping from the remote party's leg to the detector source; the string `inbound` alone does not mean “the dealership” in every future architecture.
 
@@ -308,15 +308,16 @@ Do not select a universal `0.8` cutoff because it looks confident. Choose thresh
 
 ## Add live detection as an isolated later integration
 
-The capture receiver currently writes to its disk queue and has no partner callback. **Do not attach slow HTTP requests to `CaptureManager.handle` or synchronous replay callbacks inside the FastAPI audio path.** Introduce an explicit fan-out seam after authenticated format validation and PCM decoding. Keep the disk writer's queue independent from the detector queue.
+Build 3 constructs `CaptureManager(settings, observer=transcription)`. After authentication and media validation, it invokes nonblocking `start(call_sid, stream_sid)`, `offer(call_sid, track, timestamp_ms, payload)`, and `finish(call_sid, reason)` observer methods. `payload` is raw 8 kHz μ-law bytes, not the offline `AudioFrame` PCM format. Extend this seam with an observer multiplexer that preserves transcription and adds a separately bounded detector queue. **Do not attach slow HTTP requests to `CaptureManager.handle` or synchronous replay callbacks inside the FastAPI audio path.** Decode to PCM inside the detector worker when its provider requires PCM; keep the disk writer's queue independent.
 
 ```mermaid
 flowchart TD
-    T[Authenticated Twilio media] --> D[PCM decode + track identity]
+    T[Authenticated Twilio media] --> D[Validated raw mulaw + track identity]
     D --> C[Existing bounded capture queue]
-    C --> F[Private WAV writer]
-    D -. future nonblocking enqueue .-> Q[Separate bounded detector queue]
-    Q --> W[Worker: quality + adapter]
+    C --> F[PCM decode + private WAV writer]
+    D --> S[Existing Deepgram observer queues]
+    D -. future observer multiplexer .-> Q[Separate bounded detector queue]
+    Q --> W[Worker: PCM decode + quality + adapter]
     W --> O[Observation store]
     O --> U[Owner advisory UI]
     T -. human audio remains in .-> H[Twilio conference]
@@ -344,7 +345,7 @@ Live replay should pace audio rather than flooding a provider unless its API exp
 
 Add a read-only endpoint only when a UI needs it, for example `GET /internal/detection/sessions/{session_id}`. Reuse an appropriate authenticated internal-access pattern; do not put raw detection results on public `/health` or expose captured audio through ngrok. Return observation summary, scored duration, latest evidence offset, stale/unknown status, and provider availability. Do not return provider keys or raw recordings.
 
-No such endpoint exists in Build 2. The detector should not expose a public “dial this number” action. Later policy integration, if requested, sends a typed advisory event to the owner/session controller; the existing controller remains responsible for authorization, mode transitions, interruption, and call cleanup.
+No such detector endpoint exists in Build 3. The detector should not expose a public “dial this number” action. Later policy integration, if requested, sends a typed advisory event to the owner/session controller; the existing controller remains responsible for authorization, mode transitions, interruption, and call cleanup.
 
 ## Build a test set that resembles these phone calls
 
@@ -420,7 +421,7 @@ Set a per-call submitted-audio limit and an account/day budget in the worker. St
 
 Use the provider guides' current pricing links when budgeting. Confirm account access, allowed data use, retention, and deletion controls before uploading real call audio. Avoid placing full phone numbers or Twilio SIDs in provider filenames. Explicitly record which provider receives audio; do not automatically fan every recording out to all alternatives.
 
-Decide and document local retention separately: Build 2 currently keeps captures until manually removed. A future cleanup worker should remove only its configured capture/results roots, avoid active sessions, and leave a small metadata audit without raw audio. Provider retention and local deletion are different operations.
+Decide and document local retention separately: Build 3 keeps captures and saved transcripts until manually removed. A future cleanup worker should remove only its configured capture/results roots, avoid active sessions, and leave a small metadata audit without raw audio. Provider retention and local deletion are different operations.
 
 ## Execute the partner milestones
 
@@ -430,4 +431,4 @@ Decide and document local retention separately: Build 2 currently keeps captures
 4. **Live observation:** add the bounded fan-out worker and authenticated results view. Prove provider outage/backpressure cannot degrade the conference and deployments wait for worker cleanup.
 5. **Optional later policy:** only after the observation system is evaluated, design an owner-enabled response to evidence. Preserve manual `#1`–`#4` control and `#0` return; ambiguous or missing detection must not seize control of the call.
 
-**First concrete task for the detection partner:** open [MODULATE.md](MODULATE.md), copy its batch adapter into the proposed partner module, and run the mocked request/response test before supplying an API key. The live service remains Build 2 with its phone-capture check pending.
+**First concrete task for the detection partner:** open [MODULATE.md](MODULATE.md), copy its batch adapter into the proposed partner module, and run the mocked request/response test before supplying an API key. Build 3 provides transcription scaffolding; actual phone capture/transcription acceptance remains pending.

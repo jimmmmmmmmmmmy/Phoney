@@ -160,7 +160,7 @@ def test_disabled_capture_keeps_existing_conference_flow(tmp_path):
 def test_health_exposes_capability_without_storage_path_or_tokens(media_app):
     client, settings, _ = media_app
     payload = client.get("/health").json()
-    assert payload["build"] == 2
+    assert payload["build"] == 3
     assert payload["media_capture_enabled"] is True
     assert settings.auth_token not in json.dumps(payload)
     assert settings.media_storage_dir not in json.dumps(payload)

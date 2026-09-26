@@ -107,20 +107,20 @@ Automated checks use mock phone numbers and a mocked Twilio client; they do not 
 
 ## Later milestones and partner scope
 
-**Current work remains Twilio-only.** Build 2 is implemented in [BUILD_2.md](BUILD_2.md); AI detection and voice-agent work remain partner-owned scaffolding in [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md). The milestones below describe the wider product, not permission to implement those partner components now.
+**Current baseline: Twilio calling/capture plus observational Deepgram transcription.** [Build 2](BUILD_2.md) supplies capture; [Build 3](BUILD_3.md) adds live transcripts and a protected viewer. Detection, Gemini dialogue, ElevenLabs voice generation, and takeover remain partner work described in [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md). The future rows below describe the wider product, not implemented features.
 
 The final product adds outbound calls and owner keypad shortcuts that delegate the conversation to an agent using the owner's cloned voice. See [Final build — put your AI on the call](FINAL_BUILD.md) for `#1`–`#4` prompt selection, context transfer, and return-to-human behavior. Build 1 remains the two-human switchboard; manual delegation will work independently of AI detection.
 
 | Build | Deliverable |
 | --- | --- |
 | 2 | Capture clearly identified call audio with Media Streams; decode the incoming audio format correctly and write playable WAV files. |
-| 3 | A manual takeover button with a proven agent-audio bridge, readiness handshake, and cleanup behavior. |
-| 4 | A real conversational agent using the proven bridge. |
-| 5 | A detector that can trigger the already-tested takeover flow automatically. |
-| 6 | Transcript, conversation context, Pangram integration, and intent handling after the core call path is reliable. |
+| 3 | Live Deepgram transcripts, authenticated HTML viewing, and JSON/text exports. |
+| Future | Manual takeover with a proven agent-audio bridge, readiness handshake, and cleanup behavior. |
+| Future | Gemini conversation/context handling and ElevenLabs cloned speech using the proven bridge. |
+| Future | Evaluated synthetic-speech detection; any automatic handoff needs a separate owner-enabled policy. |
 
 For Build 2, `<Start><Stream>` observes audio and continues to the next TwiML verb; it cannot send agent audio back. `<Connect><Stream>` supports bidirectional audio but blocks subsequent TwiML until it ends. Merely placing it before `<Dial><Conference>` does not add an AI participant. [Twilio Stream reference](https://www.twilio.com/docs/voice/twiml/stream).
 
-The selected final-build route is the [two-stream Python audio bridge](IMPLEMENTATION.md), replacing the conference audio path. The conference route below is a documented alternative, not a second required implementation. Before using it for Build 3, explicitly design the agent leg. One documented option adds an `app:<APP_SID>` conference participant whose TwiML application returns `<Connect><Stream>`. Prove that bridge with simple audio first, make the agent ready before removing a human, and revise `maxParticipants` and `endConferenceOnExit` so removing the callee does not terminate the caller or agent. [Twilio’s conference/Media Streams bridge guide](https://help.twilio.com/articles/45314613523867).
+The selected final-build route is the [two-stream Python audio bridge](IMPLEMENTATION.md), replacing the conference audio path. The conference route below is a documented alternative, not a second required implementation. Before implementing that future option, explicitly design the agent leg. One documented option adds an `app:<APP_SID>` conference participant whose TwiML application returns `<Connect><Stream>`. Prove that bridge with simple audio first, make the agent ready before removing a human, and revise `maxParticipants` and `endConferenceOnExit` so removing the callee does not terminate the caller or agent. [Twilio’s conference/Media Streams bridge guide](https://help.twilio.com/articles/45314613523867).
 
-The milestone sequence follows [the shared Grok conversation](https://grok.com/share/bGVnYWN5_618ab7b3-9c27-4570-9709-edd7bee0bc21); the route layout, lifecycle rules, and verification plan above are implementation recommendations for this repository.
+The initial milestone plan came from [the shared Grok conversation](https://grok.com/share/bGVnYWN5_618ab7b3-9c27-4570-9709-edd7bee0bc21); the route layout, lifecycle rules, and verification plan above are implementation recommendations for this repository.

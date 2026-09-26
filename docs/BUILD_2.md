@@ -4,7 +4,7 @@
 
 Build 2 adds a passive Media Stream to the working Build 1 conference. The phone bridge still connects the incoming caller to the fixed `CALLEE_NUMBER`. The server saves two playable WAV files and a manifest for partner development. Allow about two minutes for the phone check after configuration. Automated checks and a real local WebSocket transport check pass; real Twilio capture verification must be recorded separately below.
 
-**Current scope: Twilio only.** No AI detection, transcription, model calls, voice cloning, agent speech, or takeover controls are implemented here. Partners get typed audio contracts and an offline replay runner in [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md).
+**Build 2 milestone scope: Twilio capture.** This guide documents the recording layer. [Build 3](BUILD_3.md) now adds optional live Deepgram transcription and an authenticated viewer. Detection, voice cloning, agent speech, and takeover remain unimplemented; partners also get typed audio contracts and an offline replay runner in [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md).
 
 ## Call and capture path
 
@@ -43,10 +43,10 @@ MEDIA_MAX_SECONDS=1800
 1. Keep the existing Twilio credentials, `TWILIO_NUMBER`, and `CALLEE_NUMBER` configured. Capture is only added when the conference bridge is configured.
 2. Set the three capture values above. `MEDIA_MAX_SECONDS` accepts integers from 1 to 3600; its default is 1800. Reaching the limit stops capture while the human call continues.
 3. Apply configuration during an idle period using the [server controls](SERVER.md). Infrastructure changes to the supervisor require `python3 scripts/server.py install`; ordinary app changes deploy from GitHub.
-4. Check `/health` for `build: 2`, `switchboard_ready: true`, and `media_capture_enabled: true`. These report configuration, not proof of a recorded phone call.
+4. Check `/health` for the current build (`build: 3` after the transcription upgrade), `switchboard_ready: true`, and `media_capture_enabled: true`. These report configuration, not proof of a recorded phone call.
 5. Call from a phone other than `CALLEE_NUMBER`, answer the teammate phone, and exchange distinct phrases. The caller hears the recording notice before capture starts. Tell the teammate that this is a recorded test.
 
-Set `MEDIA_CAPTURE_ENABLED=false` to retain the Build 1 conference behavior without new audio files. No AI credentials are needed in either mode.
+To retain the basic conference without new audio files, set both `TRANSCRIPTION_ENABLED=false` and `MEDIA_CAPTURE_ENABLED=false` before restarting. Build 3 requires capture when transcription is enabled, so disabling only capture is invalid. Capture-only and basic-conference modes require no AI-provider credentials.
 
 ## Inspect and replay a completed call
 
@@ -67,7 +67,7 @@ From the repository, inspect one completed call without playing or printing its 
 
 Replace `<CallSid>` with the actual directory name. Add `--frames --realtime` to emit timed frame metadata to the example consumer. The replay tool performs no network requests and does not invoke a model. It accepts only completed captures and validates both WAV files before delivering frames. Its typed interface and a complete local consumer example are in [the partner handoff](PARTNER_HANDOFF.md).
 
-Captures stay local until manually removed or explicitly shared. They are excluded from Git, and no public download route is exposed. New deployments reuse the stable capture directory. There is no automatic deletion policy in this milestone.
+Saved WAV captures stay local until manually removed or explicitly shared. They are excluded from Git, and no public audio-download route is exposed. Enabled Build 3 transcription separately sends live audio to Deepgram; it does not upload old WAV files. New deployments reuse the stable capture directory. There is no automatic deletion policy in this milestone.
 
 ## Interfaces and failure behavior
 
@@ -77,7 +77,7 @@ Captures stay local until manually removed or explicitly shared. They are exclud
 | `WS /media/{CallSid}/` | Validate Twilio's signature against the configured external WSS URL, then bind account, call, stream, format, and one-use token before writing files. Query parameters are rejected. |
 | `POST /media/status/{CallSid}` | Signed stream lifecycle callback; verify call SID, stream SID, stream name, and event. Store fixed error categories, not raw provider error text. |
 | `media_capture/` | Bounded receiver and background WAV writer, pure Python μ-law decoder, timing and gap handling, atomic manifest, and cleanup. |
-| `integrations/`, `scripts/replay_capture.py` | Typed PCM contracts and local replay scaffolding. No live consumer is registered in the server. |
+| `integrations/`, `scripts/replay_capture.py` | Typed PCM contracts and offline replay scaffolding. This synchronous replay API is not a live callback; Build 3 uses a separate built-in Deepgram observer. |
 
 The WebSocket validator uses the exact configured `wss://…/media/<CallSid>/` path, including its trailing slash. It never trusts a forwarded host. Twilio documents full-URL signature validation and trailing-slash sensitivity for Voice WebSocket handshakes. The phone test confirms the live handshake; a synthetic signature test alone does not. [Twilio request security](https://www.twilio.com/docs/usage/security).
 

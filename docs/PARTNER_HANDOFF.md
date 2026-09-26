@@ -1,10 +1,32 @@
-# Build 2 partner handoff
+# Build 3 partner handoff — audio and transcripts
 
-Start with one **completed local capture** and `scripts/replay_capture.py`. This is the integration seam for partners: receive typed PCM frames without changing Twilio routing or making another phone call.
+Open the [live transcript dashboard](BUILD_3.md), export a selected call as JSON/text, or replay one **completed local capture** with `scripts/replay_capture.py`. These interfaces let partners use recognized words or typed PCM without changing the phone bridge.
 
-Build 2 keeps the working two-person conference. Its Twilio media tap writes two audio tracks and a manifest. The code in `integrations/` provides local contracts, a replay reader, and a metadata-only example. AI detection, transcription, voice-agent behavior, voice cloning, prompt routing, and audio takeover are partner work; none runs through this interface today.
+Build 3 keeps the working two-person conference and Build 2's two WAV tracks plus manifest. It adds live Deepgram STT with a protected viewer and saved transcripts. The code in `integrations/` still provides an offline-only audio contract and replay reader. Deepfake detection, Gemini dialogue, ElevenLabs voice cloning, prompt routing, and audio takeover remain partner work.
 
-**Choose a partner implementation:** [deepfake detection](DEEPFAKE_DETECTION.md) specifies windowing, quality gates, provider adapters, results, evaluation, and later live integration. [Modulate](MODULATE.md) and [other detection options](DETECTION_ALTERNATIVES.md) supply concrete API contracts. [Gemini + ElevenLabs](VOICE_STACK.md) covers the separate conversational voice agent. You can write and test these adapters with synthetic/local fixtures while the Build 2 phone-capture check remains pending.
+**Choose a partner implementation:** [deepfake detection](DEEPFAKE_DETECTION.md) specifies windowing, quality gates, provider adapters, results, evaluation, and later live integration. [Modulate](MODULATE.md) and [other detection options](DETECTION_ALTERNATIVES.md) supply concrete API contracts. [Gemini + ElevenLabs](VOICE_STACK.md) covers the separate conversational voice agent. You can write and test these adapters with synthetic/local fixtures while actual phone capture/transcription acceptance remains pending. Generated-audio integration checks do not replace that phone test.
+
+## Use implemented transcript outputs
+
+```sh
+.venv/bin/python scripts/open_dashboard.py
+```
+
+The helper reads the installed service's private `.env` when its server-root pointer exists. It opens the viewer without printing the token. The page exchanges the token for an HttpOnly session cookie; a programmatic consumer may instead use `Authorization: Bearer <DASHBOARD_TOKEN>`. Keep that viewer credential out of code and logs. It has no call-control or deployment authority.
+
+| Route / artifact | Partner use |
+| --- | --- |
+| `GET /api/transcripts` | Read bounded metadata plus text for an automatically selected active/recent session. |
+| `GET /api/transcripts?call_sid=<CallSid>` | Read selected-session finalized segments and current interim text. |
+| `GET /api/transcripts/<CallSid>/export?format=json` | Download structured provider/model/format metadata plus the selected session. |
+| Same export with `format=txt` | Download readable finalized speech. |
+| `TRANSCRIPT_STORAGE_DIR/<CallSid>.json` | Private atomic finalized session on the server Mac. |
+
+These HTTP routes require viewer authentication. The list response always reports `selected_call_sid`; an absent or unavailable selector falls back to the first active session, otherwise the first recent session. Only that selected session contains segments and interim text. The JSON export envelope contains `schema_version`, `provider`, `model`, `sample_rate`, `track_meanings`, and `session`. Final segments contain `id`, `track`, `start_ms`, `end_ms`, `text`, and `confidence`. Join the session's `call_sid`/`stream_sid` to the capture manifest; retain both direction and timeline offsets. [Full API and status contract](BUILD_3.md#viewer-api-and-authentication).
+
+Interim text may be replaced. Use final segments for durable downstream records, deduplicate by segment ID, and read session/track status before assuming coverage. A `completed` transcription remains a model prediction, not a guaranteed verbatim transcript. `storage_error` is separate from recognition status: a readable in-memory result can still have failed to save to disk.
+
+The viewer holds ten recent finished sessions, while disk files have no automatic expiry. Transcription admits two concurrent calls, uses two independently bounded track streams per call, and reports capacity/overflow failures rather than slowing the humans. See [Build 3 limits](BUILD_3.md#limits-and-retention) before designing a live consumer. The separate replay tool below never contacts Deepgram.
 
 ## Run the local example
 
@@ -142,9 +164,9 @@ The values above illustrate the schema; they are not a claim that a real call wa
 
 ## Partner work boundaries
 
-1. **Develop against replay first.** Write a consumer and use a completed capture. Keep provider configuration inside your own module; the recorder and replay runner require no AI credentials.
-2. **Own your output contract.** Emit any later transcript, detection result, or agent decision separately, keyed by `session_id`, track, and timestamp. Those outputs are not implemented or consumed by the switchboard in Build 2.
-3. **Add live integration as an explicit later change.** This synchronous replay protocol is not registered in the FastAPI server. A future live adapter must use bounded queues and isolate slow or failed consumers from the Twilio audio path.
+1. **Use the right input.** Start acoustic detection with completed PCM replay; start text consumers with finalized transcript exports. Capture-only mode and the offline replay runner require no provider credentials.
+2. **Own your output contract.** Build 3 already exports transcript segments. Emit later detection results or agent decisions separately, keyed by call/session, stream, track, and timestamp; the switchboard does not consume those future decisions.
+3. **Add new live consumers explicitly.** This synchronous replay protocol is not registered as a generic callback in FastAPI. The implemented Deepgram adapter uses its own bounded live path. Any new detector/agent consumer must likewise isolate slow or failed work from capture and the conference.
 4. **Treat playback and takeover as a separate milestone.** Observing these files cannot send speech into the call, mute participants, or select prompts. The planned bidirectional bridge and command routes are described in [the implementation recipe](IMPLEMENTATION.md).
 5. **Keep recordings local.** Runtime captures are excluded from Git. Use locally generated or explicitly shared fixtures for partner tests; never commit a real call capture or provider credentials.
 

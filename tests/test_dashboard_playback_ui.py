@@ -46,10 +46,9 @@ def test_one_native_player_is_accessible_and_never_autoplays_or_preloads_audio()
     assert {"audio-panel", "audio-download", "audio-status", "recording-warning"} <= set(parsed.ids)
     assert not {"audio-track", "audio-option-combined", "audio-option-inbound", "audio-option-outbound",
                 "session-badge", "session-detail", "audio-heading"} & set(parsed.ids)
-    assert parsed.ids.index("transcript-title") < parsed.ids.index("summary-panel") < parsed.ids.index("transcript")
+    assert parsed.ids.index("transcript") < parsed.ids.index("transcript-title") < parsed.ids.index("summary-panel") < parsed.ids.index("messages")
     assert parsed.attributes["audio-download"]["aria-label"] == "Download WAV"
-    assert "open" in parsed.details["recent-calls"]
-    assert "open" not in parsed.details["voicemail-section"]
+    assert not {"recent-calls", "voicemail-section"} & set(parsed.ids)
 
 
 def test_playback_dock_has_its_own_viewport_row_outside_scrolling_content():
@@ -89,14 +88,30 @@ def test_navigation_and_unimplemented_search_are_accessible_and_honest():
     assert search["aria-label"] == "Search (coming soon)" and search["title"]
 
 
+def test_calls_categories_have_keyboard_accessible_tab_and_panel_relationships():
+    parsed = AudioMarkup()
+    parsed.feed(HTML.read_text())
+    assert parsed.attributes["calls-tabs"]["role"] == "tablist"
+    for collection in ("recent", "voicemail"):
+        tab = parsed.attributes[f"tab-{collection}"]
+        panel = parsed.attributes[f"{collection}-panel"]
+        assert parsed.tags[f"tab-{collection}"] == "button" and tab["role"] == "tab"
+        assert tab["aria-controls"] == f"{collection}-panel"
+        assert panel["role"] == "tabpanel" and panel["aria-labelledby"] == f"tab-{collection}"
+    assert parsed.attributes["tab-recent"]["aria-selected"] == "true"
+    assert parsed.attributes["tab-voicemail"]["aria-selected"] == "false"
+    assert "hidden" in parsed.attributes["calls-detail"]
+
+
 HARNESS = r'''
 const assert = require('node:assert/strict');
 const elements = new Map(), handlers = new Map();
 class Element {
  constructor(tag='div') {Object.assign(this,{tag,dataset:{},attributes:{},children:[],textContent:'',hidden:false,
-  checked:true,open:false,scrollTop:0,scrollHeight:100,events:{},paused:true,ended:false,currentTime:0,duration:120,loads:0,pauses:0,plays:0,rect:{top:10,bottom:50}});
+  checked:true,open:false,scrollTop:0,scrollHeight:100,clientHeight:100,events:{},paused:true,ended:false,currentTime:0,duration:120,loads:0,pauses:0,plays:0,rect:{top:10,bottom:50}});
   const classes=new Set();this.classList={toggle(name,on){if(on)classes.add(name);else classes.delete(name);},contains(name){return classes.has(name);}};}
  setAttribute(name,value) {this.attributes[name]=value;}
+ getAttribute(name) {return this.attributes[name]??null;}
  removeAttribute(name) {delete this.attributes[name];if(name==='href')delete this.href;}
  get src() {return this.attributes.src || '';}
  getBoundingClientRect() {return this.rect;}
@@ -110,7 +125,11 @@ class Element {
 }
 const document = {activeElement:null,getElementById(id) {assert.ok(markupIds.has(id),'Markup is missing #'+id);if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},
  createElement(tag) {return new Element(tag);},createDocumentFragment() {return new Element('fragment');}};
-const window = {addEventListener(name,fn) {handlers.set(name,fn);}};
+const historyEntries=[];
+const location={hash:'',pathname:'/dashboard',search:''};
+const history={state:null,pushState(state,unused,url){this.state=state;location.hash=url.includes('#')?'#'+url.split('#')[1]:'';historyEntries.push({state,url});},
+ replaceState(state,unused,url){this.state=state;location.hash=url.includes('#')?'#'+url.split('#')[1]:'';historyEntries[historyEntries.length-1]={state,url};}};
+const window = {location,history,addEventListener(name,fn) {handlers.set(name,fn);}};
 function setTimeout() {return 1;}
 function clearTimeout() {}
 function fetch() {throw new Error('UI test must never make a network request');}
@@ -124,6 +143,7 @@ function session(sid=SID) {return {call_sid:sid,started_at:'2026-09-26T12:00:00Z
 function snapshot(sessions=[],records=[]) {return {enabled:true,provider:'deepgram',model:'nova-3',sessions,
  selected_call_sid:sessions[0]?.call_sid || null,voicemail:{enabled:true,storage_error:'',voicemails:[]},
  recordings:{enabled:true,storage_error:'',recordings:records}};}
+function openCall(sid=SID) {const paused=state.paused;state.paused=true;chooseCall(sid);state.paused=paused;}
 '''
 
 
@@ -147,19 +167,19 @@ def run_browser_logic(tmp_path, assertions):
 def test_navigation_preserves_call_selection_and_ongoing_playback_without_requests(tmp_path):
     run_browser_logic(tmp_path, r'''
 assert.equal(state.page,'calls');
-state.snapshot=snapshot([session(),session(OTHER)],[recording(),recording(OTHER)]);render();
+state.snapshot=snapshot([session(),session(OTHER)],[recording(),recording(OTHER)]);render();openCall();
 const audio=$('call-audio');audio.play();audio.currentTime=17;
 const selected=state.selected,src=audio.src,loads=audio.loads,pauses=audio.pauses,plays=audio.plays;
 const viewIds={calls:'dashboard-view',contacts:'contacts-view',agents:'agents-view'};
 for(const page of ['contacts','agents','calls']){
  $('nav-'+page).events.click();
  assert.equal(state.page,page);
- assert.equal($('page-title').textContent,page[0].toUpperCase()+page.slice(1));
+ assert.equal($('page-title').textContent,page==='calls'?'Call details':page[0].toUpperCase()+page.slice(1));
  for(const name of Object.keys(viewIds)){
   assert.equal($(viewIds[name]).hidden,name!==page);
   assert.equal($('nav-'+name).attributes['aria-current'],name===page?'page':undefined);
  }
- assert.equal(state.selected,selected);assert.equal(state.playbackPinned,selected);
+ assert.equal(state.selected,selected);
  assert.equal(audio.src,src);assert.equal(audio.currentTime,17);assert.equal(audio.paused,false);
  assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.plays,plays);
  assert.equal($('audio-panel').hidden,false);
@@ -168,10 +188,25 @@ for(const page of ['contacts','agents','calls']){
 ''')
 
 
+def test_opening_calls_starts_with_a_collection_and_no_selected_audio(tmp_path):
+    run_browser_logic(tmp_path, r'''
+assert.equal(state.detail,false);assert.equal(state.selected,null);
+state.snapshot=snapshot([session(),session(OTHER)],[recording(),recording(OTHER)]);render();
+assert.equal(state.collection,'recent');assert.equal(state.detail,false);assert.equal(state.selected,null);
+assert.equal($('calls-detail').hidden,true);assert.equal($('recent-panel').hidden,false);
+assert.equal($('audio-panel').hidden,true);assert.equal($('call-audio').src,'');
+assert.equal($('call-audio').loads,0);assert.equal($('call-audio').plays,0);
+openCall();
+assert.equal(state.detail,true);assert.equal(state.selected,SID);assert.equal($('calls-detail').hidden,false);
+assert.equal($('call-audio').src,`/api/recordings/${SID}/audio?track=combined`);
+assert.equal($('call-audio').paused,true);assert.equal($('call-audio').plays,0);
+''')
+
+
 def test_background_polling_keeps_placeholder_page_selected_and_audio_running(tmp_path):
     run_browser_logic(tmp_path, r'''
 (async()=>{
-state.snapshot=snapshot([session()],[recording()]);render();
+state.snapshot=snapshot([session()],[recording()]);render();openCall();
 const audio=$('call-audio');audio.play();audio.currentTime=17;
 showPage('agents');
 const requests=[],loads=audio.loads,pauses=audio.pauses;
@@ -212,6 +247,7 @@ assert.equal(requests[0].options.headers.Accept,'application/json');
 assert.equal(requests[0].options.headers['ngrok-skip-browser-warning'],'1');
 assert.equal(requests[0].options.headers.Authorization,undefined);
 assert.equal($('connection').attributes['aria-label'],'Connected');assert.equal($('call-list').children.length,2);
+assert.equal(state.selected,null);openCall();
 const audio=$('call-audio');audio.play();audio.currentTime=17;
 const loads=audio.loads,pauses=audio.pauses;
 await poll();
@@ -224,12 +260,11 @@ assert.equal($('connection').attributes['aria-label'],'Connected');
 
 def test_polling_preserves_combined_playback_until_selected_call_changes(tmp_path):
     run_browser_logic(tmp_path, r'''
-state.snapshot=snapshot([session()],[recording()]);render();
+state.snapshot=snapshot([session()],[recording()]);render();openCall();
 const audio=$('call-audio');
 assert.equal(audio.src,`/api/recordings/${SID}/audio?track=combined`);
 assert.equal(audio.loads,1);assert.equal(audio.pauses,1);assert.equal(audio.plays,0);
 audio.play();audio.currentTime=17;
-assert.equal(state.playbackPinned,SID);
 for(let i=0;i<5;i++){state.snapshot.sessions[0].segments[0].text='update '+i;render();}
 assert.equal($('call-audio'),audio);assert.equal(audio.loads,1);assert.equal(audio.pauses,1);
 assert.equal(audio.currentTime,17);assert.equal(audio.paused,false);assert.equal($('audio-status').hidden,true);
@@ -237,7 +272,7 @@ assert.equal($('audio-status').textContent,'');
 state.snapshot.sessions.unshift({...session(OTHER),started_at:'2026-09-26T13:00:00Z',ended_at:null,status:'live'});
 state.snapshot.recordings.recordings.push(recording(OTHER));render();
 assert.equal(state.selected,SID);assert.equal(audio.loads,1);
-state.selected=OTHER;render();
+openCall(OTHER);
 assert.equal(audio.src,`/api/recordings/${OTHER}/audio?track=combined`);assert.equal(audio.loads,2);assert.equal(audio.paused,true);
 render();assert.equal(audio.loads,2);assert.equal(audio.plays,1);
 assert.equal($('audio-download').href,audio.src);assert.equal($('audio-download').download,`${OTHER}-combined.wav`);
@@ -247,23 +282,27 @@ assert.equal($('audio-download').href,audio.src);assert.equal($('audio-download'
 def test_recordings_without_transcripts_are_selectable_and_urls_stay_local(tmp_path):
     run_browser_logic(tmp_path, r'''
 const entry=recording();entry.url='https://attacker.invalid/collect';entry.tracks.inbound.url='javascript:alert(1)';
-state.snapshot=snapshot([],[entry]);state.snapshot.enabled=false;render();
+state.snapshot=snapshot([],[entry]);state.snapshot.enabled=false;render();openCall();
 assert.equal(state.selected,SID);assert.equal($('call-list').children.length,1);
 assert.equal($('call-list').children.length,1);assert.equal($('sidebar-empty').hidden,true);
 assert.equal($('transcript-title').textContent,'Call transcript');assert.equal($('empty-title').textContent,'No transcript for this recording.');
 assert.equal($('export-json').attributes['aria-disabled'],'true');assert.ok(!$('export-json').href);
 assert.equal($('call-audio').src,`/api/recordings/${SID}/audio?track=combined`);
 assert.equal($('audio-download').href,$('call-audio').src);
-state.snapshot.recordings.recordings=[{...entry,call_sid:'../secret'}];render();
-assert.equal(state.selected,null);assert.equal($('call-audio').src,'');assert.equal($('call-audio').hidden,true);
-assert.equal($('audio-download').attributes['aria-disabled'],'true');assert.ok(!$('audio-download').href);
+const src=$('call-audio').src,loads=$('call-audio').loads;
+state.snapshot.recordings.recordings=[{...entry,call_sid:'../secret'}];render();openCall('../secret');
+assert.equal(state.sessions.length,0);assert.equal($('call-list').children.length,0);
+// Falling outside the latest history window retains the authorized selected recording;
+// an invalid SID can neither replace it nor become a media/download URL.
+assert.equal(state.selected,SID);assert.equal($('call-audio').src,src);assert.equal($('call-audio').loads,loads);
+assert.equal($('audio-download').href,src);
 ''')
 
 
 def test_combined_audio_availability_and_playback_errors_remain_clear(tmp_path):
     run_browser_logic(tmp_path, r'''
 state.snapshot=snapshot();render();assert.equal($('audio-panel').hidden,true);
-state.snapshot=snapshot([{...session(),ended_at:null,status:'live'}]);render();
+state.snapshot=snapshot([{...session(),ended_at:null,status:'live'}]);render();openCall();
 assert.equal($('audio-panel').hidden,false);assert.equal($('call-audio').hidden,true);
 assert.ok($('audio-status').textContent.includes('not finalized'));assert.equal($('audio-status').hidden,false);
 const entry=recording();entry.status='partial';entry.url=null;entry.tracks.outbound.url=null;
@@ -297,7 +336,7 @@ call.segments=[
  {id:'zero',track:'inbound',start_ms:2000,end_ms:2000,text:'zero length'},
  {id:'later',track:'inbound',start_ms:4000,end_ms:6000,text:'later'}];
 const saved=recording();saved.tracks.inbound.duration_seconds=5;saved.tracks.outbound.duration_seconds=2.5;
-state.snapshot=snapshot([call],[saved]);render();
+state.snapshot=snapshot([call],[saved]);render();openCall();
 const audio=$('call-audio');
 const highlighted=()=>state.transcriptRows.filter(item=>item.row.classList.contains('playing-line')).map(item=>item.row.dataset.segmentId);
 assert.deepEqual(highlighted(),[]); // Merely loading a recording must not start highlighting.
@@ -320,7 +359,7 @@ def test_highlights_survive_polled_text_updates_and_clear_on_another_call(tmp_pa
     run_browser_logic(tmp_path, r'''
 (async()=>{
 const call=session();call.segments=[{id:'one',track:'inbound',start_ms:0,end_ms:3000,text:'first wording'}];
-state.snapshot=snapshot([call,session(OTHER)],[recording(),recording(OTHER)]);render();
+state.snapshot=snapshot([call,session(OTHER)],[recording(),recording(OTHER)]);render();openCall();
 const audio=$('call-audio');audio.play();audio.currentTime=1.5;audio.events.timeupdate();
 const original=state.transcriptRows[0].row,loads=audio.loads,pauses=audio.pauses;
 fetch=async()=>({ok:true,json:async()=>snapshot([{...call,segments:[{...call.segments[0],text:'corrected wording'}]},session(OTHER)],[recording(),recording(OTHER)])});
@@ -336,49 +375,194 @@ assert.ok(state.transcriptRows.every(item=>!item.row.classList.contains('playing
 ''')
 
 
-def test_live_text_and_playback_follow_automatically_without_a_toggle(tmp_path):
+def test_playback_highlights_scroll_only_visible_detail_and_live_text_respects_reading_position(tmp_path):
     run_browser_logic(tmp_path, r'''
 const call=session();call.segments[0].end_ms=3000;
-state.snapshot=snapshot([call],[recording()]);render();
+state.snapshot=snapshot([call],[recording()]);render();openCall();
 const audio=$('call-audio'),viewport=$('transcript'),row=state.transcriptRows[0].row;
 viewport.rect={top:100,bottom:300};row.rect={top:150,bottom:210};viewport.scrollTop=40;
 audio.play();audio.currentTime=1.5;audio.events.timeupdate();assert.equal(viewport.scrollTop,40);
 row.rect={top:350,bottom:410};audio.events.timeupdate();assert.equal(viewport.scrollTop,158);
 row.rect={top:150,bottom:210};audio.events.timeupdate();assert.equal(viewport.scrollTop,158);
+backToCalls();row.rect={top:350,bottom:410};audio.events.timeupdate();assert.equal(viewport.scrollTop,158);
+row.rect={top:150,bottom:210};openCall();showPage('agents');
+row.rect={top:350,bottom:410};audio.events.timeupdate();assert.equal(viewport.scrollTop,158);
+row.rect={top:150,bottom:210};
+showPage('calls');
 audio.ended=true;audio.events.ended();
+call.status='live';call.ended_at=null;
+viewport.clientHeight=100;viewport.scrollHeight=250;viewport.scrollTop=140;
 call.segments.push({id:'new',track:'outbound',start_ms:4000,end_ms:6000,text:'new text'});
-viewport.scrollHeight=250;render();assert.equal(viewport.scrollTop,250);
+render();assert.equal(viewport.scrollTop,250);
+viewport.scrollTop=0;viewport.scrollHeight=500;
+call.segments.push({id:'later',track:'outbound',start_ms:7000,end_ms:8000,text:'more text'});
+render();assert.equal(viewport.scrollTop,0);
 ''')
 
 
-def test_live_updates_keep_paused_history_and_respect_another_manual_selection(tmp_path):
+def test_live_updates_never_replace_selected_history_even_after_playback_ends(tmp_path):
     run_browser_logic(tmp_path, r'''
 const THIRD='CA'+'c'.repeat(32),FOURTH='CA'+'d'.repeat(32);
-state.snapshot=snapshot([session(),session(THIRD)],[recording(),recording(THIRD)]);render();
+state.snapshot=snapshot([session(),session(THIRD)],[recording(),recording(THIRD)]);render();openCall();
 const audio=$('call-audio');audio.play();audio.currentTime=17;audio.paused=true;audio.events.pause();
 state.snapshot.sessions.unshift({...session(OTHER),started_at:'2026-09-26T13:00:00Z',ended_at:null,status:'live'});
-render();assert.equal(state.selected,SID);assert.equal(state.pendingLive,OTHER);assert.equal(audio.currentTime,17);
-state.paused=true;chooseCall(THIRD); // Explicit manual selection wins over the queued live call.
-assert.equal(state.selected,THIRD);assert.equal(state.pendingLive,null);render();assert.equal(state.selected,THIRD);
+render();assert.equal(state.selected,SID);assert.equal(audio.currentTime,17);
+assert.equal($('live-call-notice').hidden,false);
+openCall(THIRD);render();assert.equal(state.selected,THIRD);
 audio.play();audio.paused=true;audio.events.pause();
 state.snapshot.sessions.unshift({...session(FOURTH),started_at:'2026-09-26T14:00:00Z',ended_at:null,status:'live'});
-render();assert.equal(state.selected,THIRD);assert.equal(state.pendingLive,FOURTH);
-audio.ended=true;audio.events.ended();render();assert.equal(state.selected,FOURTH);
+render();assert.equal(state.selected,THIRD);
+audio.ended=true;audio.events.ended();render();assert.equal(state.selected,THIRD);
+state.paused=true;$('live-call-open').events.click();assert.equal(state.selected,FOURTH);
+assert.equal(state.detail,true);assert.equal($('live-call-notice').hidden,true);
 ''')
 
 
-def test_collapsible_sections_preserve_manual_choices_across_updates(tmp_path):
+def test_recent_and_voicemail_are_deduplicated_disjoint_categories(tmp_path):
     run_browser_logic(tmp_path, r'''
-state.snapshot=snapshot([session()],[recording()]);$('recent-calls').open=true;render();
-assert.equal($('voicemail-section').open,false);
-$('recent-calls').open=false;$('voicemail-section').open=true;$('voicemail-section').events.toggle();
-render();assert.equal($('recent-calls').open,false);assert.equal($('voicemail-section').open,true);
-$('voicemail-section').open=false;$('voicemail-section').events.toggle();
-state.snapshot.voicemail.voicemails=[{call_sid:SID,recording_status:'processing',started_at:'2026-09-26T12:00:00Z'}];
-render();assert.equal($('voicemail-section').open,false);assert.equal($('voicemail-list').children.length,1);
+state.snapshot=snapshot([session(),session(OTHER),session(OTHER)],[recording(),recording(OTHER)]);
+const voicemail={call_sid:SID,recording_status:'completed',started_at:'2026-09-26T12:00:00Z',duration_seconds:12};
+state.snapshot.voicemail.voicemails=[voicemail,{...voicemail}];
+state.snapshot.call_details={enabled:true,calls:[{call_sid:SID,caller_number:'+14155550111',summary:{text:'Saved voicemail summary.'}}]};
+render();
+assert.equal(state.sessions.filter(call=>call.call_sid===SID).length,1);
+assert.equal(state.sessions.filter(call=>call.call_sid===OTHER).length,1);
+assert.equal($('call-list').children.length,1);assert.equal($('call-list').children[0].dataset.callSid,OTHER);
+assert.equal($('voicemail-list').children.length,1);
+assert.equal($('voicemail-list').children[0].dataset.callSid,SID);
+showCollection('voicemail');assert.equal($('voicemail-panel').hidden,false);assert.equal($('recent-panel').hidden,true);
 const visible=node=>node.textContent+' '+node.children.map(visible).join(' ');
 assert.ok(!visible($('call-list')).includes(SID.slice(-12)));
 assert.ok(!visible($('voicemail-list')).includes(SID.slice(-12)));
+''')
+
+
+def test_detail_navigation_uses_opened_order_and_back_restores_list_scroll_and_focus(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const newer={...session(),started_at:'2026-09-26T13:00:00Z'};
+state.snapshot=snapshot([newer,session(OTHER)],[recording(),recording(OTHER)]);render();
+$('collection-scroller').scrollTop=87;
+openCall();assert.deepEqual(state.detailOrder,[SID,OTHER]);
+assert.equal($('detail-previous').disabled,true);assert.equal($('detail-next').disabled,false);
+const THIRD='CA'+'c'.repeat(32);
+state.snapshot.sessions.unshift({...session(THIRD),started_at:'2026-09-26T14:00:00Z'});
+render();assert.deepEqual(state.detailOrder,[SID,OTHER]);
+state.paused=true;adjacentCall(1);
+assert.equal(state.selected,OTHER);assert.equal(state.detail,true);
+assert.equal($('detail-previous').disabled,false);assert.equal($('detail-next').disabled,true);
+const audio=$('call-audio');audio.play();audio.currentTime=19;
+const src=audio.src,loads=audio.loads,pauses=audio.pauses;
+$('detail-back').events.click();
+assert.equal(state.collection,'recent');assert.equal(state.detail,false);
+assert.equal($('collection-scroller').scrollTop,87);
+assert.equal(document.activeElement.dataset.callSid,OTHER);
+assert.equal(audio.src,src);assert.equal(audio.currentTime,19);assert.equal(audio.paused,false);
+assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
+$('audio-return').events.click();
+assert.equal(state.detail,true);assert.equal(state.selected,OTHER);
+assert.equal(audio.currentTime,19);assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
+''')
+
+
+def test_return_to_call_reopens_retained_recording_after_it_leaves_recent_history(tmp_path):
+    run_browser_logic(tmp_path, r'''
+state.snapshot=snapshot([session(),session(OTHER)],[recording(),recording(OTHER)]);render();openCall();
+const audio=$('call-audio');audio.play();audio.currentTime=17;
+const src=audio.src,loads=audio.loads,pauses=audio.pauses;
+backToCalls();
+state.snapshot=snapshot([session(OTHER)],[recording(OTHER)]);render();
+assert.equal(state.sessions.some(call=>call.call_sid===SID),false);
+assert.equal($('call-list').children.length,1);assert.equal($('call-list').children[0].dataset.callSid,OTHER);
+showPage('contacts');assert.equal($('audio-return').hidden,false);
+state.paused=true;$('audio-return').events.click();
+assert.equal(state.page,'calls');assert.equal(state.detail,true);assert.equal(state.selected,SID);
+assert.equal($('calls-detail').hidden,false);assert.equal($('transcript-title').textContent,'Call transcript');
+assert.equal($('session-storage-warning').hidden,false);
+assert.ok($('session-storage-warning').textContent.includes('last update'));
+assert.equal(state.transcriptRows[0].row.dataset.segmentId,'one');
+assert.equal(audio.src,src);assert.equal(audio.currentTime,17);assert.equal(audio.paused,false);
+assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
+assert.equal($('audio-download').href,src);assert.equal($('audio-return').hidden,true);
+''')
+
+
+def test_first_live_detail_opens_at_latest_text_after_its_pane_is_visible(tmp_path):
+    run_browser_logic(tmp_path, r'''
+state.snapshot=snapshot([{...session(),ended_at:null,status:'live'}]);render();
+const viewport=$('transcript');viewport.clientHeight=200;
+// A hidden ancestor has no layout height in the browser. Model that behavior
+// so opening a live call cannot mistake display:none for a short transcript.
+Object.defineProperty(viewport,'scrollHeight',{get(){
+ return $('dashboard-view').hidden||$('calls-detail').hidden?0:620;
+}});
+assert.equal($('calls-detail').hidden,true);assert.equal(viewport.scrollHeight,0);
+openCall();
+assert.equal($('calls-detail').hidden,false);assert.equal(viewport.scrollHeight,620);
+assert.equal(viewport.scrollTop,620);assert.equal(state.selected,SID);
+assert.equal($('messages').hidden,false);
+''')
+
+
+def test_new_live_call_scrolls_to_latest_text_when_selected_snapshot_finishes_loading(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const live={...session(OTHER),ended_at:null,status:'live',segments:[]};
+state.snapshot=snapshot([session(),live],[recording()]);render();openCall();
+const viewport=$('transcript');viewport.clientHeight=200;viewport.scrollHeight=100;
+let scrollTop=0;
+// Browsers clamp a scroll assignment while the loading placeholder is shorter
+// than the viewport; it cannot establish the eventual transcript's end position.
+Object.defineProperty(viewport,'scrollTop',{
+ get(){return scrollTop;},
+ set(value){scrollTop=Math.max(0,Math.min(value,viewport.scrollHeight-viewport.clientHeight));}
+});
+openCall(OTHER);
+assert.equal(state.snapshot.selected_call_sid,SID);assert.equal(state.selected,OTHER);
+assert.equal($('empty-title').textContent,'Loading this conversation…');assert.equal(viewport.scrollTop,0);
+live.segments=[{id:'latest',track:'inbound',start_ms:30000,end_ms:32000,text:'The newest live speech.'}];
+state.snapshot=snapshot([live,session()],[recording()]);
+viewport.scrollHeight=620;render();
+assert.equal(state.snapshot.selected_call_sid,OTHER);assert.equal($('empty').hidden,true);
+assert.equal(viewport.scrollTop,420); // The maximum visible scroll position.
+assert.equal(state.transcriptRows[0].row.dataset.segmentId,'latest');
+''')
+
+
+def test_category_tabs_switch_with_keyboard_and_preserve_selected_audio(tmp_path):
+    run_browser_logic(tmp_path, r'''
+state.snapshot=snapshot([session()],[recording()]);render();openCall();
+const audio=$('call-audio');audio.play();audio.currentTime=17;
+const src=audio.src,loads=audio.loads,pauses=audio.pauses;
+let prevented=0;
+const key=(tab,value)=>$(tab).events.keydown({key:value,preventDefault(){prevented++;}});
+key('tab-recent','ArrowRight');
+assert.equal(state.collection,'voicemail');assert.equal(state.detail,false);
+assert.equal($('tab-voicemail').attributes['aria-selected'],'true');
+assert.equal($('tab-recent').attributes['aria-selected'],'false');
+assert.equal(document.activeElement,$('tab-voicemail'));
+assert.equal($('voicemail-panel').hidden,false);assert.equal($('recent-panel').hidden,true);
+key('tab-voicemail','Home');assert.equal(state.collection,'recent');
+key('tab-recent','End');assert.equal(state.collection,'voicemail');
+key('tab-voicemail','ArrowLeft');assert.equal(state.collection,'recent');
+assert.equal(prevented,4);
+assert.equal(state.selected,SID);assert.equal(audio.src,src);assert.equal(audio.currentTime,17);
+assert.equal(audio.paused,false);assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
+''')
+
+
+def test_browser_navigation_restores_routes_without_restart_or_auto_selection(tmp_path):
+    run_browser_logic(tmp_path, r'''
+state.snapshot=snapshot([session()],[recording()]);render();
+showCollection('voicemail');assert.equal(location.hash,'#calls/voicemail');assert.equal(state.selected,null);
+showCollection('recent');openCall();assert.equal(location.hash,`#calls/recent/${SID}`);
+const audio=$('call-audio');audio.play();audio.currentTime=17;
+const loads=audio.loads,pauses=audio.pauses;
+showPage('contacts');assert.equal(location.hash,'#contacts');
+state.paused=true;location.hash=`#calls/recent/${SID}`;handlers.get('popstate')();
+assert.equal(state.page,'calls');assert.equal(state.detail,true);assert.equal(state.selected,SID);
+location.hash='#calls/recent';handlers.get('hashchange')();
+assert.equal(state.detail,false);assert.equal(state.collection,'recent');assert.equal(state.selected,SID);
+assert.equal(audio.currentTime,17);assert.equal(audio.paused,false);
+assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
 ''')
 
 
@@ -388,10 +572,10 @@ const saved=recording(),call=session();call.segments[0].end_ms=3000;
 state.snapshot=snapshot([call,session(OTHER)],[saved,recording(OTHER)]);
 const details={call_sid:SID,caller_number:'+14155550111',started_at:'2026-09-26T13:00:00Z',ended_at:'2026-09-26T13:03:00Z',
  duration_seconds:180,summary:{text:'<img src=x onerror=alert(1)> A saved agent summary.',source:'agent',created_at:'2026-09-26T13:04:00Z'}};
-state.snapshot.call_details={enabled:true,storage_error:'',calls:[details]};render();
+state.snapshot.call_details={enabled:true,storage_error:'',calls:[details]};render();openCall();
 const button=$('call-list').children.find(row=>row.dataset.callSid===SID);
 assert.equal(button.children[0].textContent,'+14155550111');
-assert.equal(button.children[1].textContent,clockTime(details.started_at)+' · 03:00');
+assert.equal(button.children[1].textContent,details.summary.text);
 assert.equal($('call-summary').textContent,details.summary.text);assert.equal($('call-summary').children.length,0);
 assert.equal($('call-summary').dataset.empty,'false');
 const audio=$('call-audio');audio.play();audio.currentTime=1.5;audio.events.timeupdate();
@@ -407,17 +591,18 @@ assert.equal($('call-summary').textContent,'No summary yet.');assert.equal($('ca
 
 def test_call_list_uses_honest_fallbacks_when_metadata_is_missing(tmp_path):
     run_browser_logic(tmp_path, r'''
-const call=session(),saved=recording();state.snapshot=snapshot([call],[saved]);render();
+const call=session(),saved=recording();state.snapshot=snapshot([call],[saved]);render();openCall();
 let button=$('call-list').children[0];
 assert.equal(button.children[0].textContent,'Unknown caller');
-assert.equal(button.children[1].textContent,clockTime(call.started_at)+' · 02:00');
+assert.equal(button.children[2].textContent,clockTime(call.started_at,true));
+assert.equal(button.children[3].textContent,'02:00');
 assert.equal($('call-summary').textContent,'No summary yet.');
 saved.duration_seconds=undefined;call.ended_at='2026-09-26T12:01:00Z';render();
-assert.equal($('call-list').children[0].children[1].textContent,clockTime(call.started_at)+' · 01:00');
-call.ended_at=null;render();assert.ok($('call-list').children[0].children[1].textContent.endsWith('Duration unavailable'));
+assert.equal($('call-list').children[0].children[3].textContent,'01:00');
+call.ended_at=null;render();assert.ok($('call-list').children[0].children[3].textContent.endsWith('Duration unavailable'));
 state.snapshot.call_details={enabled:true,storage_error:'',calls:[{call_sid:SID,caller_number:'',duration_seconds:0,summary:null}]};render();
 assert.equal($('call-list').children[0].children[0].textContent,'Unknown caller');
-assert.ok($('call-list').children[0].children[1].textContent.endsWith('00:00')); // Zero is known, not missing.
+assert.ok($('call-list').children[0].children[3].textContent.endsWith('00:00')); // Zero is known, not missing.
 ''')
 
 
@@ -426,7 +611,7 @@ def test_metadata_only_calls_keep_their_saved_summary_selectable(tmp_path):
 state.snapshot=snapshot();state.snapshot.enabled=false;
 state.snapshot.call_details={enabled:true,storage_error:'',calls:[{call_sid:SID,caller_number:'+14155550222',
  started_at:'2026-09-26T12:00:00Z',ended_at:'2026-09-26T12:01:00Z',duration_seconds:60,
- summary:{text:'Saved summary without live transcription.',source:'agent',created_at:'2026-09-26T12:02:00Z'}}]};render();
+ summary:{text:'Saved summary without live transcription.',source:'agent',created_at:'2026-09-26T12:02:00Z'}}]};render();openCall();
 assert.equal(state.selected,SID);assert.equal($('call-list').children.length,1);
 assert.equal($('call-list').children[0].children[0].textContent,'+14155550222');
 assert.equal($('call-summary').textContent,'Saved summary without live transcription.');

@@ -15,23 +15,23 @@
     .brand{display:flex;align-items:center;gap:10px;padding:0 8px}.brand-mark{width:33px;height:33px;flex:none;border-radius:9px;background:var(--ink);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:800;letter-spacing:-.5px}.brand-name{font-size:12px;font-weight:700;line-height:1.5}.brand-sub{font-size:10px;color:var(--muted);margin-top:2px}
     .nav-links{display:flex;flex-direction:column;gap:4px}.nav-link{display:flex;align-items:center;gap:11px;min-height:42px;width:100%;padding:10px 12px;border:0;border-radius:7px;background:transparent;text-align:left;color:var(--muted);font-size:13px;font-weight:550}.nav-link svg{width:18px;height:18px;flex:none}.nav-link:hover{background:#f0f3f6;color:var(--ink)}.nav-link[aria-current="page"]{color:var(--teal);background:var(--teal-light);font-weight:700}
     .topbar{grid-column:2;grid-row:1;height:66px;display:flex;align-items:center;gap:20px;padding:0 28px;border-bottom:1px solid var(--line);background:#fff}.search-box{position:relative;width:min(460px,100%)}.search-box svg{position:absolute;left:12px;top:12px;width:16px;height:16px;color:var(--muted)}.search-box input{display:block;width:100%;height:40px;border:1px solid transparent;border-radius:7px;background:#f4f6f9;padding:0 14px 0 37px;color:var(--muted);opacity:1}.search-box input::placeholder{color:var(--muted);opacity:1}
-    main{grid-column:2;grid-row:2;width:100%;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:auto;padding:0}.page-heading{flex:none;padding:22px 28px 17px}.page-heading h1{font-size:23px;font-weight:700;letter-spacing:-.6px}#dashboard-view{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;padding:0 28px}
-    .banner{flex:none;padding:10px 13px;border-radius:7px;background:#fff4df;color:#74541a;font-size:12px;margin-bottom:12px;border:1px solid #e9d8b1}.banner[data-tone="bad"]{background:var(--red-light);color:var(--red);border-color:#f1d2cc}
-    .desk{display:grid;grid-template-columns:210px minmax(0,1fr);gap:22px;flex:1;min-height:240px}.sidebar{min-width:0;min-height:0;max-height:100%;align-self:start;overflow:auto;padding:14px 0;background:#fff;border-top:1px solid var(--line)}
-    .section-summary{cursor:pointer;padding:0 9px;font-size:12px;font-weight:650}.sidebar-group[open] .section-summary{margin-bottom:10px}.voicemail-group{border-top:1px solid var(--line);margin-top:14px;padding-top:14px}
-    .call-list{display:flex;flex-direction:column;gap:3px}.call-option{padding:10px 9px;border:1px solid transparent;border-radius:7px;text-align:left;background:transparent;color:var(--ink);width:100%}.call-option:hover{background:#f5f7fa}.call-option[aria-pressed="true"]{background:var(--teal-light);border-color:#d5e9e6}.call-title{font-size:12px;font-weight:650;overflow-wrap:anywhere}.call-time{font-size:10px;color:var(--muted);margin-top:3px}.sidebar-empty{font-size:12px;color:var(--muted);padding:8px 9px;line-height:1.7}.voicemail-note{color:var(--muted);font-size:11px;line-height:1.6;margin-top:10px}
-    .transcript-card{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:#fff}.card-heading{flex:none;max-height:45%;overflow:auto;padding:19px 22px 17px;border-bottom:1px solid var(--line)}.card-row{display:flex;align-items:center;justify-content:space-between;gap:16px}.card-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.card-title h2{font-size:17px;font-weight:650;letter-spacing:-.35px}.badge{display:inline-flex;font-size:10px;font-weight:650;color:var(--teal);background:var(--teal-light);border-radius:5px;padding:3px 7px}.badge[data-tone="bad"]{color:var(--red);background:var(--red-light)}.badge[data-tone="neutral"]{color:var(--muted);background:#f0f3f6}
+    main{grid-column:2;grid-row:2;width:100%;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:0}.page-heading{flex:none;padding:22px 28px 17px}.page-heading h1{font-size:23px;font-weight:700;letter-spacing:-.6px}#dashboard-view{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;padding:0}
+    .banner{flex:none;padding:10px 13px;border-radius:7px;background:#fff4df;color:#74541a;font-size:12px;margin:0 28px 12px;border:1px solid #e9d8b1}.banner[data-tone="bad"]{background:var(--red-light);color:var(--red);border-color:#f1d2cc}
+    .calls-tabs{display:flex;gap:28px;margin:0 28px;border-bottom:1px solid var(--line);flex:none;overflow-x:auto}.calls-tabs button{border:0;border-bottom:2px solid transparent;background:none;color:var(--muted);padding:10px 0;white-space:nowrap;font-size:13px;margin-bottom:-1px}.calls-tabs button[aria-selected="true"]{color:var(--teal);border-bottom-color:var(--teal);font-weight:650}.tab-count{font-size:10px;margin-left:6px;padding:2px 5px;background:#eef1f5;border-radius:4px;color:var(--muted)}
+    .collection-scroller{flex:1;min-height:0;overflow:auto;padding:18px 28px 20px}.table-heading,.call-option{display:grid;grid-template-columns:minmax(140px,1fr) minmax(180px,2.5fr) 130px 75px 16px;gap:18px;align-items:center}.table-heading{font-size:11px;color:var(--muted);border-bottom:1px solid var(--line);padding:9px 12px}.call-option{width:100%;min-height:70px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:#fff;text-align:left;padding:16px 12px;color:var(--ink)}.call-option:hover{background:#f5f9f9}.call-option[aria-current="true"]{background:#f2f8f7}.call-title{font-size:13px;font-weight:650;overflow-wrap:anywhere}.call-summary-preview{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.call-time,.call-duration{font-size:11px;color:var(--muted)}.call-arrow{font-size:19px;color:#98a4b0}.collection-empty{padding:36px 12px;color:var(--muted);font-size:13px}.page-caption{font-size:12px;color:var(--muted);margin-top:4px}.live-notice{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 28px 12px;padding:9px 12px;border:1px solid #cfe5e2;border-radius:7px;background:var(--teal-light);font-size:12px}.text-button{border:0;background:none;color:var(--teal);font-size:12px;padding:5px 0}.detail-tools{display:flex;justify-content:space-between;align-items:center;gap:12px;flex:none;padding:0 28px 15px;border-bottom:1px solid var(--line)}.detail-stepper{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px}.detail-stepper button{padding:5px 10px;border:1px solid var(--line);background:#fff;border-radius:6px}.detail-stepper button:disabled{opacity:.4}
+    .transcript-card{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;background:#fff}.card-heading{padding:22px 0 20px}.card-row{display:flex;align-items:center;justify-content:space-between;gap:16px;max-width:900px}.card-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.card-title h2{font-size:18px;font-weight:650;letter-spacing:-.35px}.badge{display:inline-flex;font-size:10px;font-weight:650;color:var(--teal);background:var(--teal-light);border-radius:5px;padding:3px 7px}.badge[data-tone="bad"]{color:var(--red);background:var(--red-light)}.badge[data-tone="neutral"]{color:var(--muted);background:#f0f3f6}.voicemail-note{font-size:12px;color:var(--muted);margin-top:10px}
     .exports{display:flex;gap:5px;flex:none}.export{font-size:10px;border:1px solid var(--line);border-radius:6px;padding:5px 7px;color:var(--muted);text-decoration:none;font-weight:650}.export:hover{color:var(--teal);background:#f4f8f8}.export[aria-disabled="true"]{pointer-events:none;opacity:.4}
     .summary-panel{margin-top:12px}.summary-text{font-size:13px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere;max-width:860px}.summary-text[data-empty="true"]{color:var(--muted)}.track-error{margin-top:7px;font-size:11px;color:var(--red);overflow-wrap:anywhere}
-    .transcript-toolbar{flex:none;display:flex;align-items:center;padding:15px 22px 8px;color:var(--muted);font-size:10px}.live-label{letter-spacing:.9px;text-transform:uppercase;font-weight:650}.transcript{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:2px 22px 16px;scroll-behavior:smooth;scrollbar-width:thin;scrollbar-color:#cbd4dc transparent}
+    .transcript-toolbar{flex:none;display:flex;align-items:center;padding:0 0 10px;color:var(--muted);font-size:10px}.live-label{letter-spacing:.9px;text-transform:uppercase;font-weight:650}.transcript{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 28px 24px;scroll-behavior:smooth;scrollbar-width:thin;scrollbar-color:#cbd4dc transparent}
     .messages{display:flex;flex-direction:column;gap:7px}.message{display:grid;grid-template-columns:39px minmax(0,1fr);gap:10px;border-radius:6px;padding:4px 8px;margin:0 -8px;border-left:3px solid transparent}.timestamp{font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#8a97a4;padding-top:2px;font-variant-numeric:tabular-nums}.message-meta{display:flex;align-items:center;gap:8px;margin-bottom:2px}.speaker{font-size:10px;color:var(--teal);font-weight:750}.message[data-track="outbound"] .speaker{color:#596a91}.confidence{font-size:9px;color:#94a0ad}.message-text{font-size:14px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;max-width:860px}.interim .message-text{color:#8995a2}.interim .speaker{color:#81968c}.interim-label{font-size:9px;background:#f0f4f1;color:#84918a;padding:2px 5px;border-radius:4px}.message.playing-line{background:#e3f3e9;border-left-color:var(--teal)}.message[data-track="outbound"].playing-line{background:#ecf0fa;border-left-color:#677bad}
-    .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:100%;min-height:220px;padding:20px}.empty-icon{display:grid;place-items:center;width:44px;height:44px;border-radius:12px;background:var(--teal-light);color:var(--teal);margin-bottom:14px}.empty h2{font-size:16px;font-weight:650;margin-bottom:7px}.empty p{font-size:12px;color:var(--muted);max-width:305px;line-height:1.7}.empty svg{width:23px;height:23px}.page-foot{flex:none;display:flex;justify-content:space-between;gap:15px;color:#8a97a4;font-size:10px;padding:10px 0}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:100%;min-height:180px;padding:20px}.empty-icon{display:grid;place-items:center;width:44px;height:44px;border-radius:12px;background:var(--teal-light);color:var(--teal);margin-bottom:14px}.empty h2{font-size:16px;font-weight:650;margin-bottom:7px}.empty p{font-size:12px;color:var(--muted);max-width:305px;line-height:1.7}.empty svg{width:23px;height:23px}.page-foot{flex:none;display:flex;justify-content:space-between;gap:15px;color:#8a97a4;font-size:10px;padding:8px 28px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
     .audio-panel{grid-column:2;grid-row:3;position:relative;z-index:20;background:#fafbfc;border-top:1px solid var(--line);padding:12px 28px calc(12px + env(safe-area-inset-bottom))}.audio-inner{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) 40px;gap:12px;align-items:center}.audio-panel audio{display:block;width:100%;min-width:0;height:40px}.audio-download{display:grid;place-items:center;width:40px;height:40px;color:var(--muted);border:1px solid var(--line);border-radius:50%;text-decoration:none}.audio-download:hover{color:var(--teal);background:var(--teal-light)}.audio-download svg{width:18px;height:18px}.audio-status{max-width:1100px;margin:0 auto;font-size:12px;color:var(--muted)}.audio-status:not([hidden]){padding:8px 0}.audio-status[data-tone="bad"]{color:var(--red)}
+    .audio-return{display:block;max-width:1100px;margin:0 auto 6px;border:0;background:none;color:var(--teal);font-size:11px;padding:0;text-align:left}
     .workspace-page{flex:1;min-height:0;overflow:auto;padding:0 28px 28px}.placeholder-panel{max-width:780px;border-top:1px solid var(--line);padding:24px 0}.placeholder-heading{display:flex;align-items:center;gap:12px;margin-bottom:10px}.placeholder-heading h2{font-size:16px;font-weight:650}.planned{font-size:10px;color:var(--muted);background:#f0f3f6;border-radius:4px;padding:3px 7px}.placeholder-panel p{max-width:560px;font-size:13px;line-height:1.7;color:var(--muted)}.shortcut-list{margin:23px 0 16px;max-width:560px}.shortcut-list div{display:grid;grid-template-columns:42px 1fr;gap:14px;padding:14px 0;border-top:1px solid var(--line);align-items:center}.shortcut-list dd{margin:0;font-size:13px}.shortcut-list kbd{display:inline-block;padding:3px 7px;border:1px solid #dce2e9;border-radius:5px;background:#f9fafc;font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
-    @media(max-width:1100px){:root{--nav-width:184px}.brand-name{font-size:11px}.desk{grid-template-columns:180px minmax(0,1fr);gap:16px}.topbar{padding:0 20px}.page-heading{padding:20px 20px 16px}#dashboard-view{padding:0 20px}.workspace-page{padding:0 20px 20px}.card-heading{padding:17px 18px 15px}.transcript,.transcript-toolbar{padding-left:18px;padding-right:18px}}
-    @media(max-width:900px){:root{--nav-width:160px}.app-nav{padding:19px 9px}.brand{gap:8px;padding:0 5px}.brand-mark{width:29px;height:29px;font-size:10px}.brand-sub{display:none}.nav-link{padding:10px;gap:9px}.desk{grid-template-columns:155px minmax(0,1fr);gap:12px}.card-row{align-items:start;flex-wrap:wrap;gap:8px}.card-heading{padding:15px}.transcript,.transcript-toolbar{padding-left:15px;padding-right:15px}}
-    @media(max-width:700px){body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr) auto}.app-nav{grid-column:1;grid-row:2;padding:6px 14px;border-right:0;border-bottom:1px solid var(--line);background:#fff;overflow:visible}.brand{display:none}.nav-links{flex-direction:row;gap:5px}.nav-link{justify-content:center;min-height:38px;padding:8px 13px;font-size:12px;width:auto;flex:1}.nav-link svg{width:16px;height:16px}.topbar{grid-column:1;grid-row:1;height:60px;padding:0 16px}.search-box{width:100%}main{grid-column:1;grid-row:3}.page-heading{padding:16px 16px 13px}.page-heading h1{font-size:21px}#dashboard-view{padding:0 16px}.desk{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);min-height:390px;gap:14px}.sidebar{max-height:175px;padding:10px 0}.call-list{flex-direction:row;overflow:auto;max-height:94px;padding-bottom:3px}.call-option{width:157px;flex:0 0 157px}.voicemail-group{margin-top:10px;padding-top:10px}.sidebar-empty{padding:4px 9px}.card-row{flex-wrap:nowrap}.card-title h2{font-size:16px}.message{grid-template-columns:34px minmax(0,1fr);gap:8px}.message-text{font-size:13px}.page-foot{font-size:9px;padding:8px 0}.workspace-page{padding:0 16px 20px}.audio-panel{grid-column:1;grid-row:4}}
-    @media(max-width:700px){.audio-panel{padding:10px 12px calc(10px + env(safe-area-inset-bottom))}.audio-inner{gap:8px}.audio-status{font-size:11px}}
+    @media(max-width:1100px){:root{--nav-width:184px}.brand-name{font-size:11px}.topbar{padding:0 20px}.page-heading{padding:20px 20px 16px}.workspace-page{padding:0 20px 20px}.collection-scroller{padding:15px 20px 20px}.calls-tabs{margin:0 20px}.table-heading,.call-option{grid-template-columns:minmax(125px,1fr) minmax(140px,1.7fr) 100px 65px 12px;gap:12px}.transcript{padding:0 20px 22px}.detail-tools{padding:0 20px 14px}.banner,.live-notice{margin-left:20px;margin-right:20px}.page-foot{padding:8px 20px}}
+    @media(max-width:900px){:root{--nav-width:160px}.app-nav{padding:19px 9px}.brand{gap:8px;padding:0 5px}.brand-mark{width:29px;height:29px;font-size:10px}.brand-sub{display:none}.nav-link{padding:10px;gap:9px}.table-heading,.call-option{grid-template-columns:minmax(125px,1fr) minmax(120px,1.5fr) 90px 12px}.call-duration,.duration-heading{display:none}.card-row{align-items:start;flex-wrap:wrap;gap:8px}}
+    @media(max-width:700px){body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr) auto}.app-nav{grid-column:1;grid-row:2;padding:6px 14px;border-right:0;border-bottom:1px solid var(--line);background:#fff;overflow:visible}.brand{display:none}.nav-links{flex-direction:row;gap:5px}.nav-link{justify-content:center;min-height:38px;padding:8px 13px;font-size:12px;width:auto;flex:1}.nav-link svg{width:16px;height:16px}.topbar{grid-column:1;grid-row:1;height:60px;padding:0 16px}.search-box{width:100%}main{grid-column:1;grid-row:3}.page-heading{padding:16px}.page-heading h1{font-size:21px}.calls-tabs{margin:0 16px;gap:24px}.collection-scroller{padding:10px 16px 18px}.table-heading{display:none}.call-option{grid-template-columns:minmax(0,1fr) auto 12px;gap:4px 10px;padding:15px 5px}.call-title{grid-column:1;grid-row:1;font-size:12px}.call-summary-preview{grid-column:1/3;grid-row:2;font-size:11px}.call-time{grid-column:2;grid-row:1;font-size:10px}.call-arrow{grid-column:3;grid-row:1/3}.detail-tools{padding:0 16px 13px}.transcript{padding:0 16px 20px}.card-heading{padding:18px 0}.card-row{flex-wrap:nowrap}.card-title h2{font-size:16px}.message{grid-template-columns:34px minmax(0,1fr);gap:8px}.message-text{font-size:13px}.page-foot{font-size:9px;padding:7px 16px}.workspace-page{padding:0 16px 20px}.banner,.live-notice{margin-left:16px;margin-right:16px}.audio-panel{grid-column:1;grid-row:4}}
+    @media(max-width:700px){.audio-panel{padding:10px 12px calc(10px + env(safe-area-inset-bottom))}.audio-inner{gap:8px}.audio-status{font-size:11px}.audio-return{font-size:10px}}
     @media(prefers-reduced-motion:reduce){.transcript{scroll-behavior:auto}}
   </style>
 </head>
@@ -49,28 +49,35 @@
     <div id="connection" class="sr-only" role="status" aria-label="Connecting"></div>
   </header>
   <main>
-    <div class="page-heading"><h1 id="page-title" tabindex="-1">Calls</h1></div>
+    <div class="page-heading"><h1 id="page-title" tabindex="-1">Calls</h1><p id="page-caption" class="page-caption" hidden></p></div>
+    <div id="live-call-notice" class="live-notice" hidden><span id="live-call-text" role="status"></span><button id="live-call-open" class="text-button" type="button">Open live call →</button></div>
     <section id="dashboard-view" aria-labelledby="desk-heading">
       <h2 id="desk-heading" class="sr-only">Call desk</h2>
       <div id="banner" class="banner" role="status" hidden></div>
       <div id="storage-warning" class="banner" data-tone="bad" role="status" hidden></div>
       <div id="voicemail-warning" class="banner" data-tone="bad" role="status" hidden></div>
       <div id="recording-warning" class="banner" data-tone="bad" role="status" hidden></div>
-      <div class="desk">
-        <aside class="sidebar" aria-label="Call selection"><details id="recent-calls" class="sidebar-group" open><summary class="section-summary">Recent calls</summary><div id="call-list" class="call-list"></div><p id="sidebar-empty" class="sidebar-empty">No calls yet.</p></details><details id="voicemail-section" class="sidebar-group voicemail-group"><summary class="section-summary">Voicemail</summary><div id="voicemail-list" class="call-list"></div></details></aside>
-        <section class="transcript-card" aria-labelledby="transcript-title">
+      <div id="calls-tabs" class="calls-tabs" role="tablist" aria-label="Call collections">
+        <button id="tab-recent" type="button" role="tab" aria-selected="true" aria-controls="recent-panel">Recent calls <span id="recent-count" class="tab-count">0</span></button>
+        <button id="tab-voicemail" type="button" role="tab" aria-selected="false" aria-controls="voicemail-panel" tabindex="-1">Voicemail <span id="voicemail-count" class="tab-count">0</span></button>
+      </div>
+      <div id="collection-scroller" class="collection-scroller">
+        <section id="recent-panel" role="tabpanel" aria-labelledby="tab-recent"><div class="table-heading" aria-hidden="true"><span>Caller</span><span>Summary</span><span>Time</span><span class="duration-heading">Duration</span><span></span></div><div id="call-list" class="call-list"></div><p id="sidebar-empty" class="collection-empty">No recent calls yet.</p></section>
+        <section id="voicemail-panel" role="tabpanel" aria-labelledby="tab-voicemail" hidden><div class="table-heading" aria-hidden="true"><span>Caller</span><span>Message</span><span>Time</span><span class="duration-heading">Duration</span><span></span></div><div id="voicemail-list" class="call-list"></div><p id="voicemail-empty" class="collection-empty">No voicemail yet.</p></section>
+      </div>
+      <section id="calls-detail" class="transcript-card" aria-labelledby="transcript-title" hidden>
+        <div class="detail-tools"><button id="detail-back" class="text-button" type="button">← Back to calls</button><div class="detail-stepper"><button id="detail-previous" type="button" aria-label="Previous call">←</button><span id="detail-position"></span><button id="detail-next" type="button" aria-label="Next call">→</button></div></div>
+        <div id="transcript" class="transcript" tabindex="0" aria-label="Call transcript">
           <div class="card-heading">
             <div class="card-row"><div class="card-title"><h2 id="transcript-title">Waiting for a call</h2><span id="voicemail-badge" class="badge" data-tone="neutral" hidden></span></div><div class="exports" aria-label="Export selected call"><a id="export-txt" class="export" aria-disabled="true" tabindex="-1">TXT <span aria-hidden="true">↓</span></a><a id="export-json" class="export" aria-disabled="true" tabindex="-1">JSON <span aria-hidden="true">↓</span></a></div></div>
             <section id="summary-panel" class="summary-panel" aria-labelledby="summary-heading"><h3 id="summary-heading" class="sr-only">Summary</h3><p id="call-summary" class="summary-text" data-empty="true">No summary yet.</p></section>
             <p id="voicemail-detail" class="voicemail-note" hidden></p><p id="session-storage-warning" class="track-error" role="status" hidden></p>
           </div>
           <div class="transcript-toolbar"><span class="live-label">Transcript</span></div>
-          <div id="transcript" class="transcript" tabindex="0" aria-label="Call transcript">
             <div id="empty" class="empty"><div class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4M8 22h8"></path></svg></div><h2 id="empty-title">Ready when you are.</h2><p id="empty-description">When a call connects, its transcript will appear here. The view updates automatically.</p></div>
             <div id="messages" class="messages" hidden></div>
           </div>
-        </section>
-      </div>
+      </section>
       <footer class="page-foot"><span>New College Data Science Team</span><span id="updated-at">Waiting for an update</span></footer>
     </section>
     <section id="contacts-view" class="workspace-page" aria-label="Contacts" hidden>
@@ -82,6 +89,7 @@
     <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
   </main>
   <section id="audio-panel" class="audio-panel" aria-label="Call playback" hidden>
+    <button id="audio-return" class="audio-return" type="button" hidden>Return to call →</button>
     <div class="audio-inner">
       <audio id="call-audio" controls preload="none" aria-label="Play selected call recording" aria-describedby="audio-status" hidden></audio>
       <a id="audio-download" class="audio-download" aria-label="Download WAV" title="Download WAV" aria-disabled="true" tabindex="-1" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4"></path></svg></a>
@@ -92,11 +100,11 @@
     "use strict";
     const $ = id => document.getElementById(id);
     const trackNames = {inbound: "Caller", outbound: "New College"};
-    const state = {page: "calls", snapshot: null, selected: null, manualSelection: false, latestLive: null, pendingLive: null, playbackPinned: null, timer: null,
+    const state = {page: "calls", collection: "recent", detail: false, sessions: [], detailOrder: [], listScroll: {recent: 0, voicemail: 0}, selectedSession: null, snapshot: null, selected: null, manualSelection: false, latestLive: null, pendingLive: null, playbackPinned: null, timer: null,
       controller: null, polling: false, paused: false, renderKey: "", listKey: "",
       voicemailKey: "", refreshRequested: false, audioCall: null, audioTrack: "combined",
       audioUrl: "", audioPhase: "idle", audioSession: null, highlightEnabled: false,
-      transcriptRows: [], renderedCall: null, voicemailInitialized: false};
+      transcriptRows: [], renderedCall: null};
     const callSidPattern = /^CA[0-9a-fA-F]{32}$/;
     const audioTracks = {combined: "Call audio"};
     const endedStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
@@ -113,25 +121,118 @@
 
     const pages = {calls: "dashboard-view", contacts: "contacts-view", agents: "agents-view"};
     const pageTitles = {calls: "Calls", contacts: "Contacts", agents: "Agents"};
-    function showPage(page) {
-      if (!Object.hasOwn(pages, page)) return;
-      state.page = page;
+    function collectionSessions() {
+      return state.sessions.filter(session => Boolean(session.voicemail) === (state.collection === "voicemail"));
+    }
+    function visibleDetail() { return state.page === "calls" && state.detail; }
+    function saveRoute(replace = false) {
+      const hash = state.page === "calls"
+        ? `#calls/${state.collection}${state.detail && state.selected ? "/" + state.selected : ""}` : "#" + state.page;
+      if (window.location.hash !== hash) window.history[replace ? "replaceState" : "pushState"](null, "", hash);
+    }
+    function readRoute() {
+      const parts = window.location.hash.slice(1).split("/");
+      const page = Object.hasOwn(pages, parts[0]) ? parts[0] : "calls";
+      return {page, collection: parts[1] === "voicemail" ? "voicemail" : "recent",
+        call: page === "calls" && callSidPattern.test(parts[2] || "") ? parts[2] : null};
+    }
+    function restoreRoute() {
+      const route = readRoute();
+      rememberListPosition();
+      state.page = route.page;
+      if (route.page === "calls") {
+        state.collection = route.collection;
+        state.detail = Boolean(route.call);
+        if (route.call) {
+          if (state.selected !== route.call) state.renderKey = "";
+          state.selected = route.call;
+          state.manualSelection = true;
+          state.detailOrder = [];
+        }
+      }
+      render();
+      renderNavigation();
+      $("page-title").focus({preventScroll: true});
+      if (state.page === "calls" && !state.detail) restoreListPosition();
+      refresh();
+    }
+    function rememberListPosition() {
+      if (state.page === "calls" && !state.detail) state.listScroll[state.collection] = $("collection-scroller").scrollTop;
+    }
+    function restoreListPosition() {
+      $("collection-scroller").scrollTop = state.listScroll[state.collection];
+      const list = state.collection === "voicemail" ? $("voicemail-list") : $("call-list");
+      const row = Array.from(list.children).find(button => button.dataset.callSid === state.selected);
+      if (row) row.focus({preventScroll: true});
+    }
+    function renderNavigation() {
       for (const [name, view] of Object.entries(pages)) {
-        $(view).hidden = name !== page;
-        if (name === page) $("nav-" + name).setAttribute("aria-current", "page");
+        $(view).hidden = name !== state.page;
+        if (name === state.page) $("nav-" + name).setAttribute("aria-current", "page");
         else $("nav-" + name).removeAttribute("aria-current");
       }
-      $("page-title").textContent = pageTitles[page];
-      $("page-title").focus({preventScroll: true});
-      if (page === "calls") {
-        if (state.highlightEnabled && state.audioCall === state.selected) updatePlaybackHighlight();
-        else $("transcript").scrollTop = $("transcript").scrollHeight;
+      $("page-title").textContent = state.page === "calls" && state.detail ? "Call details" : pageTitles[state.page];
+      $("page-caption").hidden = !visibleDetail() || !state.selectedSession;
+      $("page-caption").textContent = state.selectedSession ? callerNumber(state.selectedSession) : "";
+      $("calls-tabs").hidden = state.detail;
+      $("collection-scroller").hidden = state.detail;
+      $("calls-detail").hidden = !state.detail;
+      for (const name of ["recent", "voicemail"]) {
+        const active = state.collection === name;
+        $("tab-" + name).setAttribute("aria-selected", String(active));
+        $("tab-" + name).setAttribute("tabindex", active ? "0" : "-1");
+        $(name + "-panel").hidden = !active;
       }
+      $("detail-back").textContent = state.collection === "voicemail" ? "← Back to voicemail" : "← Back to calls";
+      const order = state.detailOrder.filter(sid => state.sessions.some(session => session.call_sid === sid));
+      const index = order.indexOf(state.selected);
+      $("detail-position").textContent = index < 0 ? "" : `${index + 1} of ${order.length}`;
+      $("detail-previous").disabled = index <= 0;
+      $("detail-next").disabled = index < 0 || index >= order.length - 1;
+      const live = state.sessions.find(session => session.call_sid === state.pendingLive);
+      $("live-call-notice").hidden = !live || (visibleDetail() && live.call_sid === state.selected);
+      const liveText = live ? "Live call from " + callerNumber(live) : "";
+      if ($("live-call-text").textContent !== liveText) $("live-call-text").textContent = liveText;
+      $("audio-return").hidden = !state.audioUrl || visibleDetail();
+      $("audio-return").textContent = "Return to call · " + (state.audioSession ? callerNumber(state.audioSession) : "") + " →";
+    }
+    function showPage(page) {
+      if (!Object.hasOwn(pages, page)) return;
+      rememberListPosition();
+      state.page = page;
+      renderNavigation();
+      saveRoute();
+      $("page-title").focus({preventScroll: true});
+      if (visibleDetail()) updatePlaybackHighlight();
+      else if (page === "calls") restoreListPosition();
+    }
+    function showCollection(name, {history = true, focus = true} = {}) {
+      if (!["recent", "voicemail"].includes(name)) return;
+      rememberListPosition();
+      state.collection = name;
+      state.page = "calls";
+      state.detail = false;
+      renderNavigation();
+      $("collection-scroller").scrollTop = state.listScroll[name];
+      if (history) saveRoute();
+      if (focus) $("tab-" + name).focus({preventScroll: true});
+    }
+    function backToCalls() {
+      state.detail = false;
+      renderNavigation();
+      saveRoute();
+      restoreListPosition();
+    }
+    function adjacentCall(direction) {
+      const order = state.detailOrder.filter(sid => state.sessions.some(session => session.call_sid === sid));
+      const next = order[order.indexOf(state.selected) + direction];
+      if (next) chooseCall(next, {captureOrder: false});
     }
     function text(value, fallback = "") {
       return typeof value === "string" ? value : fallback;
     }
     function isActive(session) {
+      if (session.voicemail_only) return false;
       return !session.ended_at && !endedStatuses.has(text(session.status).toLowerCase());
     }
     function readable(value) {
@@ -145,12 +246,23 @@
       return entry && Number.isFinite(entry.duration_seconds) && entry.duration_seconds >= 0
         ? `${Math.round(entry.duration_seconds)} sec` : "";
     }
-    function chooseCall(callSid) {
+    function chooseCall(callSid, {history = true, captureOrder = true} = {}) {
+      if (!callSidPattern.test(callSid)) return;
+      const session = state.sessions.find(entry => entry.call_sid === callSid)
+        || (state.selectedSession && state.selectedSession.call_sid === callSid ? state.selectedSession : null);
+      if (!session) return;
+      rememberListPosition();
+      state.collection = session.voicemail ? "voicemail" : "recent";
+      if (captureOrder) state.detailOrder = collectionSessions().map(entry => entry.call_sid);
       state.manualSelection = true;
-      state.pendingLive = null;
+      if (state.pendingLive === callSid) state.pendingLive = null;
+      if (state.selected !== callSid) state.renderKey = "";
       state.selected = callSid;
-      state.renderKey = "";
+      state.page = "calls";
+      state.detail = true;
       render();
+      if (history) saveRoute();
+      $("page-title").focus({preventScroll: true});
       refresh();
     }
     function dateValue(value) {
@@ -180,6 +292,7 @@
     function callDuration(session) {
       const detail = session.call_detail || {};
       let seconds = detail.duration_seconds;
+      if (!Number.isFinite(seconds) || seconds < 0) seconds = session.voicemail && session.voicemail.duration_seconds;
       if (!Number.isFinite(seconds) || seconds < 0) seconds = session.recording && session.recording.duration_seconds;
       if (!Number.isFinite(seconds) || seconds < 0) {
         const start = detail.started_at || session.started_at;
@@ -280,57 +393,48 @@
       }
       updateAudioStatus();
     }
-    function renderCallList(sessions) {
-      const key = JSON.stringify([state.selected,
-        sessions.map(session => [session.call_sid, callerNumber(session), callStartedAt(session), callDuration(session)])]);
-      if (key === state.listKey) return;
-      state.listKey = key;
+    function summaryPreview(session) {
+      return text(session.call_detail && session.call_detail.summary && session.call_detail.summary.text).trim()
+        || (session.voicemail ? voicemailLabel(session.voicemail) : isActive(session) ? "Live call" : "No summary yet.");
+    }
+    function renderRows(sessions, listId, keyName) {
+      const key = JSON.stringify([state.selected, sessions.map(session => [session.call_sid, callerNumber(session),
+        summaryPreview(session), callStartedAt(session), callDuration(session)])]);
+      if (key === state[keyName]) return;
+      state[keyName] = key;
       const focusedCall = document.activeElement && document.activeElement.dataset.callSid;
       const fragment = document.createDocumentFragment();
       sessions.forEach(session => {
         const button = node("button", "call-option");
         button.type = "button";
         button.dataset.callSid = session.call_sid;
-        button.setAttribute("aria-pressed", String(session.call_sid === state.selected));
-        button.append(node("div", "call-title", callerNumber(session)),
-          node("div", "call-time", `${clockTime(callStartedAt(session))} · ${callDuration(session)}`));
+        if (session.call_sid === state.selected) button.setAttribute("aria-current", "true");
+        button.append(node("span", "call-title", callerNumber(session)),
+          node("span", "call-summary-preview", summaryPreview(session)),
+          node("span", "call-time", clockTime(callStartedAt(session), true)),
+          node("span", "call-duration", callDuration(session)));
+        const arrow = node("span", "call-arrow", "›");
+        arrow.setAttribute("aria-hidden", "true");
+        button.append(arrow);
         button.addEventListener("click", () => chooseCall(session.call_sid));
         fragment.append(button);
       });
-      $("call-list").replaceChildren(fragment);
-      if (focusedCall) {
-        for (const button of $("call-list").children) {
-          if (button.dataset.callSid === focusedCall) button.focus({preventScroll: true});
-        }
+      $(listId).replaceChildren(fragment);
+      if (focusedCall && state.page === "calls" && !state.detail) {
+        for (const button of $(listId).children) if (button.dataset.callSid === focusedCall) button.focus({preventScroll: true});
       }
-      $("sidebar-empty").hidden = sessions.length > 0;
     }
-    function renderVoicemails(entries) {
-      if (!state.voicemailInitialized) {
-        state.voicemailInitialized = true;
-        $("voicemail-section").open = entries.length > 0;
-      }
-      const key = JSON.stringify([state.selected, entries, state.snapshot.voicemail && state.snapshot.voicemail.enabled]);
-      if (key === state.voicemailKey) return;
-      state.voicemailKey = key;
-      const focused = document.activeElement && document.activeElement.dataset.voicemailSid;
-      const fragment = document.createDocumentFragment();
-      entries.forEach(entry => {
-        const button = node("button", "call-option");
-        button.type = "button";
-        button.dataset.voicemailSid = entry.call_sid;
-        button.setAttribute("aria-pressed", String(entry.call_sid === state.selected));
-        button.append(node("div", "call-title", "Voicemail · " + voicemailLabel(entry)),
-          node("div", "call-time", [clockTime(entry.started_at, true), voicemailDuration(entry)].filter(Boolean).join(" · ")));
-        button.addEventListener("click", () => chooseCall(entry.call_sid));
-        fragment.append(button);
-      });
-      $("voicemail-list").replaceChildren(fragment);
-      if (focused) {
-        for (const button of $("voicemail-list").children) {
-          if (button.dataset.voicemailSid === focused) button.focus({preventScroll: true});
-        }
-      }
+    function renderCallList(sessions) {
+      renderRows(sessions, "call-list", "listKey");
+      $("sidebar-empty").hidden = sessions.length > 0;
+      $("recent-count").textContent = String(sessions.length);
+    }
+    function renderVoicemails(sessions) {
+      renderRows(sessions, "voicemail-list", "voicemailKey");
+      $("voicemail-empty").hidden = sessions.length > 0;
+      $("voicemail-empty").textContent = state.snapshot.voicemail && state.snapshot.voicemail.enabled === false
+        ? "Voicemail is not enabled on this server." : "No voicemail yet.";
+      $("voicemail-count").textContent = String(sessions.length);
     }
     function messageRow(segment, interim = false) {
       const track = segment.track === "outbound" ? "outbound" : "inbound";
@@ -368,7 +472,7 @@
           if (!first) first = item.row;
         } else item.row.removeAttribute("aria-current");
       }
-      if (first && state.page === "calls") {
+      if (first && visibleDetail()) {
         const viewport = $("transcript");
         const view = viewport.getBoundingClientRect();
         const row = first.getBoundingClientRect();
@@ -466,6 +570,7 @@
         const changingCall = state.renderedCall !== (session && session.call_sid);
         const viewport = $("transcript");
         const previousScroll = viewport.scrollTop;
+        const followLive = viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop < 48;
         const fragment = document.createDocumentFragment();
         state.transcriptRows = [];
         segments.forEach(segment => {
@@ -497,11 +602,13 @@
           : active ? "Text will appear when speech is recognized."
           : "No finalized text was saved for this call.";
         const playback = state.highlightEnabled && state.audioCall === state.selected;
-        if (state.page === "calls") {
-          if (changingCall || !playback) viewport.scrollTop = viewport.scrollHeight;
+        if (visibleDetail()) {
+          if (changingCall) viewport.scrollTop = active ? viewport.scrollHeight : 0;
+          else if (!playback && active && followLive) viewport.scrollTop = viewport.scrollHeight;
           else viewport.scrollTop = previousScroll;
         }
-        state.renderedCall = session && session.call_sid;
+        // A loading placeholder is not the call's initial transcript render.
+        state.renderedCall = loading ? null : session && session.call_sid;
         state.renderKey = key;
       }
       updatePlaybackHighlight();
@@ -510,7 +617,7 @@
       const snapshot = state.snapshot;
       if (!snapshot) return;
       const voicemails = snapshot.voicemail && Array.isArray(snapshot.voicemail.voicemails)
-        ? snapshot.voicemail.voicemails.filter(entry => entry && typeof entry.call_sid === "string").slice() : [];
+        ? snapshot.voicemail.voicemails.filter(entry => entry && typeof entry.call_sid === "string" && callSidPattern.test(entry.call_sid)).slice() : [];
       voicemails.sort((a, b) => (dateValue(b.started_at).getTime() || 0) - (dateValue(a.started_at).getTime() || 0));
       const byCall = new Map(voicemails.map(entry => [entry.call_sid, entry]));
       const callDetails = snapshot.call_details && Array.isArray(snapshot.call_details.calls)
@@ -522,7 +629,7 @@
           && callSidPattern.test(entry.call_sid)) : [];
       const recordingsByCall = new Map(recordings.map(entry => [entry.call_sid, entry]));
       const sessions = Array.isArray(snapshot.sessions)
-        ? snapshot.sessions.filter(session => session && typeof session.call_sid === "string")
+        ? snapshot.sessions.filter(session => session && typeof session.call_sid === "string" && callSidPattern.test(session.call_sid))
           .map(session => ({...session, voicemail: byCall.get(session.call_sid), recording: recordingsByCall.get(session.call_sid),
             call_detail: detailsByCall.get(session.call_sid)})) : [];
       for (const recording of recordings) {
@@ -540,7 +647,7 @@
             voicemail: byCall.get(call.call_sid), transcript_unavailable: true});
         }
       }
-      const recordedSessions = sessions.slice();
+
       for (const voicemail of voicemails) {
         if (!sessions.some(session => session.call_sid === voicemail.call_sid)) {
           sessions.push({call_sid: voicemail.call_sid, started_at: voicemail.started_at,
@@ -555,22 +662,31 @@
       if (liveSid && liveSid !== state.latestLive) state.pendingLive = liveSid;
       state.latestLive = liveSid;
       if (!sessions.some(session => session.call_sid === state.pendingLive && isActive(session))) state.pendingLive = null;
-      const pinned = state.playbackPinned && state.playbackPinned === state.selected;
-      if (state.pendingLive && !pinned) {
-        state.selected = state.pendingLive;
-        state.pendingLive = null;
-        state.manualSelection = false;
-      } else if (!state.manualSelection && !pinned) {
-        state.selected = (live || sessions[0] || {}).call_sid || null;
+      state.sessions = Array.from(new Map(sessions.map(session => [session.call_sid, session])).values());
+      state.sessions.sort((a, b) => (dateValue(callStartedAt(b)).getTime() || 0) - (dateValue(callStartedAt(a)).getTime() || 0));
+      renderCallList(state.sessions.filter(session => !session.voicemail));
+      renderVoicemails(state.sessions.filter(session => session.voicemail));
+      const selected = state.sessions.find(session => session.call_sid === state.selected);
+      if (selected) state.selectedSession = selected;
+      else if (!state.selectedSession || state.selectedSession.call_sid !== state.selected) state.selectedSession = null;
+      if (state.detail && !state.detailOrder.length && selected) {
+        state.collection = selected.voicemail ? "voicemail" : "recent";
+        state.detailOrder = collectionSessions().map(session => session.call_sid);
       }
-      if (!sessions.some(session => session.call_sid === state.selected)) {
-        state.selected = (sessions.find(session => session.call_sid === snapshot.selected_call_sid)
-          || sessions[0] || {}).call_sid || null;
+      // Show the pane before measuring its scroll height for a newly opened live call.
+      renderNavigation();
+      renderSession(state.selectedSession);
+      if (state.selected && !selected) {
+        if (state.selectedSession) {
+          $("session-storage-warning").textContent = "This call is no longer in recent history. Showing its last update.";
+          $("session-storage-warning").hidden = false;
+        } else {
+          $("transcript-title").textContent = "Call unavailable";
+          $("empty-title").textContent = "This call is not in recent history.";
+          $("empty-description").textContent = "Return to the call list to choose an available conversation.";
+        }
       }
-      recordedSessions.sort((a, b) => (dateValue(callStartedAt(b)).getTime() || 0) - (dateValue(callStartedAt(a)).getTime() || 0));
-      renderCallList(recordedSessions);
-      renderVoicemails(voicemails);
-      renderSession(sessions.find(session => session.call_sid === state.selected));
+      renderNavigation();
     }
     function refresh() {
       if (state.paused) return;
@@ -615,8 +731,25 @@
       }
     }
     for (const page of Object.keys(pages)) $("nav-" + page).addEventListener("click", () => showPage(page));
-    $("voicemail-section").addEventListener("toggle", () => {
-      state.voicemailInitialized = true;
+    for (const name of ["recent", "voicemail"]) {
+      $("tab-" + name).addEventListener("click", () => showCollection(name));
+      $("tab-" + name).addEventListener("keydown", event => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        showCollection(event.key === "Home" ? "recent" : event.key === "End" ? "voicemail"
+          : name === "recent" ? "voicemail" : "recent");
+      });
+    }
+    $("detail-back").addEventListener("click", backToCalls);
+    $("detail-previous").addEventListener("click", () => adjacentCall(-1));
+    $("detail-next").addEventListener("click", () => adjacentCall(1));
+    $("audio-return").addEventListener("click", () => chooseCall(state.audioCall));
+    $("live-call-open").addEventListener("click", () => chooseCall(state.pendingLive));
+    window.addEventListener("popstate", restoreRoute);
+    window.addEventListener("hashchange", () => {
+      const route = readRoute();
+      if (state.page !== route.page || (route.page === "calls" && (state.collection !== route.collection
+          || state.detail !== Boolean(route.call) || (route.call && state.selected !== route.call)))) restoreRoute();
     });
     for (const [event, phase] of Object.entries({loadstart: "loading", loadedmetadata: "ready",
       canplay: "ready", playing: "playing", waiting: "buffering", ended: "ended", error: "error"})) {
@@ -659,6 +792,12 @@
         refresh();
       }
     });
+    const initialRoute = readRoute();
+    state.page = initialRoute.page;
+    state.collection = initialRoute.collection;
+    state.detail = Boolean(initialRoute.call);
+    state.selected = initialRoute.call;
+    renderNavigation();
     poll();
   </script>
 </body>

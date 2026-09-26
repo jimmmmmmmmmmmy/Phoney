@@ -89,6 +89,36 @@ def run_browser_logic(tmp_path, assertions):
     assert result.returncode == 0, result.stderr
 
 
+def test_snapshot_fetch_bypasses_ngrok_html_warning_and_preserves_audio(tmp_path):
+    run_browser_logic(tmp_path, r'''
+(async()=>{
+const requests=[];
+fetch=async(url,options)=>{
+ requests.push({url,options});
+ // A browser request without ngrok's bypass receives an HTML page with HTTP 200.
+ const bypass=options.headers?.['ngrok-skip-browser-warning']==='1';
+ return {ok:true,json:async()=>{
+  if(!bypass)throw new SyntaxError('Unexpected HTML browser warning');
+  return snapshot([session(),session(OTHER)],[recording(),recording(OTHER)]);
+ }};
+};
+await poll();
+assert.equal(requests.length,1);assert.equal(requests[0].url,'/api/transcripts');
+assert.equal(requests[0].options.credentials,'same-origin');
+assert.equal(requests[0].options.headers.Accept,'application/json');
+assert.equal(requests[0].options.headers['ngrok-skip-browser-warning'],'1');
+assert.equal(requests[0].options.headers.Authorization,undefined);
+assert.equal($('connection-text').textContent,'Connected');assert.equal($('session-count').textContent,'2');
+const audio=$('call-audio');audio.play();audio.currentTime=17;
+const loads=audio.loads,pauses=audio.pauses;
+await poll();
+assert.equal(requests[1].url,`/api/transcripts?call_sid=${SID}`);
+assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.currentTime,17);
+assert.equal($('connection-text').textContent,'Connected');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+''')
+
+
 def test_polling_preserves_playback_until_call_or_direction_changes(tmp_path):
     run_browser_logic(tmp_path, r'''
 state.snapshot=snapshot([session()],[recording()]);render();

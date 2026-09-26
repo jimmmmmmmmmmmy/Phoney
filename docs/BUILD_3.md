@@ -8,7 +8,7 @@ Run this from the source checkout on the server Mac. It reads the installed serv
 
 Build 3 adds speech-to-text to the existing two-human Twilio conference and passive audio capture. It sends enabled call audio to Deepgram Nova-3, presents interim/final text in HTML, and preserves transcript data for partner development. The caller's conversation remains connected through Twilio; Python observes a copy of the media.
 
-**Acceptance status:** all 394 automated tests pass, including recorded-audio playback, byte ranges, stereo alignment, and public-route checks. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. This confirms player behavior, not recorded speech quality.
+**Acceptance status:** all 395 automated tests pass, including recorded-audio playback, byte ranges, stereo alignment, and public-route checks. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. This confirms player behavior, not recorded speech quality.
 
 A browser check verified anonymous voicemail-inbox access using an isolated fake receipt; that check placed no phone call and invoked no speech/agent provider. Earlier generated speech passed the real Deepgram API and a full local Uvicorn signed-media/browser/export test, with both WAV tracks completed. The live service has one completed capture with valid mono PCM16/8 kHz headers: inbound 27.73 seconds and outbound 27.67 seconds. Only file metadata/headers were checked; audio content was not assessed.
 
@@ -92,6 +92,8 @@ Deepgram distinguishes finalized processed ranges (`is_final`) from endpointing 
 | `GET /api/transcripts/<CallSid>/export?format=json` | Export the selected call; use `format=txt` for readable text. |
 
 The page polls selected-call data once per second; provider processing and network delay add to that refresh interval. There is no viewer login/logout flow or viewer session cookie.
+
+On a free ngrok tunnel, click **Visit Site** if its initial notice appears. Snapshot requests send `Accept: application/json` and `ngrok-skip-browser-warning: 1`, with same-origin cookies, so ngrok does not substitute an HTML notice for the JSON response. Native audio and download links use the browser's normal same-origin requests and ngrok's notice-acceptance cookie. This does not add application authentication.
 
 The API and downloads require no authorization header. They provide read-only access to recognized words, metadata, and finalized local WAV recordings; they do not place calls, redirect a call, change configuration, or deploy code. The same public origin serves Twilio and deployment endpoints, but those endpoints keep their existing signature/token checks.
 

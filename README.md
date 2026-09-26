@@ -8,7 +8,7 @@
 
 **Current scope: Twilio calling, unanswered-call voicemail, capture, and observational speech-to-text.** Deepfake detection, Gemini dialogue, ElevenLabs voice cloning, and keypad takeover remain partner work. Partners can consume [saved transcripts and typed audio replay](docs/PARTNER_HANDOFF.md) while the people continue talking through the Twilio conference.
 
-**Verification (2026-09-26):** all 394 automated tests pass, including finalized WAV playback, seeking, stereo alignment, and public-route checks. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. This confirms player behavior, not recorded speech quality.
+**Verification (2026-09-26):** all 395 automated tests pass, including finalized WAV playback, seeking, stereo alignment, and public-route checks. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. This confirms player behavior, not recorded speech quality.
 
 A browser check verified anonymous voicemail-inbox access using an isolated fake receipt, without placing a phone call or invoking a speech/agent provider. Twilio's `/voice` and caller-status `/status` POST webhooks were configured and verified by API read-back. Earlier generated speech passed a real Deepgram 8 kHz probe and a local signed-media/browser/export test with both WAV tracks completed. The live service has one completed capture with valid mono PCM16/8 kHz WAV headers (27.73 seconds inbound, 27.67 seconds outbound); this was a file/header check, not a listening test.
 

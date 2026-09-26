@@ -499,7 +499,8 @@
       const timeout = setTimeout(() => controller.abort(), 10000);
       try {
         const query = state.selected ? "?call_sid=" + encodeURIComponent(state.selected) : "";
-        const response = await fetch("/api/transcripts" + query, {credentials: "omit", cache: "no-store", signal: controller.signal});
+        const response = await fetch("/api/transcripts" + query, {credentials: "same-origin", cache: "no-store",
+          headers: {Accept: "application/json", "ngrok-skip-browser-warning": "1"}, signal: controller.signal});
         if (state.paused || controller.signal.aborted) return;
         if (!response.ok) throw new Error("Snapshot unavailable");
         const snapshot = await response.json();

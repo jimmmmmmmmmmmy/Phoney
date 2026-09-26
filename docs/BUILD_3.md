@@ -4,11 +4,11 @@
 .venv/bin/python scripts/open_dashboard.py
 ```
 
-Run this from the source checkout on the server Mac. It reads the installed service's configured public URL and opens `/dashboard`. No viewer token or sign-in is required; anyone with the ngrok URL can read/download transcript text and play/download finalized local WAV recordings. The dashboard shows live Deepgram text and a recorded-audio player. A phone test still needs to establish actual call transcription; a healthy page alone cannot prove it.
+Run this from the source checkout on the server Mac. It reads the installed service's configured public URL and opens `/dashboard`. No viewer token or sign-in is required; anyone with the ngrok URL can see caller numbers, call times/durations, saved summaries, and transcript text, and play/download finalized local WAV recordings. The dashboard shows the caller, time, duration, recording, saved summary, and transcript. A phone test still needs to establish actual call transcription; a healthy page alone cannot prove it.
 
 Build 3 adds speech-to-text to the existing two-human Twilio conference and passive audio capture. It sends enabled call audio to Deepgram Nova-3, presents interim/final text in HTML, and preserves transcript data for partner development. The caller's conversation remains connected through Twilio; Python observes a copy of the media.
 
-**Acceptance status:** all 400 automated tests pass, including recorded-audio playback, byte ranges, stereo alignment, and public-route checks. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. The compact dashboard also passed Chrome checks for line highlighting, overlap, seek/track changes, persistent collapsible sections, and manual call selection during incoming live activity. This confirms player behavior, not recorded speech quality.
+**Acceptance status:** all 454 automated tests pass, including recorded-audio playback, byte ranges, stereo alignment, and public-route checks. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. The compact dashboard also passed Chrome checks for line highlighting, overlap, seek/track changes, persistent collapsible sections, and manual call selection during incoming live activity. This confirms player behavior, not recorded speech quality.
 
 A browser check verified anonymous voicemail-inbox access using an isolated fake receipt; that check placed no phone call and invoked no speech/agent provider. Earlier generated speech passed the real Deepgram API and a full local Uvicorn signed-media/browser/export test, with both WAV tracks completed. The live service has one completed capture with valid mono PCM16/8 kHz headers: inbound 27.73 seconds and outbound 27.67 seconds. Only file metadata/headers were checked; audio content was not assessed.
 
@@ -19,9 +19,9 @@ A browser check verified anonymous voicemail-inbox access using an isolated fake
 | Interface | Purpose |
 | --- | --- |
 | Existing Twilio number | Connect the incoming caller to the configured teammate phone. |
-| `/dashboard` | Public HTML view for live/saved transcripts and finalized recorded audio. |
+| `/dashboard` | Public caller details, saved summaries, live/saved transcripts, and finalized recorded audio. |
 | Public `/api/transcripts` routes | List sessions, read a selected call, and export JSON or text. |
-| Private transcript storage | Structured JSON outside release checkouts; readable text is exported through the public viewer. |
+| Private-permission storage | Transcript and optional call-details JSON outside release checkouts; selected fields are publicly displayed. |
 | Capture, playback, and replay | Finalized PCM16 WAV playback/downloads; typed offline audio frames for partners. |
 
 This build transcribes speech; it does not classify deepfakes, run Gemini dialogue, synthesize an ElevenLabs voice, or implement keypad takeover. Those partner designs remain in [DEEPFAKE_DETECTION.md](DEEPFAKE_DETECTION.md), [VOICE_STACK.md](VOICE_STACK.md), and [IMPLEMENTATION.md](IMPLEMENTATION.md).
@@ -50,7 +50,7 @@ Twilio Media Streams exports mono μ-law at 8 kHz. The transcript path must decl
 | Dashboard label / API track | Meaning | Limitation |
 | --- | --- | --- |
 | Caller / `inbound` | The original caller's incoming audio | Includes background voices and possible speakerphone leakage. |
-| Receiver / `outbound` | Audio Twilio plays to that caller | Includes teammate conference audio, hold music, and prompts; not an isolated teammate microphone. |
+| New College / `outbound` | Audio Twilio plays to that caller | Includes teammate conference audio, hold music, and prompts; not an isolated teammate microphone. |
 
 The implementation opens a separate Deepgram WebSocket for each direction, each configured as mono. Two directions therefore create two provider streams. Preserve direction labels with every segment; do not merge the two raw tracks into a single mono stream or rename playback as a verified person. See [AUDIO_QUALITY.md](AUDIO_QUALITY.md) for what VoIP can improve and why it does not change this stream's 8 kHz export.
 
@@ -64,9 +64,11 @@ TRANSCRIPTION_ENABLED=true
 DEEPGRAM_API_KEY=replace_in_private_environment_only
 DEEPGRAM_MODEL=nova-3
 TRANSCRIPT_STORAGE_DIR=/absolute/private/path/to/transcripts
+# Optional: persist caller details and saved summaries across deployments.
+CALL_DETAILS_STORAGE_DIR=/absolute/private/path/to/call-details
 ```
 
-`TRANSCRIPTION_ENABLED` defaults to false. Keep the existing absolute `MEDIA_STORAGE_DIR` and capture configuration. The dashboard and transcript API are deliberately public: anyone with the ngrok URL can read/download available text and play/download finalized local recordings. Provider credentials stay on the server. Twilio signatures and deployment-control authentication remain required for their existing routes.
+`TRANSCRIPTION_ENABLED` defaults to false. Keep the existing absolute `MEDIA_STORAGE_DIR` and capture configuration. The dashboard and transcript API are deliberately public: anyone with the ngrok URL can see caller numbers, call times/durations, summaries, and transcript text, and play/download finalized local recordings. Provider credentials stay on the server. Twilio signatures and deployment-control authentication remain required for their existing routes.
 
 1. Put the settings in `~/Library/Application Support/NewCollegeOperator/.env` for the installed service. The source checkout's `.env` is separate; changing it does not configure the installed app.
 2. Set an absolute transcript directory outside per-release checkouts, for example the installed service's `.runtime/transcripts` with the home directory fully expanded. Keep the directory private and excluded from Git.
@@ -93,17 +95,23 @@ Deepgram distinguishes finalized processed ranges (`is_final`) from endpointing 
 
 The page polls selected-call data once per second; provider processing and network delay add to that refresh interval. There is no viewer login/logout flow or viewer session cookie.
 
-The compact viewer uses a connection dot with an accessible status label and a non-interactive **Live updates** indicator. **Recent calls** and **Voicemail** can be collapsed; an empty voicemail section starts collapsed. Manual call selection remains available. A new live call does not interrupt recorded playback, including a paused recording. Call identifiers and provider/count metadata remain available in the API and exports rather than appearing as dashboard labels.
+Call rows show the caller number, time, and duration. Select a row to see its recording, saved summary when available, and transcript labeled **Caller** and **New College**. Live text and highlighted playback lines scroll automatically. A new live call does not interrupt selected recorded playback. Raw call identifiers and provider metadata remain available through the API.
 
 On a free ngrok tunnel, click **Visit Site** if its initial notice appears. Snapshot requests send `Accept: application/json` and `ngrok-skip-browser-warning: 1`, with same-origin cookies, so ngrok does not substitute an HTML notice for the JSON response. Native audio and download links use the browser's normal same-origin requests and ngrok's notice-acceptance cookie. This does not add application authentication.
 
-The API and downloads require no authorization header. They provide read-only access to recognized words, metadata, and finalized local WAV recordings; they do not place calls, redirect a call, change configuration, or deploy code. The same public origin serves Twilio and deployment endpoints, but those endpoints keep their existing signature/token checks.
+The API and downloads require no authorization header. They provide read-only access to caller numbers, call times/durations, saved summaries, recognized words, and finalized local WAV recordings; they do not place calls, redirect a call, change configuration, or deploy code. The same public origin serves Twilio and deployment endpoints, but those endpoints keep their existing signature/token checks.
 
-JSON exports contain `schema_version`, `provider`, `model`, `sample_rate: 8000`, `track_meanings`, and the selected `session`. A selected-call JSON export may also include its voicemail metadata when present. Text exports are generated from finalized segments. Anyone with the public URL can list available call SIDs and download their transcript exports.
+JSON exports contain `schema_version`, `provider`, `model`, `sample_rate: 8000`, `track_meanings`, and the selected `session`. A selected-call JSON export may also include its voicemail metadata and `call_details` when available; call details can contain the caller number and a matching saved summary. Text exports are generated from finalized segments. Anyone with the public URL can list available call SIDs and download their transcript exports.
+
+### Caller details and saved summaries
+
+Set the optional absolute `CALL_DETAILS_STORAGE_DIR` to retain caller metadata and authored summaries across deployments. Signed inbound `From` and final caller-status duration supply call details. Displayed duration falls back to WAV duration or elapsed time when the Twilio duration is unavailable. The public transcript snapshot includes a `call_details` object; it does not add caller numbers to the raw capture manifest.
+
+Use the local [`scripts/call_details.py` workflow](CALL_SUMMARIES.md) to backfill known calls or save a summary from a text file. A summary is bound to the transcript fingerprint of an ended call with finalized text and is hidden when that transcript changes or disappears. Ended partial/failed transcripts can be summarized with their missing coverage acknowledged. There is no public summary-write endpoint and no automatic Gemini call in this increment.
 
 ### Play or download a finalized recording
 
-Select a call in the dashboard and use its audio player. **Both** is the default: Caller on the left, Receiver on the right. Choose **Caller** or **Receiver** for one mono track. The download saves a WAV for the selected view.
+Select a call in the dashboard and use its audio player. **Both** is the default: Caller on the left, New College on the right. Choose **Caller** or **New College** for one mono track. The download saves a WAV for the selected view.
 
 During playback, the transcript highlights each finalized line whose media-time interval contains the player's current position. Seeking updates the highlight; pausing keeps the current position. Combined audio can highlight overlapping lines from both directions, while an individual track highlights only its own lines. Highlights stop at each track's recorded duration, including partial captures. These are provider segment intervals and can contain silence; word-level timing is not currently stored or inferred. Interim text is not highlighted. Live text follows new content automatically, and playback automatically scrolls highlighted lines into view.
 
@@ -129,7 +137,7 @@ Twilio's separate voicemail cloud recording URLs are still not exposed or proxie
 
 ### Stored and live data contract
 
-The transcript API snapshot contains `schema_version`, `selected_call_sid`, `enabled`, `provider`, `model`, `revision`, `storage_error`, and `sessions`. The recording extension adds a top-level `recordings` library snapshot described above. The voicemail extension adds a top-level `voicemail` snapshot; `GET /api/voicemails` serves that same metadata directly, including when Deepgram is disabled. [Voicemail metadata contract](VOICEMAIL.md#public-metadata-api). Unselected sessions contain metadata with cleared segments/interim text; the selected call includes its text. When `call_sid` is absent or unavailable, the API selects the first active session, otherwise the first recent session. Always use returned `selected_call_sid` to identify that selection; it is null when no session exists. A session records `call_sid`, `stream_sid`, `started_at`, `ended_at`, `status`, `finish_reason`, and `storage_error`. Each `tracks.inbound`/`tracks.outbound` entry records its `meaning`, provider `status`, sanitized `error` code, and current `interim` text. Finalized `segments` contain `id`, `track`, `start_ms`, `end_ms`, `text`, and `confidence`.
+The transcript API snapshot contains `schema_version`, `selected_call_sid`, `enabled`, `provider`, `model`, `revision`, `storage_error`, and `sessions`. The optional call-details extension adds top-level `call_details`, described in [CALL_SUMMARIES.md](CALL_SUMMARIES.md). It supplies signed-webhook caller metadata and a saved summary only while it matches the finalized transcript. The recording extension adds a top-level `recordings` library snapshot described above. The voicemail extension adds a top-level `voicemail` snapshot; `GET /api/voicemails` serves that same metadata directly, including when Deepgram is disabled. [Voicemail metadata contract](VOICEMAIL.md#public-metadata-api). Unselected sessions contain metadata with cleared segments/interim text; the selected call includes its text. When `call_sid` is absent or unavailable, the API selects the first active session, otherwise the first recent session. Always use returned `selected_call_sid` to identify that selection; it is null when no session exists. A session records `call_sid`, `stream_sid`, `started_at`, `ended_at`, `status`, `finish_reason`, and `storage_error`. Each `tracks.inbound`/`tracks.outbound` entry records its `meaning`, provider `status`, sanitized `error` code, and current `interim` text. Finalized `segments` contain `id`, `track`, `start_ms`, `end_ms`, `text`, and `confidence`.
 
 For example, one **illustrative, not measured** final segment is:
 
@@ -193,7 +201,7 @@ Idle provider streams receive a `KeepAlive` control message every three seconds.
 | Call hangup | Stop accepting audio and bound the final-result flush; close provider tasks and publish the final state. |
 | Automatic deployment | Include transcription finalization in pending-work accounting before switching the app revision. |
 
-Public text and recorded-audio access is deliberate. Anyone with the ngrok URL can read/download available live/saved text and play/download finalized local WAVs. Private filesystem modes protect the archive from other local users; they do not make publicly served text/audio private. Active captures and Twilio cloud recording URLs are not served. Twilio webhooks/media sockets still require valid signatures, deployment control still requires its separate token, and `/health` does not include transcript content or provider keys.
+Public text and recorded-audio access is deliberate. Anyone with the ngrok URL can see caller numbers, call times/durations, saved summaries and transcript text, and play/download finalized local WAVs. Private filesystem modes protect the archive from other local users; they do not make publicly served text/audio private. Active captures and Twilio cloud recording URLs are not served. Twilio webhooks/media sockets still require valid signatures, deployment control still requires its separate token, and `/health` does not include transcript content or provider keys.
 
 ## Verify this build
 

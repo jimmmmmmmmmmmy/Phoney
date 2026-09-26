@@ -283,3 +283,56 @@ assert.ok(!visible($('call-list')).includes(SID.slice(-12)));
 assert.ok(!visible($('voicemail-list')).includes(SID.slice(-12)));
 assert.ok(!$('session-detail').textContent.includes(SID));
 ''')
+
+
+def test_caller_metadata_and_saved_summary_render_safely_without_restarting_playback(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const saved=recording(),call=session();call.segments[0].end_ms=3000;
+state.snapshot=snapshot([call,session(OTHER)],[saved,recording(OTHER)]);
+const details={call_sid:SID,caller_number:'+14155550111',started_at:'2026-09-26T13:00:00Z',ended_at:'2026-09-26T13:03:00Z',
+ duration_seconds:180,summary:{text:'<img src=x onerror=alert(1)> A saved agent summary.',source:'agent',created_at:'2026-09-26T13:04:00Z'}};
+state.snapshot.call_details={enabled:true,storage_error:'',calls:[details]};render();
+const button=$('call-list').children.find(row=>row.dataset.callSid===SID);
+assert.equal(button.children[0].textContent,'+14155550111');
+assert.equal(button.children[1].textContent,clockTime(details.started_at)+' · 03:00');
+assert.equal($('call-summary').textContent,details.summary.text);assert.equal($('call-summary').children.length,0);
+assert.equal($('call-summary').dataset.empty,'false');
+const audio=$('call-audio');audio.play();audio.currentTime=1.5;audio.events.timeupdate();
+const loads=audio.loads,pauses=audio.pauses;
+details.summary.text='An updated saved summary.';details.duration_seconds=181;render();
+assert.equal($('call-summary').textContent,'An updated saved summary.');
+assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.currentTime,1.5);
+assert.equal(state.transcriptRows[0].row.classList.contains('playing-line'),true);
+state.paused=true;chooseCall(OTHER);
+assert.equal($('call-summary').textContent,'No summary yet.');assert.equal($('call-summary').dataset.empty,'true');
+''')
+
+
+def test_call_list_uses_honest_fallbacks_when_metadata_is_missing(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const call=session(),saved=recording();state.snapshot=snapshot([call],[saved]);render();
+let button=$('call-list').children[0];
+assert.equal(button.children[0].textContent,'Unknown caller');
+assert.equal(button.children[1].textContent,clockTime(call.started_at)+' · 02:00');
+assert.equal($('call-summary').textContent,'No summary yet.');
+saved.duration_seconds=undefined;call.ended_at='2026-09-26T12:01:00Z';render();
+assert.equal($('call-list').children[0].children[1].textContent,clockTime(call.started_at)+' · 01:00');
+call.ended_at=null;render();assert.ok($('call-list').children[0].children[1].textContent.endsWith('Duration unavailable'));
+state.snapshot.call_details={enabled:true,storage_error:'',calls:[{call_sid:SID,caller_number:'',duration_seconds:0,summary:null}]};render();
+assert.equal($('call-list').children[0].children[0].textContent,'Unknown caller');
+assert.ok($('call-list').children[0].children[1].textContent.endsWith('00:00')); // Zero is known, not missing.
+''')
+
+
+def test_metadata_only_calls_keep_their_saved_summary_selectable(tmp_path):
+    run_browser_logic(tmp_path, r'''
+state.snapshot=snapshot();state.snapshot.enabled=false;
+state.snapshot.call_details={enabled:true,storage_error:'',calls:[{call_sid:SID,caller_number:'+14155550222',
+ started_at:'2026-09-26T12:00:00Z',ended_at:'2026-09-26T12:01:00Z',duration_seconds:60,
+ summary:{text:'Saved summary without live transcription.',source:'agent',created_at:'2026-09-26T12:02:00Z'}}]};render();
+assert.equal(state.selected,SID);assert.equal($('call-list').children.length,1);
+assert.equal($('call-list').children[0].children[0].textContent,'+14155550222');
+assert.equal($('call-summary').textContent,'Saved summary without live transcription.');
+assert.equal($('export-json').attributes['aria-disabled'],'true');assert.equal($('call-audio').hidden,true);
+assert.equal(trackNames.outbound,'New College');assert.equal(audioTracks.outbound,'New College');
+''')

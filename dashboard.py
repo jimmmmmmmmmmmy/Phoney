@@ -16,7 +16,8 @@ SAFE_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
 SID = re.compile(r"CA[0-9a-fA-F]{32}\Z")
 
 
-def register_dashboard(app, settings, manager, voicemail_store=None, recording_library=None):
+def register_dashboard(app, settings, manager, voicemail_store=None, recording_library=None,
+                       call_details_store=None):
     """Attach a URL-accessible viewer and API without call-control capabilities."""
     def voicemail_snapshot():
         return (deepcopy(voicemail_store.snapshot()) if voicemail_store is not None else
@@ -48,6 +49,9 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
         snapshot["voicemail"] = voicemail_snapshot()
         snapshot["recordings"] = await asyncio.to_thread(recording_snapshot)
         sessions = snapshot["sessions"]
+        snapshot["call_details"] = (await asyncio.to_thread(call_details_store.snapshot, sessions)
+                                    if call_details_store is not None else
+                                    {"enabled": False, "storage_error": "", "calls": []})
         active = [s for s in sessions if not s.get("ended_at")]
         selected = next((s for s in sessions if s["call_sid"] == call_sid), None)
         if selected is None:
@@ -93,6 +97,10 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
                     "session": session}
             if voicemail is not None:
                 data["voicemail"] = voicemail
+            if call_details_store is not None:
+                details = await asyncio.to_thread(call_details_store.snapshot, [session])
+                data["call_details"] = next((entry for entry in details["calls"]
+                                             if entry["call_sid"] == call_sid), None)
             return JSONResponse(data, headers=headers)
         lines = ["New College Data Science Team — conversation transcript",
                  "Caller playback includes conference audio and prompts; it is not an isolated microphone.",

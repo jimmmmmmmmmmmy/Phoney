@@ -12,7 +12,7 @@ Build 3 keeps the working two-person conference and Build 2's two WAV tracks plu
 .venv/bin/python scripts/open_dashboard.py
 ```
 
-The helper reads the installed service's configured public URL when its server-root pointer exists and opens `/dashboard`. Anyone with that ngrok URL can read/download transcript text and play/download finalized local recordings. No viewer token, login, or authorization header is needed. Twilio signatures and deployment-control authentication remain in place for their separate routes.
+The helper reads the installed service's configured public URL when its server-root pointer exists and opens `/dashboard`. Anyone with that ngrok URL can see caller numbers, call times/durations, saved summaries and transcript text, and play/download finalized local recordings. No viewer token, login, or authorization header is needed. Twilio signatures and deployment-control authentication remain in place for their separate routes.
 
 | Route / artifact | Partner use |
 | --- | --- |
@@ -29,6 +29,12 @@ Interim text may be replaced. Use final segments for durable downstream records,
 The viewer holds ten recent finished sessions, while disk files have no automatic expiry. Transcription admits two concurrent calls, uses two independently bounded track streams per call, and reports capacity/overflow failures rather than slowing the humans. See [Build 3 limits](BUILD_3.md#limits-and-retention) before designing a live consumer. The separate replay tool below never contacts Deepgram.
 
 The [voicemail placeholder](VOICEMAIL.md) adds a Twilio message recording after an unanswered call. Public `GET /api/voicemails` exposes bounded message metadata; the transcript snapshot includes the same data under `voicemail`. This metadata inbox works with Deepgram disabled. Its cloud recording is separate from local capture and is not exposed by the transcript API. Local whole-call WAVs can be played/downloaded separately through the recording library, including finalized partial captures. The same guide lists four useful provider-free partner tasks and a proposed structured message handoff.
+
+## Caller details and summary handoff
+
+The transcript snapshot's `call_details` object contains `enabled`, `storage_error`, and `calls`. Each call has `call_sid`, `caller_number`, `started_at`, `ended_at`, `duration_seconds`, and `summary`. A visible summary contains `text`, `source: "agent"`, and `created_at`; otherwise it is null. Join by `call_sid`; JSON transcript exports include selected-call details under `call_details` when available. This separate details store intentionally publishes caller numbers; the existing raw audio manifest and provider transcript contracts are unchanged.
+
+Current summaries are operator/agent-authored text saved locally against the fingerprint of an ended call with finalized text. Partial/failed transcripts with finalized segments are eligible; the summary must account for missing coverage. They are hidden when the transcript is unavailable or changed, so downstream code must handle `summary: null`. This does not indicate automatic Gemini processing. Use [CALL_SUMMARIES.md](CALL_SUMMARIES.md) for the local backfill/save commands and a small future Gemini integration path. No public endpoint creates or edits a summary.
 
 ## Consume recorded audio over HTTP
 

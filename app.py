@@ -1,5 +1,6 @@
 """Signed Twilio calling, unanswered-call voicemail, and public live transcripts."""
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -22,6 +23,7 @@ from media_capture.playback import RecordingLibrary
 from transcription import TranscriptionManager
 from dashboard import register_dashboard
 from voicemail import VoicemailStore
+from call_details import CallDetailsStore
 
 logger = logging.getLogger("uvicorn.error")
 MAX_GITHUB_BODY_BYTES = 1024 * 1024
@@ -49,8 +51,10 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
     media_capture = CaptureManager(settings, observer=transcription)
     voicemails = VoicemailStore(settings)
     recordings = RecordingLibrary(settings)
+    call_details = CallDetailsStore(settings.call_details_storage_dir)
 
     async def call_ended(call_sid):
+        await asyncio.to_thread(call_details.finish, call_sid)
         voicemails.finish(call_sid)
         await media_capture.finish(call_sid)
 
@@ -71,8 +75,9 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
     app.state.transcription = transcription
     app.state.voicemails = voicemails
     app.state.recordings = recordings
+    app.state.call_details = call_details
     register_dashboard(app, settings, transcription, voicemail_store=voicemails,
-                       recording_library=recordings)
+                       recording_library=recordings, call_details_store=call_details)
     validate_twilio = twilio_validator(settings)
 
     @app.get("/health")
@@ -173,6 +178,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
                 response.say("The team is unavailable right now. Please try again later.")
                 response.hangup()
                 return Response(str(response), media_type="application/xml")
+            await asyncio.to_thread(call_details.start, call_sid, str(form.get("From", "")))
             if session.phase == "ended":
                 response.hangup()
                 return Response(str(response), media_type="application/xml")
@@ -368,6 +374,11 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
                 await switchboard.voicemail_finished(form["CallSid"], "voicemail_hangup")
             else:
                 await switchboard.finished(form["CallSid"])
+            # The signed parent callback supplies the full call duration, including prompts.
+            raw_duration = str(form.get("CallDuration", ""))
+            duration = (int(raw_duration) if raw_duration.isascii() and raw_duration.isdecimal()
+                        and len(raw_duration) <= 6 else None)
+            await asyncio.to_thread(call_details.finish, form["CallSid"], duration_seconds=duration)
         logger.info("call_status call_sid=%s status=%s", form["CallSid"], call_status)
         return Response(status_code=204)
 

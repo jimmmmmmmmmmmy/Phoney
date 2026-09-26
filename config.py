@@ -36,6 +36,7 @@ class Settings:
     voicemail_enabled: bool = False
     voicemail_max_seconds: int = 120
     voicemail_storage_dir: str = ""
+    call_details_storage_dir: str = ""
 
     def __post_init__(self):
         if not self.account_sid.startswith("AC") or len(self.account_sid) != 34:
@@ -87,6 +88,13 @@ class Settings:
             raise ValueError("VOICEMAIL_MAX_SECONDS must be between 2 and 600 seconds.")
         if self.voicemail_enabled and not Path(self.voicemail_storage_dir).is_absolute():
             raise ValueError("VOICEMAIL_STORAGE_DIR must be an absolute private directory.")
+        if self.call_details_storage_dir and not Path(self.call_details_storage_dir).is_absolute():
+            raise ValueError("CALL_DETAILS_STORAGE_DIR must be an absolute private directory.")
+        if self.call_details_storage_dir:
+            details_path = Path(self.call_details_storage_dir).resolve()
+            if any(path and Path(path).resolve() == details_path
+                   for path in (self.transcript_storage_dir, self.voicemail_storage_dir)):
+                raise ValueError("CALL_DETAILS_STORAGE_DIR must differ from transcript and voicemail storage.")
 
     @property
     def switchboard_ready(self):
@@ -128,4 +136,5 @@ class Settings:
             voicemail_enabled=voicemail_flag == "true",
             voicemail_max_seconds=int(os.getenv("VOICEMAIL_MAX_SECONDS", "120")),
             voicemail_storage_dir=os.getenv("VOICEMAIL_STORAGE_DIR", "").strip(),
+            call_details_storage_dir=os.getenv("CALL_DETAILS_STORAGE_DIR", "").strip(),
         )

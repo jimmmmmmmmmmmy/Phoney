@@ -14,16 +14,14 @@
     .topbar{height:92px;display:flex;align-items:center;justify-content:space-between;gap:20px;border-bottom:1px solid var(--line);padding:0 5vw;background:#ffffffb3}
     .brand{display:flex;align-items:center;gap:13px}.brand-mark{width:44px;height:44px;border-radius:13px;background:var(--ink);color:#fff;display:grid;place-items:center;font-size:15px;font-weight:800;letter-spacing:-1px}
     .brand-name{font-size:14px;font-weight:730;letter-spacing:-.2px}.brand-sub{font-size:11px;color:var(--muted);letter-spacing:1.6px;text-transform:uppercase;margin-top:2px}
-    .top-actions{display:flex;align-items:center;gap:14px}.connection{display:inline-flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap}
-    .dot{width:7px;height:7px;border-radius:50%;background:#a4b4af;flex:0 0 auto}.connection[data-tone="good"] .dot{background:#0b9180;box-shadow:0 0 0 4px #e0f3ed}.connection[data-tone="bad"] .dot{background:var(--red)}
 
     main{max-width:1450px;margin:0 auto;padding:30px 5vw 32px}h1,h2,p{margin:0}
 
     .banner{padding:12px 16px;border-radius:11px;background:#fff4df;color:#74541a;font-size:13px;margin-bottom:18px;border:1px solid #e9d8b1}.banner[data-tone="bad"]{background:var(--red-light);color:var(--red);border-color:#f1d2cc}
     .desk{display:grid;grid-template-columns:245px minmax(0,1fr);gap:22px;align-items:start}.sidebar{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:19px 13px;max-height:calc(100vh - 230px);overflow:auto}
-    .section-summary{cursor:pointer;padding:0 5px;font-size:13px;font-weight:750}.summary-content{display:inline-flex;align-items:center;justify-content:space-between;gap:8px;width:calc(100% - 20px)}.sidebar-group[open] .section-summary{margin-bottom:14px}.live-updates{display:inline-flex;align-items:center;gap:5px;background:var(--teal-light);border-radius:7px;padding:5px 7px;color:var(--teal);font-size:9px;white-space:nowrap}.live-updates::before{content:"";width:5px;height:5px;border-radius:50%;background:#0b9180}.voicemail-group{border-top:1px solid var(--line);margin-top:17px;padding-top:17px}
+    .section-summary{cursor:pointer;padding:0 5px;font-size:13px;font-weight:750}.sidebar-group[open] .section-summary{margin-bottom:14px}.voicemail-group{border-top:1px solid var(--line);margin-top:17px;padding-top:17px}
     .call-list{display:flex;flex-direction:column;gap:6px}.call-option{padding:13px 12px;border:1px solid transparent;border-radius:12px;text-align:left;background:transparent;color:var(--ink);width:100%}.call-option:hover{background:#f3f7f4}.call-option[aria-pressed="true"]{background:#eaf5f0;border-color:#c8e5d9}
-    .call-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.call-title{font-size:12px;font-weight:700}.call-time{font-size:10px;color:var(--muted);margin-top:4px}.call-state{width:6px;height:6px;background:#94a7a0;border-radius:100%;flex:0 0 auto}.call-state.live{background:#0b9180}.call-state.error{background:var(--red)}
+    .call-title{font-size:12px;font-weight:700;overflow-wrap:anywhere}.call-time{font-size:10px;color:var(--muted);margin-top:4px}
     .sidebar-empty{font-size:12px;color:var(--muted);padding:8px 9px 4px;line-height:1.8}.voicemail-note{color:var(--muted);font-size:11px;line-height:1.7;margin-top:11px}
     .transcript-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}.card-heading{padding:23px 26px 19px;border-bottom:1px solid var(--line)}
     .card-row{display:flex;align-items:center;justify-content:space-between;gap:16px}.card-title{display:flex;align-items:center;gap:11px;flex-wrap:wrap}.card-title h2{font-size:19px;font-weight:720;letter-spacing:-.5px}.badge{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:750;color:var(--teal);background:var(--teal-light);border-radius:20px;padding:5px 9px;text-transform:uppercase;letter-spacing:.4px}.badge[data-tone="bad"]{color:var(--red);background:var(--red-light)}.badge[data-tone="neutral"]{color:var(--muted);background:#edf2ef}
@@ -35,16 +33,18 @@
     .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:100%;min-height:260px;padding:20px}.empty-icon{display:grid;place-items:center;width:55px;height:55px;border-radius:17px;background:#e9f3ee;color:var(--teal);margin-bottom:17px}.empty h2{font-size:17px;font-weight:650;letter-spacing:-.4px;margin-bottom:8px}.empty p{font-size:12px;color:var(--muted);max-width:305px;line-height:1.8}.empty svg{width:25px;height:25px}.page-foot{display:flex;justify-content:space-between;gap:15px;color:#81948a;font-size:10px;padding:21px 2px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
     @media(min-width:1450px){main{padding-left:55px;padding-right:55px}.topbar{padding-left:calc((100vw - 1340px)/2);padding-right:calc((100vw - 1340px)/2)}}
     @media(max-width:850px){.desk{grid-template-columns:195px minmax(0,1fr);gap:15px}.card-heading{padding-left:19px;padding-right:19px}.transcript,.transcript-toolbar{padding-left:19px;padding-right:19px}.card-row{align-items:start}}
-    @media(max-width:650px){.topbar{height:77px;padding:0 20px}.brand-name{font-size:11px}.brand-sub{font-size:9px;letter-spacing:1px}.brand-mark{width:36px;height:36px;border-radius:11px}.top-actions{gap:9px}.connection{font-size:10px}main{padding:29px 20px 20px}.desk{display:block}.sidebar{max-height:none;padding:14px;margin-bottom:15px}.call-list{flex-direction:row;overflow:auto;max-height:110px;padding-bottom:3px}.call-option{width:165px;flex:0 0 165px}.sidebar-empty{padding:0 6px 4px}.transcript{height:51vh;min-height:320px}.message{grid-template-columns:37px minmax(0,1fr);gap:8px}.message-text{font-size:14px}.card-heading{padding-top:18px;padding-bottom:15px}.card-title h2{font-size:17px}.badge{font-size:8px;padding:4px 7px}.page-foot{flex-wrap:wrap;font-size:9px}.exports{gap:4px}.export{padding:5px 6px}.session-detail{font-size:10px}}
+    @media(max-width:650px){.topbar{height:77px;padding:0 20px}.brand-name{font-size:11px}.brand-sub{font-size:9px;letter-spacing:1px}.brand-mark{width:36px;height:36px;border-radius:11px}main{padding:29px 20px 20px}.desk{display:block}.sidebar{max-height:none;padding:14px;margin-bottom:15px}.call-list{flex-direction:row;overflow:auto;max-height:110px;padding-bottom:3px}.call-option{width:165px;flex:0 0 165px}.sidebar-empty{padding:0 6px 4px}.transcript{height:51vh;min-height:320px}.message{grid-template-columns:37px minmax(0,1fr);gap:8px}.message-text{font-size:14px}.card-heading{padding-top:18px;padding-bottom:15px}.card-title h2{font-size:17px}.badge{font-size:8px;padding:4px 7px}.page-foot{flex-wrap:wrap;font-size:9px}.exports{gap:4px}.export{padding:5px 6px}.session-detail{font-size:10px}}
     @media(prefers-reduced-motion:reduce){.transcript{scroll-behavior:auto}}
     .message{border-radius:10px;padding:8px 10px;margin:0 -10px;border-left:3px solid transparent}.message.playing-line{background:#e3f3e9;border-left-color:var(--teal)}.message.playing-line .message-text{color:var(--ink)}.message[data-track="outbound"].playing-line{background:#ecf0fa;border-left-color:#677bad}
     @media(max-width:850px){.audio-panel{margin-left:19px;margin-right:19px}}@media(max-width:650px){.audio-panel{padding:13px;margin-top:14px}.audio-heading{gap:10px}.audio-actions{gap:7px}.audio-status{font-size:11px}}
+    .summary-panel{margin:18px 26px 0;padding:0 0 17px;border-bottom:1px solid var(--line)}.summary-panel h2{font-size:13px;font-weight:750;margin-bottom:8px}.summary-text{font-size:13px;line-height:1.8;color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere}.summary-text[data-empty="true"]{color:var(--muted)}
+    @media(max-width:850px){.summary-panel{margin-left:19px;margin-right:19px}}
   </style>
 </head>
 <body>
   <header class="topbar">
     <div class="brand"><div class="brand-mark" aria-hidden="true">NC</div><div><div class="brand-name">New College Data Science Team</div><div class="brand-sub">Call desk</div></div></div>
-    <div class="top-actions"><div id="connection" class="connection" data-tone="neutral" role="status" aria-label="Connecting" title="Connecting"><span class="dot" aria-hidden="true"></span></div></div>
+    <div id="connection" class="sr-only" role="status" aria-label="Connecting"></div>
   </header>
   <main>
     <section id="dashboard-view" aria-labelledby="desk-heading">
@@ -54,36 +54,37 @@
       <div id="voicemail-warning" class="banner" data-tone="bad" role="status" hidden></div>
       <div id="recording-warning" class="banner" data-tone="bad" role="status" hidden></div>
       <div class="desk">
-        <aside class="sidebar" aria-label="Call selection"><details id="recent-calls" class="sidebar-group" open><summary class="section-summary"><span class="summary-content"><span>Recent calls</span><span class="live-updates">Live updates</span></span></summary><div id="call-list" class="call-list"></div><p id="sidebar-empty" class="sidebar-empty">No calls yet.</p></details><details id="voicemail-section" class="sidebar-group voicemail-group"><summary class="section-summary">Voicemail</summary><div id="voicemail-list" class="call-list"></div></details></aside>
+        <aside class="sidebar" aria-label="Call selection"><details id="recent-calls" class="sidebar-group" open><summary class="section-summary">Recent calls</summary><div id="call-list" class="call-list"></div><p id="sidebar-empty" class="sidebar-empty">No calls yet.</p></details><details id="voicemail-section" class="sidebar-group voicemail-group"><summary class="section-summary">Voicemail</summary><div id="voicemail-list" class="call-list"></div></details></aside>
         <section class="transcript-card" aria-labelledby="transcript-title">
           <div class="card-heading"><div class="card-row"><div><div class="card-title"><h2 id="transcript-title">Waiting for a call</h2><span id="session-badge" class="badge" data-tone="neutral">Ready</span><span id="voicemail-badge" class="badge" data-tone="neutral" hidden></span></div><p id="session-detail" class="session-detail">Transcripts will appear as people speak.</p></div><div class="exports" aria-label="Export selected call"><a id="export-txt" class="export" aria-disabled="true" tabindex="-1">TXT <span aria-hidden="true">↓</span></a><a id="export-json" class="export" aria-disabled="true" tabindex="-1">JSON <span aria-hidden="true">↓</span></a></div></div><p id="voicemail-detail" class="voicemail-note" hidden></p><p id="session-storage-warning" class="track-error" role="status" hidden></p></div>
           <section id="audio-panel" class="audio-panel" aria-labelledby="audio-heading">
-            <div class="audio-heading"><h2 id="audio-heading">Call recording</h2><div class="audio-actions"><label class="sr-only" for="audio-track">Audio direction</label><select id="audio-track" disabled><option id="audio-option-combined" value="combined">Both</option><option id="audio-option-inbound" value="inbound">Caller</option><option id="audio-option-outbound" value="outbound">Receiver</option></select><a id="audio-download" class="export audio-download" aria-disabled="true" tabindex="-1">Download WAV <span aria-hidden="true">↓</span></a></div></div>
+            <div class="audio-heading"><h2 id="audio-heading">Call recording</h2><div class="audio-actions"><label class="sr-only" for="audio-track">Audio direction</label><select id="audio-track" disabled><option id="audio-option-combined" value="combined">Both</option><option id="audio-option-inbound" value="inbound">Caller</option><option id="audio-option-outbound" value="outbound">New College</option></select><a id="audio-download" class="export audio-download" aria-disabled="true" tabindex="-1">Download WAV <span aria-hidden="true">↓</span></a></div></div>
             <audio id="call-audio" controls preload="none" aria-label="Play selected call recording" aria-describedby="audio-status" hidden></audio>
             <p id="audio-status" class="audio-status" role="status">Select a recorded call to listen.</p>
           </section>
-          <div class="transcript-toolbar"><span class="live-label"><span class="dot" aria-hidden="true"></span>Transcript</span></div>
+          <section id="summary-panel" class="summary-panel" aria-labelledby="summary-heading"><h2 id="summary-heading">Summary</h2><p id="call-summary" class="summary-text" data-empty="true">No summary yet.</p></section>
+          <div class="transcript-toolbar"><span class="live-label">Transcript</span></div>
           <div id="transcript" class="transcript" tabindex="0" aria-label="Call transcript">
             <div id="empty" class="empty"><div class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4M8 22h8"></path></svg></div><h2 id="empty-title">Ready when you are.</h2><p id="empty-description">When a call connects, its transcript will appear here. The view updates automatically.</p></div>
             <div id="messages" class="messages" hidden></div>
           </div>
         </section>
       </div>
-      <footer class="page-foot"><span>New College Data Science Team · Twilio call desk</span><span id="updated-at">Waiting for an update</span></footer>
+      <footer class="page-foot"><span>New College Data Science Team</span><span id="updated-at">Waiting for an update</span></footer>
     </section>
     <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
   </main>
   <script>
     "use strict";
     const $ = id => document.getElementById(id);
-    const trackNames = {inbound: "Caller", outbound: "Receiver"};
+    const trackNames = {inbound: "Caller", outbound: "New College"};
     const state = {snapshot: null, selected: null, manualSelection: false, latestLive: null, pendingLive: null, playbackPinned: null, timer: null,
       controller: null, polling: false, paused: false, renderKey: "", listKey: "",
       voicemailKey: "", refreshRequested: false, audioCall: null, audioTrack: "combined",
       audioUrl: "", audioPhase: "idle", audioSession: null, highlightEnabled: false,
       transcriptRows: [], renderedCall: null, voicemailInitialized: false};
     const callSidPattern = /^CA[0-9a-fA-F]{32}$/;
-    const audioTracks = {combined: "Both", inbound: "Caller", outbound: "Receiver"};
+    const audioTracks = {combined: "Both", inbound: "Caller", outbound: "New College"};
     const endedStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
     const voicemailLabels = {awaiting: "Awaiting recording", recording: "Recording", processing: "Unconfirmed recording",
       completed: "Recorded", absent: "No recording", failed: "Recording failed"};
@@ -138,6 +139,23 @@
       const minutes = Math.floor(total / 60) % 60;
       const seconds = String(total % 60).padStart(2, "0");
       return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${String(minutes).padStart(2, "0")}:${seconds}`;
+    }
+    function callerNumber(session) {
+      return text(session.call_detail && session.call_detail.caller_number).trim() || "Unknown caller";
+    }
+    function callStartedAt(session) {
+      return session.call_detail && session.call_detail.started_at || session.started_at;
+    }
+    function callDuration(session) {
+      const detail = session.call_detail || {};
+      let seconds = detail.duration_seconds;
+      if (!Number.isFinite(seconds) || seconds < 0) seconds = session.recording && session.recording.duration_seconds;
+      if (!Number.isFinite(seconds) || seconds < 0) {
+        const start = detail.started_at || session.started_at;
+        const end = detail.ended_at || session.ended_at;
+        seconds = start && end ? (dateValue(end).getTime() - dateValue(start).getTime()) / 1000 : null;
+      }
+      return Number.isFinite(seconds) && seconds >= 0 ? timestamp(seconds * 1000) : "Duration unavailable";
     }
     function node(tag, className, content) {
       const element = document.createElement(tag);
@@ -242,8 +260,7 @@
     }
     function renderCallList(sessions) {
       const key = JSON.stringify([state.selected,
-        sessions.map(session => [session.call_sid, session.status, session.started_at, session.ended_at,
-          Boolean(session.recording), session.transcript_unavailable])]);
+        sessions.map(session => [session.call_sid, callerNumber(session), callStartedAt(session), callDuration(session)])]);
       if (key === state.listKey) return;
       state.listKey = key;
       const focusedCall = document.activeElement && document.activeElement.dataset.callSid;
@@ -253,14 +270,8 @@
         button.type = "button";
         button.dataset.callSid = session.call_sid;
         button.setAttribute("aria-pressed", String(session.call_sid === state.selected));
-        const top = node("div", "call-top");
-        const active = isActive(session);
-        top.append(node("span", "call-title", active ? "Current call"
-          : `${session.recording && session.transcript_unavailable ? "Recording" : "Call"} at ${clockTime(session.started_at)}`));
-        const dot = node("span", "call-state" + (active ? " live" : session.status === "error" ? " error" : ""));
-        dot.setAttribute("aria-hidden", "true");
-        top.append(dot);
-        button.append(top, node("div", "call-time", `${clockTime(session.started_at, true)} · ${readable(session.status)}${session.recording ? " · Audio" : ""}`));
+        button.append(node("div", "call-title", callerNumber(session)),
+          node("div", "call-time", `${clockTime(callStartedAt(session))} · ${callDuration(session)}`));
         button.addEventListener("click", () => chooseCall(session.call_sid));
         fragment.append(button);
       });
@@ -381,6 +392,12 @@
     function renderSession(session) {
       renderStorageWarnings(session);
       renderAudio(session);
+      const summary = session && session.call_detail && session.call_detail.summary;
+      const summaryText = text(summary && summary.text).trim();
+      if ($("call-summary").textContent !== (summaryText || "No summary yet.")) {
+        $("call-summary").textContent = summaryText || "No summary yet.";
+      }
+      $("call-summary").dataset.empty = String(!summaryText);
       const enabled = state.snapshot && state.snapshot.enabled;
       const active = session && isActive(session);
       const voicemail = session && session.voicemail;
@@ -476,18 +493,31 @@
         ? snapshot.voicemail.voicemails.filter(entry => entry && typeof entry.call_sid === "string").slice() : [];
       voicemails.sort((a, b) => (dateValue(b.started_at).getTime() || 0) - (dateValue(a.started_at).getTime() || 0));
       const byCall = new Map(voicemails.map(entry => [entry.call_sid, entry]));
+      const callDetails = snapshot.call_details && Array.isArray(snapshot.call_details.calls)
+        ? snapshot.call_details.calls.filter(entry => entry && typeof entry.call_sid === "string"
+          && callSidPattern.test(entry.call_sid)) : [];
+      const detailsByCall = new Map(callDetails.map(entry => [entry.call_sid, entry]));
       const recordings = snapshot.recordings && Array.isArray(snapshot.recordings.recordings)
         ? snapshot.recordings.recordings.filter(entry => entry && typeof entry.call_sid === "string"
           && callSidPattern.test(entry.call_sid)) : [];
       const recordingsByCall = new Map(recordings.map(entry => [entry.call_sid, entry]));
       const sessions = Array.isArray(snapshot.sessions)
         ? snapshot.sessions.filter(session => session && typeof session.call_sid === "string")
-          .map(session => ({...session, voicemail: byCall.get(session.call_sid), recording: recordingsByCall.get(session.call_sid)})) : [];
+          .map(session => ({...session, voicemail: byCall.get(session.call_sid), recording: recordingsByCall.get(session.call_sid),
+            call_detail: detailsByCall.get(session.call_sid)})) : [];
       for (const recording of recordings) {
         if (!sessions.some(session => session.call_sid === recording.call_sid)) {
           sessions.push({call_sid: recording.call_sid, started_at: recording.started_at,
             ended_at: recording.finished_at, status: recording.status, tracks: {}, segments: [],
-            recording, voicemail: byCall.get(recording.call_sid), transcript_unavailable: true});
+            recording, voicemail: byCall.get(recording.call_sid), call_detail: detailsByCall.get(recording.call_sid),
+            transcript_unavailable: true});
+        }
+      }
+      for (const call of callDetails) {
+        if (!sessions.some(session => session.call_sid === call.call_sid)) {
+          sessions.push({call_sid: call.call_sid, started_at: call.started_at, ended_at: call.ended_at,
+            status: call.ended_at ? "completed" : "live", tracks: {}, segments: [], call_detail: call,
+            voicemail: byCall.get(call.call_sid), transcript_unavailable: true});
         }
       }
       const recordedSessions = sessions.slice();
@@ -495,7 +525,8 @@
         if (!sessions.some(session => session.call_sid === voicemail.call_sid)) {
           sessions.push({call_sid: voicemail.call_sid, started_at: voicemail.started_at,
             ended_at: voicemail.ended_at, status: voicemail.recording_status, tracks: {},
-            segments: [], voicemail, voicemail_only: true, transcript_unavailable: true});
+            segments: [], voicemail, voicemail_only: true, call_detail: detailsByCall.get(voicemail.call_sid),
+            transcript_unavailable: true});
         }
       }
       sessions.sort((a, b) => (dateValue(b.started_at).getTime() || 0) - (dateValue(a.started_at).getTime() || 0));
@@ -516,7 +547,7 @@
         state.selected = (sessions.find(session => session.call_sid === snapshot.selected_call_sid)
           || sessions[0] || {}).call_sid || null;
       }
-      recordedSessions.sort((a, b) => (dateValue(b.started_at).getTime() || 0) - (dateValue(a.started_at).getTime() || 0));
+      recordedSessions.sort((a, b) => (dateValue(callStartedAt(b)).getTime() || 0) - (dateValue(callStartedAt(a)).getTime() || 0));
       renderCallList(recordedSessions);
       renderVoicemails(voicemails);
       renderSession(sessions.find(session => session.call_sid === state.selected));
@@ -548,7 +579,7 @@
         render();
         connection("Connected", "good");
         banner(snapshot.enabled ? "" : "Live transcription is disabled on the server.");
-        $("updated-at").textContent = "Updated " + new Intl.DateTimeFormat(undefined, {hour: "numeric", minute: "2-digit", second: "2-digit"}).format(new Date());
+        $("updated-at").textContent = new Intl.DateTimeFormat(undefined, {hour: "numeric", minute: "2-digit", second: "2-digit"}).format(new Date());
       } catch (error) {
         if (state.paused || state.refreshRequested) return;
         connection(state.snapshot ? "Reconnecting" : "Server unavailable", "bad");

@@ -4,7 +4,7 @@
 
 **Start by implementing two Twilio call legs connected through Python. Get two people talking through that bridge, then replace one direction with the cloned voice pipeline.**
 
-This is the selected implementation recipe for the [final product](FINAL_BUILD.md). It describes code to add, not features already running. Build 1’s conference, ngrok, signed webhooks, and GitHub deployment already exist. Keep [Build 1](BUILD_1.md) as the small conference smoke test; its final-build successor uses the bridge below. Budget roughly 4–8 focused hours for the bridge/keypad prototype and another 8–16 for provider integration and failure tests, assuming working provider accounts and two test phones. These are engineering estimates, not measured build times.
+This is the selected implementation recipe for the [final product](FINAL_BUILD.md). It describes code to add, not features already running. Build 2 includes the conference, passive capture, ngrok, signed webhooks, and GitHub deployment. Keep [Build 1](BUILD_1.md) as the small conference smoke test; its final-build successor uses the bridge below. Budget roughly 4–8 focused hours for the bridge/keypad prototype and another 8–16 for provider integration and failure tests, assuming working provider accounts and two test phones. These are engineering estimates, not measured build times.
 
 ## Use this architecture
 
@@ -18,7 +18,7 @@ flowchart LR
     RT <-->|remote WebSocket| B
     B --> S[Deepgram: separate speaker transcripts]
     S --> C[Context + selected prompt]
-    C --> L[Claude: next spoken response]
+    C --> L[Gemini: next spoken response]
     L --> V[ElevenLabs: owner's cloned voice]
     V --> B
     OT --> K[Owner DTMF: #0 through #4]
@@ -28,7 +28,7 @@ flowchart LR
 
 **Human mode:** owner audio → remote, remote audio → owner; transcribe both directions separately. **Agent mode:** remote audio → owner and STT, agent audio → remote and owner; owner microphone audio is not forwarded or transcribed while delegated. The owner stays connected and uses the keypad. `#0` restores their microphone.
 
-Use Deepgram Nova-3, Claude Haiku 4.5, and ElevenLabs Flash v2.5 with a previously enrolled owner voice. Copy the API adapters and settings from [VOICE_STACK.md](VOICE_STACK.md). This preserves one voice while profiles select different instructions or text models.
+Use Deepgram Nova-3, Google Gemini, and ElevenLabs Flash v2.5 with a previously enrolled owner voice. Copy the API adapters, configurable Gemini model ID, and settings from [VOICE_STACK.md](VOICE_STACK.md). This preserves one voice while profiles select different instructions or text models. Acoustic deepfake detection is a separate observational pipeline described in [DEEPFAKE_DETECTION.md](DEEPFAKE_DETECTION.md); it does not run in the relay today.
 
 ## Turn platform limits into implementation work
 
@@ -133,7 +133,7 @@ Within five seconds of acceptance, require `start.accountSid` to match configura
 
 ## Route audio without building a delay queue
 
-Use one reader per Twilio socket. Readers dispatch control messages immediately and put audio into bounded queues; they never wait on STT, Claude, or TTS. Use one writer per output socket to serialize media, marks, and clear messages. Give `clear` priority over audio.
+Use one reader per Twilio socket. Readers dispatch control messages immediately and put audio into bounded queues; they never wait on STT, Gemini, or TTS. Use one writer per output socket to serialize media, marks, and clear messages. Give `clear` priority over audio.
 
 Twilio exchanges base64 raw μ-law audio and identifies each output by its destination Stream SID. Normalize decoded payloads into 160-byte frames: 20 ms at 8 kHz. Frame size and pacing here are our design choices, not Twilio message-size requirements. Never forward the original source Stream SID or include WAV headers. [Twilio WebSocket messages](https://www.twilio.com/docs/voice/media-streams/websocket-messages).
 
@@ -171,7 +171,7 @@ Twilio delivers DTMF on bidirectional streams for the inbound track. Only the bo
 
 Implement a two-state parser (`idle`, `after_hash`) using monotonic time. Reserve `#0` even when the agent fails. Deduplicate input using `(StreamSid, sequenceNumber)`, not digit/time alone: repeated identical digits can be intentional. An already-active profile is a no-op. A new profile cancels the previous reply and increments the epoch once. Key events from old transport generations are ignored.
 
-Persist four default profiles in `profiles.json`: continue the owner's goal, wait and summon the owner, complete saved questions, and a custom owner-authored prompt. Each has `system_prompt`, optional `model`, and an action allowlist. Place trusted instructions in Claude's system field; put remote speech in conversation messages. Preserve owner and remote attribution when assembling the handoff, since both people were humans before delegation.
+Persist four default profiles in `profiles.json`: continue the owner's goal, wait and summon the owner, complete saved questions, and a custom owner-authored prompt. Each has `system_prompt`, optional `model`, and an action allowlist. Place trusted instructions in Gemini's `systemInstruction`; put remote speech in `contents` with role `user` and generated responses with role `model`. Preserve owner and remote attribution when assembling the handoff, since both people were humans before delegation. Follow the exact role and function-call history rules in the voice guide.
 
 ## Send real IVR digits on the existing remote call
 
@@ -203,7 +203,7 @@ If reconnect gaps make a specific IVR unusable, add **in-band tone generation** 
 4. **Return:** `#0` cancels all agent producers, invalidates their epoch, removes local pending audio, sends `clear` to both Twilio outputs, and restores human routing. Returning does not depend on a successful provider request. Target under 250 ms from receipt of DTMF to local routing change; measure phone playback separately.
 5. **Fail safely:** a provider error/timeout follows the return path and plays a private failure cue to the owner. Owner hangup ends the remote call in this version. Remote hangup cancels providers and ends the owner leg. A later detached-owner version must explicitly add rejoin/session persistence rather than accidentally leaving an agent alone.
 
-For `#2`, the initial notification is a distinctive local earcon and private spoken cue in the owner's monitor, plus a status field visible to `scripts/call.py`. The owner remains connected. Implement an application-defined `notify_owner(reason)` action using Claude tool blocks; dispatch it locally, append its tool result, and continue the dialogue. The same controlled tool loop can expose `send_dtmf(digits)` when navigating menus. The basic text adapter in the voice guide must be extended to parse tool blocks before enabling these actions. No notification depends on a new SMS or email integration.
+For `#2`, the initial notification is a distinctive local earcon and private spoken cue in the owner's monitor, plus a status field visible to `scripts/call.py`. The owner remains connected. Implement an application-defined `notify_owner(reason)` action using Gemini `functionCall` parts; dispatch it locally, append a matching `functionResponse`, and continue the dialogue. The same controlled tool loop can expose `send_dtmf(digits)` when navigating menus. Use the complete manual function-call loop in the voice guide, preserving returned model parts and thought signatures before enabling these actions. No notification depends on a new SMS or email integration.
 
 Build a context packet containing the last 20 finalized turns plus a rolling summary, owner goal, facts, and active profile. Refresh the summary asynchronously every ten finalized turns; summarization cannot block audio. Store agent text as intended speech first, then annotate phrase completion/interruption from playback state. Do not tell the model that a cleared response was fully heard. Keep raw audio out of Git and ordinary logs.
 

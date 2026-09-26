@@ -10,6 +10,8 @@ python3 scripts/server.py status
 
 **Verification (2026-09-26):** 212 automated tests pass. A real local Uvicorn/WebSocket test accepted the signed upgrade and wrote two correctly formatted WAV tracks. Build 1's real-phone audio and cleanup tests passed; Build 2's real Twilio capture check is pending.
 
+**Partner implementation guides:** [Gemini + ElevenLabs voice stack](docs/VOICE_STACK.md), [deepfake detection architecture and implementation](docs/DEEPFAKE_DETECTION.md), [Modulate API adapters](docs/MODULATE.md), and [alternative detection APIs and local models](docs/DETECTION_ALTERNATIVES.md). These are build instructions for partners; provider integrations are not running. Browse the [documentation index](docs/README.md) to pick a starting point.
+
 ## Partner starting point
 
 1. Make a short recorded test call through the Twilio number and hang up.
@@ -38,7 +40,7 @@ Changing a prompt can route the conversation to a different agent/model while pr
 
 ### Future implementation reference
 
-Use **Python/FastAPI + two Twilio bidirectional Media Streams + Deepgram + Claude + ElevenLabs**. The Python bridge forwards the humans' audio until a keypad command substitutes the voice agent. For outbound calls, the server calls your phone first, you accept, and it calls the dealership. Both legs stay under the operator's control.
+Use **Python/FastAPI + two Twilio bidirectional Media Streams + Deepgram + Google Gemini + ElevenLabs**. The Python bridge forwards the humans' audio until a keypad command substitutes the voice agent. For outbound calls, the server calls your phone first, you accept, and it calls the dealership. Both legs stay under the operator's control.
 
 1. **Bridge the phones.** Add session state, owner acceptance, signed media WebSockets, and two-way audio forwarding.
 2. **Prove takeover with a fixed clip.** Enroll your voice; make `#1` play a cloned phrase and `#0` interrupt it. Map the other keys to distinct profiles.

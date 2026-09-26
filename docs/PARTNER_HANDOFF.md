@@ -4,6 +4,8 @@ Start with one **completed local capture** and `scripts/replay_capture.py`. This
 
 Build 2 keeps the working two-person conference. Its Twilio media tap writes two audio tracks and a manifest. The code in `integrations/` provides local contracts, a replay reader, and a metadata-only example. AI detection, transcription, voice-agent behavior, voice cloning, prompt routing, and audio takeover are partner work; none runs through this interface today.
 
+**Choose a partner implementation:** [deepfake detection](DEEPFAKE_DETECTION.md) specifies windowing, quality gates, provider adapters, results, evaluation, and later live integration. [Modulate](MODULATE.md) and [other detection options](DETECTION_ALTERNATIVES.md) supply concrete API contracts. [Gemini + ElevenLabs](VOICE_STACK.md) covers the separate conversational voice agent. You can write and test these adapters with synthetic/local fixtures while the Build 2 phone-capture check remains pending.
+
 ## Run the local example
 
 From the repository root, replace the manifest path with a completed capture on this computer:

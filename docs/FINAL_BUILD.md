@@ -6,7 +6,7 @@
 
 This is the modern version of putting someone on hold: instead of leaving them with elevator music while you step away, your AI representative stays in the conversation. It sounds like you, knows what has already been said, and works on the task you assigned.
 
-**Status: specified for implementation.** The running [Build 1](BUILD_1.md) connects two humans in a conference. Build the final behavior with the selected [Python bridge recipe](IMPLEMENTATION.md) and [voice API adapters](VOICE_STACK.md). This extends the original inbound screening concept to user-controlled delegation on both inbound and outbound calls.
+**Status: specified for implementation.** The running [Build 2](BUILD_2.md) connects two humans in a conference and adds passive audio capture; its real-phone capture check is pending. Build the final behavior with the selected [Python bridge recipe](IMPLEMENTATION.md) and [voice API adapters](VOICE_STACK.md). This extends the original inbound screening concept to user-controlled delegation on both inbound and outbound calls.
 
 ## Example: calling a car dealership
 
@@ -43,6 +43,8 @@ Each shortcut supplies a trusted instruction update to the agent: it selects a p
 Use the **owner-first callback** as the outbound entry experience: run the call script with the destination and goal, answer the operator's call, press `1` to accept, and let the server dial the dealership. This routes both phones through the Python bridge from the start. A normal mobile call placed directly to the dealership cannot be seized by this server later; the callback creates the managed call with the same ordinary handset experience. Both directions share one handoff controller.
 
 Manual takeover must work without first detecting an AI caller. The dealership can be a human, a phone menu, or another AI. Inbound AI detection remains an optional additional trigger for the same handoff flow.
+
+The [deepfake detection guide](DEEPFAKE_DETECTION.md) defines acoustic synthetic-speech detection separately from identifying a conversational bot or verifying a caller's identity. Start with observation-only results; a low synthetic score does not establish identity, and synthetic speech alone does not establish malicious intent. Any later automatic handoff needs its own evaluated, owner-enabled policy.
 
 ## What transfers to the agent
 
@@ -83,7 +85,7 @@ Treat repeated command events safely: one command must not create several agent 
 
 Build the final call path as **two Twilio bidirectional Media Streams joined by a Python audio router**. The owner's incoming stream supplies audio and keypad commands. The remote stream supplies the other person's audio. In human mode, forward both directions. In agent mode, replace owner-to-remote audio with cloned speech while the owner hears a monitor mix and keeps keypad control.
 
-Use **Deepgram Nova-3 → Claude Haiku 4.5 → ElevenLabs Flash v2.5** for the first working pipeline. Enroll the owner's voice before the call. Start with the provider adapters in [VOICE_STACK.md](VOICE_STACK.md), then attach them to the routing and cancellation controller.
+Use **Deepgram Nova-3 → Google Gemini → ElevenLabs Flash v2.5** for the first working pipeline. The configurable Gemini model and exact API contract are specified in [VOICE_STACK.md](VOICE_STACK.md). Enroll the owner's voice before the call, then attach the provider adapters to the routing and cancellation controller.
 
 1. Build the owner-first callback, authenticated stream binding, and human audio bridge.
 2. Add `#1`–`#4` and `#0`, initially using fixed cloned clips to prove switching and interruption.

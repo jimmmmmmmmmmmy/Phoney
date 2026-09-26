@@ -36,6 +36,7 @@ BASE = dict(account_sid="AC" + "1" * 32, auth_token="test-auth",
     {"voicemail_max_seconds": 1},
     {"voicemail_max_seconds": 601},
     {"voicemail_max_seconds": True},
+    {"gemini_summary_model": "../another-host?key=value"},
 ])
 def test_invalid_switchboard_configuration_fails(fields):
     with pytest.raises(ValueError):
@@ -46,11 +47,11 @@ def test_configuration_keeps_sensitive_values_out_of_repr():
     settings = Settings(**BASE, twilio_number="+15555550100", callee_number="+15555550101",
                         api_key="SK" + "2" * 32, api_secret="private-rest-secret",
                         deploy_control_token="private-deploy-token-" * 3,
-                        deepgram_api_key="private-deepgram-key")
+                        deepgram_api_key="private-deepgram-key", gemini_api_key="private-gemini-key")
     assert settings.switchboard_ready
     for field in (settings.auth_token, settings.api_key, settings.api_secret,
                   settings.twilio_number, settings.callee_number, settings.deploy_control_token,
-                  settings.deepgram_api_key):
+                  settings.deepgram_api_key, settings.gemini_api_key):
         assert field not in repr(settings)
 
 

@@ -24,6 +24,7 @@ from transcription import TranscriptionManager
 from dashboard import register_dashboard
 from voicemail import VoicemailStore
 from call_details import CallDetailsStore
+from summaries import SummaryManager
 
 logger = logging.getLogger("uvicorn.error")
 MAX_GITHUB_BODY_BYTES = 1024 * 1024
@@ -46,7 +47,7 @@ def write_deploy_trigger(path: str, delivery_id: str) -> None:
             os.unlink(temporary)
 
 
-def create_app(settings: Settings, gateway=None, transcription_connector=None) -> FastAPI:
+def create_app(settings: Settings, gateway=None, transcription_connector=None, summary_provider=None) -> FastAPI:
     transcription = TranscriptionManager(settings, connector=transcription_connector)
     media_capture = CaptureManager(settings, observer=transcription)
     voicemails = VoicemailStore(settings)
@@ -60,9 +61,30 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
 
     switchboard = Switchboard(settings, gateway=gateway, on_end=call_ended)
 
+    def summary_worker_active():
+        if switchboard.draining:
+            return False
+        if not settings.deploy_commit:
+            return True
+        # Candidate releases share private storage and credentials. Only the
+        # supervisor-owned serving process may start billable background jobs.
+        if not settings.deploy_trigger_path:
+            return False
+        try:
+            record = json.loads((Path(settings.deploy_trigger_path).parent / "dev.json").read_text())["app"]
+            return record["pid"] == os.getpid() and record.get("commit") == settings.deploy_commit
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
+    summaries = SummaryManager(settings, transcription, call_details,
+        active_call_ids=lambda: {sid for sid, session in switchboard.sessions.items() if session.phase != "ended"},
+        provider=summary_provider, can_run=summary_worker_active)
+
     @asynccontextmanager
     async def lifespan(app):
+        summaries.start()
         yield
+        await summaries.close()
         await switchboard.close()
         await media_capture.close()
         await transcription.close()
@@ -76,6 +98,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
     app.state.voicemails = voicemails
     app.state.recordings = recordings
     app.state.call_details = call_details
+    app.state.summaries = summaries
     register_dashboard(app, settings, transcription, voicemail_store=voicemails,
                        recording_library=recordings, call_details_store=call_details)
     validate_twilio = twilio_validator(settings)
@@ -90,6 +113,8 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
                   "voicemail_enabled": settings.voicemail_enabled and settings.switchboard_ready}
         if settings.deploy_commit:
             result["commit"] = settings.deploy_commit
+        if summaries.enabled:
+            result["summaries_enabled"] = True
         return result
 
     async def validate_deploy_control(request: Request):
@@ -105,7 +130,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
                              "active_sessions": switchboard.active_count,
                              "pending_work": switchboard.pending_count + media_capture.active_count
                                              + media_capture.pending_count + transcription.active_count
-                                             + voicemails.active_count},
+                                             + voicemails.active_count + summaries.active_count},
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/internal/deploy", dependencies=[Depends(validate_deploy_control)])

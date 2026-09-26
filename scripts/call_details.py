@@ -72,6 +72,8 @@ def main():
     summary = commands.add_parser("summarize", help="Save a summary already written by an operator or agent")
     summary.add_argument("call_sid")
     summary.add_argument("--text-file", type=Path, required=True)
+    retry = commands.add_parser("retry-summary", help="Retry a failed automatic summary after fixing billing/configuration")
+    retry.add_argument("call_sid")
     args = parser.parse_args()
     load_dotenv(args.env_file or ROOT / ".env", override=bool(args.env_file))
     settings = Settings.from_env()
@@ -84,9 +86,14 @@ def main():
                         account_sid=settings.account_sid,
                         http_client=TwilioHttpClient(timeout=15, max_retries=0))
         print(f"Saved caller details for {backfill(settings, store, client)} local calls.")
-    else:
+    elif args.command == "summarize":
         save_summary(settings, store, args.call_sid, args.text_file)
         print("Saved summary for the completed transcript.")
+    else:
+        document = next((item for item in local_sessions(settings) if item["call_sid"] == args.call_sid), None)
+        if not document or not store.retry_summary(args.call_sid, document):
+            raise ValueError("Choose a failed automatic summary for an ended local transcript")
+        print("Failed summary reset; the running summary worker will retry it.")
 
 
 if __name__ == "__main__":

@@ -26,6 +26,14 @@ MAX_FILES = 1000
 MAX_CALLS = 10
 MAX_FILE_BYTES = 16_384
 MAX_SUMMARY_CHARS = 2000
+SUMMARY_MODEL = re.compile(r"[a-z0-9][a-z0-9.-]{0,99}\Z")
+SUMMARY_ERRORS = {"", "auth", "rate-limit", "provider-error", "timeout", "network", "invalid-response",
+                  "blocked", "empty-response", "truncated", "invalid-input", "storage-failed",
+                  "cancelled", "unavailable", "stale", "unknown", "invalid_transcript", "input_too_large",
+                  "invalid_response", "no_output", "invalid_output", "closed", "not_configured",
+                  "invalid_configuration", "rate_limited", "provider_unavailable", "authentication_failed",
+                  "request_rejected", "response_too_large", "transport_error", "billing_required",
+                  "retry-exhausted", "interrupted", "transcript-changed", "provider-timeout", "storage-error"}
 MAX_DURATION_SECONDS = 86_400
 REFRESH_SECONDS = 2.0
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -128,10 +136,14 @@ def _root(path, create=False):
 
 def _blank(call_sid):
     return {"schema_version": 1, "call_sid": call_sid, "caller_number": "", "started_at": None,
-            "ended_at": None, "duration_seconds": None, "duration_source": "", "summary": None}
+            "ended_at": None, "duration_seconds": None, "duration_source": "", "summary": None,
+            "summary_job": None}
 
 
 def _validate(document, call_sid):
+    # Existing authored summaries predate background jobs and remain readable.
+    if isinstance(document, dict) and "summary_job" not in document:
+        document["summary_job"] = None
     keys = set(_blank(call_sid))
     if (not isinstance(document, dict) or set(document) != keys
             or type(document["schema_version"]) is not int or document["schema_version"] != 1
@@ -151,13 +163,28 @@ def _validate(document, call_sid):
         raise ValueError("Invalid duration source")
     summary = document["summary"]
     if summary is not None:
-        if (not isinstance(summary, dict) or set(summary) != {"text", "source", "created_at", "fingerprint"}
+        if (not isinstance(summary, dict)
+                or set(summary) - {"text", "source", "created_at", "fingerprint", "model"}
+                or not {"text", "source", "created_at", "fingerprint"}.issubset(summary)
                 or not isinstance(summary["text"], str) or not summary["text"].strip()
                 or len(summary["text"]) > MAX_SUMMARY_CHARS or CONTROL.search(summary["text"])
-                or summary["source"] != "agent" or not isinstance(summary["fingerprint"], str)
+                or summary["source"] not in {"agent", "gemini"} or not isinstance(summary["fingerprint"], str)
                 or not re.fullmatch(r"[0-9a-f]{64}", summary["fingerprint"])):
             raise ValueError("Invalid summary")
         summary["created_at"] = _timestamp(summary["created_at"])
+        if "model" in summary and (not isinstance(summary["model"], str)
+                                   or not SUMMARY_MODEL.fullmatch(summary["model"])):
+            raise ValueError("Invalid summary model")
+    job = document["summary_job"]
+    if job is not None:
+        if (not isinstance(job, dict) or set(job) != {"fingerprint", "status", "attempts", "error", "retry_at"}
+                or not isinstance(job["fingerprint"], str) or not re.fullmatch(r"[0-9a-f]{64}", job["fingerprint"])
+                or job["status"] not in {"pending", "completed", "failed"}
+                or type(job["attempts"]) is not int or not 0 <= job["attempts"] <= 3
+                or job["error"] not in SUMMARY_ERRORS
+                or type(job["retry_at"]) not in (int, float) or not math.isfinite(job["retry_at"])
+                or not 0 <= job["retry_at"] <= 10_000_000_000):
+            raise ValueError("Invalid summary job")
     return document
 
 
@@ -344,10 +371,12 @@ class CallDetailsStore:
         except (OSError, ValueError, TypeError, OverflowError):
             return False
 
-    def set_summary(self, call_sid, text, session_document):
+    def set_summary(self, call_sid, text, session_document, *, source="agent", model=None):
         if (not self.enabled or not _sid(call_sid) or not isinstance(text, str)
                 or not text.strip() or len(text) > MAX_SUMMARY_CHARS or CONTROL.search(text)
-                or not isinstance(session_document, dict) or session_document.get("call_sid") != call_sid):
+                or not isinstance(session_document, dict) or session_document.get("call_sid") != call_sid
+                or source not in {"agent", "gemini"}
+                or (model is not None and (not isinstance(model, str) or not SUMMARY_MODEL.fullmatch(model)))):
             return False
         fingerprint = transcript_fingerprint(session_document)
         if not fingerprint:
@@ -361,12 +390,90 @@ class CallDetailsStore:
                 if record["started_at"] and record["ended_at"] < record["started_at"]:
                     return False
                 previous = record["summary"]
-                if not previous or previous["text"] != text.strip() or previous["fingerprint"] != fingerprint:
-                    record["summary"] = {"text": text.strip(), "source": "agent", "created_at": _now(),
+                if (source == "gemini" and previous and previous["source"] == "agent"
+                        and previous["fingerprint"] == fingerprint):
+                    return True  # Preserve an operator edit made while generation was in flight.
+                if (not previous or previous["text"] != text.strip() or previous["fingerprint"] != fingerprint
+                        or previous["source"] != source or previous.get("model") != model):
+                    record["summary"] = {"text": text.strip(), "source": source, "created_at": _now(),
                                          "fingerprint": fingerprint}
+                    if model is not None:
+                        record["summary"]["model"] = model
+                job = record["summary_job"]
+                record["summary_job"] = {"fingerprint": fingerprint, "status": "completed",
+                    "attempts": job["attempts"] if job and job["fingerprint"] == fingerprint else 0,
+                    "error": "", "retry_at": 0}
                 return self._persist(record)
         except (OSError, ValueError, TypeError, OverflowError):
             return False
+
+    @staticmethod
+    def _summary_state(record, fingerprint):
+        missing = {"status": "missing", "attempts": 0, "error": "", "retry_at": 0}
+        if not fingerprint:
+            return missing
+        summary = record["summary"]
+        job = record["summary_job"]
+        if summary and summary["fingerprint"] == fingerprint:
+            return {**missing, "status": "completed"}
+        if job and job["fingerprint"] == fingerprint:
+            return {key: job[key] for key in missing}
+        return missing
+
+    def summary_state(self, call_sid, session_document):
+        fingerprint = transcript_fingerprint(session_document)
+        if not self.enabled or not _sid(call_sid) or not fingerprint or session_document["call_sid"] != call_sid:
+            return {"status": "missing", "attempts": 0, "error": "", "retry_at": 0}
+        with self._lock:
+            return self._summary_state(self._current(call_sid), fingerprint)
+
+    def begin_summary(self, call_sid, session_document):
+        fingerprint = transcript_fingerprint(session_document)
+        if not self.enabled or not _sid(call_sid) or not fingerprint or session_document["call_sid"] != call_sid:
+            return False
+        try:
+            with self._lock:
+                record = self._current(call_sid)
+                job = self._summary_state(record, fingerprint)
+                if job["status"] == "completed" or job["attempts"] >= 3:
+                    return False
+                if job["status"] == "failed" and (not job["retry_at"] or job["retry_at"] > time.time()):
+                    return False
+                record["started_at"] = record["started_at"] or _timestamp(session_document["started_at"])
+                record["ended_at"] = record["ended_at"] or _timestamp(session_document["ended_at"])
+                record["summary_job"] = {"fingerprint": fingerprint, "status": "pending",
+                    "attempts": job["attempts"] + 1, "error": "", "retry_at": 0}
+                return self._persist(record)
+        except (OSError, ValueError, TypeError, KeyError, OverflowError):
+            return False
+
+    def fail_summary(self, call_sid, session_document, error, retry_at=0):
+        fingerprint = transcript_fingerprint(session_document)
+        if (not self.enabled or not _sid(call_sid) or not fingerprint or session_document["call_sid"] != call_sid
+                or type(retry_at) not in (int, float) or not math.isfinite(retry_at)
+                or not 0 <= retry_at <= 10_000_000_000):
+            return False
+        with self._lock:
+            record = self._current(call_sid)
+            job = record["summary_job"]
+            if not job or job["fingerprint"] != fingerprint or job["status"] == "completed":
+                return False
+            job.update(status="failed", error=error if isinstance(error, str) and error in SUMMARY_ERRORS else "unknown",
+                       retry_at=retry_at)
+            return self._persist(record)
+
+    def retry_summary(self, call_sid, session_document):
+        """Owner-invoked retry after repairing billing or configuration; never a public route."""
+        fingerprint = transcript_fingerprint(session_document)
+        if not self.enabled or not _sid(call_sid) or not fingerprint or session_document["call_sid"] != call_sid:
+            return False
+        with self._lock:
+            record = self._current(call_sid)
+            state = self._summary_state(record, fingerprint)
+            if state["status"] != "failed":
+                return False
+            record["summary_job"] = None
+            return self._persist(record)
 
     def snapshot(self, sessions=None):
         if not self.enabled:
@@ -410,5 +517,11 @@ class CallDetailsStore:
                 fingerprint = transcript_fingerprint(documents.get(record["call_sid"])) if summary else None
                 result["summary"] = ({key: summary[key] for key in ("text", "source", "created_at")}
                     if summary and record["ended_at"] and fingerprint == summary["fingerprint"] else None)
+                if result["summary"] and "model" in summary:
+                    result["summary"]["model"] = summary["model"]
+                job_fingerprint = transcript_fingerprint(documents.get(record["call_sid"]))
+                job_state = self._summary_state(record, job_fingerprint)
+                if record["summary_job"] is not None:
+                    result["summary_status"] = job_state["status"]
                 calls.append(result)
             return {"enabled": True, "storage_error": self.storage_error, "calls": calls}

@@ -394,8 +394,11 @@
       renderAudio(session);
       const summary = session && session.call_detail && session.call_detail.summary;
       const summaryText = text(summary && summary.text).trim();
-      if ($("call-summary").textContent !== (summaryText || "No summary yet.")) {
-        $("call-summary").textContent = summaryText || "No summary yet.";
+      const summaryStatus = session && session.call_detail && session.call_detail.summary_status;
+      const summaryPlaceholder = summaryStatus === "pending" ? "Summarizing…"
+        : summaryStatus === "failed" ? "Summary unavailable." : "No summary yet.";
+      if ($("call-summary").textContent !== (summaryText || summaryPlaceholder)) {
+        $("call-summary").textContent = summaryText || summaryPlaceholder;
       }
       $("call-summary").dataset.empty = String(!summaryText);
       const enabled = state.snapshot && state.snapshot.enabled;

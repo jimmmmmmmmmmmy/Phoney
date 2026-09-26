@@ -4,7 +4,7 @@ Open the public dashboard with `.venv/bin/python scripts/open_dashboard.py`. Lea
 
 This increment adds a fixed greeting and message recording when the configured teammate has not connected. It uses Twilio `Say` and `Record`, while the existing optional Deepgram observer can supply text. It does not call Gemini, ElevenLabs, Modulate, or another agent/detector. An established two-human conversation keeps its normal call and hangup behavior.
 
-**Acceptance status:** all 454 automated tests pass, including the recorded-audio playback routes. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. This confirms player behavior, not recorded speech quality.
+**Acceptance status:** all 547 automated tests pass, including the recorded-audio playback routes. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. This confirms player behavior, not recorded speech quality.
 
 Anonymous browser access to the voicemail inbox was verified with an isolated fake receipt, without placing a phone call or invoking a speech/agent provider. The incoming Twilio number's `/voice` and caller-status `/status` POST callbacks were configured and verified by API read-back.
 

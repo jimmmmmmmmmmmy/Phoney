@@ -4,15 +4,15 @@
 .venv/bin/python scripts/open_dashboard.py
 ```
 
-Run this from the source checkout on the server Mac. It reads the installed service's configured public URL and opens `/dashboard`. No viewer token or sign-in is required; anyone with the ngrok URL can see caller numbers, call times/durations, saved summaries, and transcript text, and play/download finalized local WAV recordings. The dashboard shows the caller, time, duration, recording, saved summary, and transcript. A phone test still needs to establish actual call transcription; a healthy page alone cannot prove it.
+Run this from the source checkout on the server Mac. It reads the installed service's configured public URL and opens `/dashboard`. No viewer token or sign-in is required; anyone with the ngrok URL can see caller numbers, call times/durations, saved summaries, and transcript text, and play/download finalized local WAV recordings. The dashboard shows the caller, time, duration, recording, summary, and transcript. Gemini summaries are generated after eligible calls when configured. A phone test still needs to establish actual call transcription; a healthy page alone cannot prove it.
 
 Build 3 adds speech-to-text to the existing two-human Twilio conference and passive audio capture. It sends enabled call audio to Deepgram Nova-3, presents interim/final text in HTML, and preserves transcript data for partner development. The caller's conversation remains connected through Twilio; Python observes a copy of the media.
 
-**Acceptance status:** all 454 automated tests pass, including recorded-audio playback, byte ranges, stereo alignment, and public-route checks. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. The compact dashboard also passed Chrome checks for line highlighting, overlap, seek/track changes, persistent collapsible sections, and manual call selection during incoming live activity. This confirms player behavior, not recorded speech quality.
+**Acceptance status:** all 547 automated tests pass, including recorded-audio playback, byte ranges, stereo alignment, and public-route checks. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. The compact dashboard also passed Chrome checks for line highlighting, overlap, seek/track changes, persistent collapsible sections, and manual call selection during incoming live activity. This confirms player behavior, not recorded speech quality.
 
 A browser check verified anonymous voicemail-inbox access using an isolated fake receipt; that check placed no phone call and invoked no speech/agent provider. Earlier generated speech passed the real Deepgram API and a full local Uvicorn signed-media/browser/export test, with both WAV tracks completed. The live service has one completed capture with valid mono PCM16/8 kHz headers: inbound 27.73 seconds and outbound 27.67 seconds. Only file metadata/headers were checked; audio content was not assessed.
 
-**Full real-phone capture, transcription, and voicemail acceptance remain pending.** See [VOICEMAIL.md](VOICEMAIL.md) for the signed callback and message tests. Check the deployed revision with `python3 scripts/server.py status` and `/health`; test success alone does not establish deployment.
+**Gemini generation is blocked:** the real API check returned HTTP 402 because prepayment credits are depleted. Existing authored summaries remain available; successful Gemini generation is not yet verified. **Full real-phone capture, transcription, and voicemail acceptance remain pending.** See [VOICEMAIL.md](VOICEMAIL.md) for the signed callback and message tests. Check the deployed revision with `python3 scripts/server.py status` and `/health`; test success alone does not establish deployment.
 
 ## What this build supplies
 
@@ -66,6 +66,9 @@ DEEPGRAM_MODEL=nova-3
 TRANSCRIPT_STORAGE_DIR=/absolute/private/path/to/transcripts
 # Optional: persist caller details and saved summaries across deployments.
 CALL_DETAILS_STORAGE_DIR=/absolute/private/path/to/call-details
+# Optional: automatic summaries after ended calls.
+GEMINI_API_KEY=replace_in_private_environment_only
+GEMINI_SUMMARY_MODEL=gemini-3.8-flash
 ```
 
 `TRANSCRIPTION_ENABLED` defaults to false. Keep the existing absolute `MEDIA_STORAGE_DIR` and capture configuration. The dashboard and transcript API are deliberately public: anyone with the ngrok URL can see caller numbers, call times/durations, summaries, and transcript text, and play/download finalized local recordings. Provider credentials stay on the server. Twilio signatures and deployment-control authentication remain required for their existing routes.
@@ -105,9 +108,11 @@ JSON exports contain `schema_version`, `provider`, `model`, `sample_rate: 8000`,
 
 ### Caller details and saved summaries
 
-Set the optional absolute `CALL_DETAILS_STORAGE_DIR` to retain caller metadata and authored summaries across deployments. Signed inbound `From` and final caller-status duration supply call details. Displayed duration falls back to WAV duration or elapsed time when the Twilio duration is unavailable. The public transcript snapshot includes a `call_details` object; it does not add caller numbers to the raw capture manifest.
+Set the optional absolute `CALL_DETAILS_STORAGE_DIR` to retain caller metadata and summaries across deployments. It must differ from the transcript and voicemail JSON directories; equivalent paths are rejected. Signed inbound `From` and final caller-status duration supply call details. Displayed duration falls back to WAV duration or elapsed time when the Twilio duration is unavailable. The public transcript snapshot includes a `call_details` object; it does not add caller numbers to the raw capture manifest.
 
-Use the local [`scripts/call_details.py` workflow](CALL_SUMMARIES.md) to backfill known calls or save a summary from a text file. A summary is bound to the transcript fingerprint of an ended call with finalized text and is hidden when that transcript changes or disappears. Ended partial/failed transcripts can be summarized with their missing coverage acknowledged. There is no public summary-write endpoint and no automatic Gemini call in this increment.
+Automatic summaries run when `GEMINI_API_KEY` is nonempty, transcription is enabled, and call-details storage is configured. Every two seconds, a serial worker checks for ended transcripts with finalized text whose phone calls are no longer active. It submits timed transcript text and completion status to Gemini, then saves a fingerprint-bound summary; no audio, CallSid, or separate caller metadata is submitted. Summaries attribute statements and follow-ups to **Caller** or **New College DS**, acknowledging ambiguous mixed playback. Existing valid manually authored summaries are retained.
+
+The summary appears below the recording, with a small pending/failed state while work is outstanding or unsuccessful. Provider failure does not affect calling, WAV capture, or Deepgram. See [CALL_SUMMARIES.md](CALL_SUMMARIES.md) for the 30-second request deadline, durable retry limits, startup catch-up, and the local backfill/manual-save commands. There is no public summary-write endpoint. `GEMINI_SUMMARY_MODEL` is independent of the future voice-agent `GEMINI_MODEL`.
 
 ### Play or download a finalized recording
 

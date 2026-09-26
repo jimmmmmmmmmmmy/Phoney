@@ -37,6 +37,8 @@ class Settings:
     voicemail_max_seconds: int = 120
     voicemail_storage_dir: str = ""
     call_details_storage_dir: str = ""
+    gemini_api_key: str = field(default="", repr=False)
+    gemini_summary_model: str = "gemini-3.8-flash"
 
     def __post_init__(self):
         if not self.account_sid.startswith("AC") or len(self.account_sid) != 34:
@@ -95,6 +97,8 @@ class Settings:
             if any(path and Path(path).resolve() == details_path
                    for path in (self.transcript_storage_dir, self.voicemail_storage_dir)):
                 raise ValueError("CALL_DETAILS_STORAGE_DIR must differ from transcript and voicemail storage.")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,99}", self.gemini_summary_model):
+            raise ValueError("GEMINI_SUMMARY_MODEL must be a model identifier without a path.")
 
     @property
     def switchboard_ready(self):
@@ -137,4 +141,6 @@ class Settings:
             voicemail_max_seconds=int(os.getenv("VOICEMAIL_MAX_SECONDS", "120")),
             voicemail_storage_dir=os.getenv("VOICEMAIL_STORAGE_DIR", "").strip(),
             call_details_storage_dir=os.getenv("CALL_DETAILS_STORAGE_DIR", "").strip(),
+            gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
+            gemini_summary_model=os.getenv("GEMINI_SUMMARY_MODEL", "gemini-3.8-flash").strip(),
         )

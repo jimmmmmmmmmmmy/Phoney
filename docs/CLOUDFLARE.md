@@ -17,6 +17,8 @@ The dashboard uses ordinary HTTP polling, and Twilio Media Streams use WebSocket
 
 The helper owns its `cloudflared` process, records its identity in private runtime state, and checks its local readiness endpoint on `127.0.0.1:4041`. It writes connector logs to `.runtime/cloudflared.log`. Port `8000` remains the application's port; the metrics port is not the public web service. Application deployments and supervisor restarts reuse a healthy owned connector and its URL; restarting the connector itself obtains a new address.
 
+If connector logs repeatedly report QUIC timeouts, set `TUNNEL_TRANSPORT_PROTOCOL=http2` in the runner's active `.env` and restart the connector after calls finish. Both runners read this setting. The default is explicitly `auto`, allowing Cloudflare's TCP fallback; Cloudflare Quick Tunnel otherwise defaults to QUIC in the current client. [Transport parameters](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/).
+
 ## Manual development
 
 Allow about five minutes with the project's Python environment and Twilio credentials ready. Use one runner at a time: manual development and installed server mode both need port `8000`.
@@ -51,4 +53,4 @@ For a stable public hostname, create a named Cloudflare Tunnel using a Cloudflar
 
 The sharing scope stays the same: anyone with the public URL can see caller details, summaries and transcripts and play/download finalized local WAVs. Twilio signatures, GitHub signatures, and deployment-control authentication remain required on their existing routes. Tunnel selection does not alter Gemini billing; its depleted-credit blocker is documented in [CALL_SUMMARIES.md](CALL_SUMMARIES.md).
 
-Cloudflare migration and real-phone acceptance are not established by this guide. Record the actual public HTTP/WebSocket checks and phone result when completed; do not infer them from the prior ngrok test results.
+Verified on 2026-09-26: public health/dashboard/transcript routes returned 200, the dashboard rendered in a browser, Twilio and GitHub destinations matched by API read-back, signed HTTP callbacks reached application validation, and an unknown-session WebSocket handshake was rejected by the app through Cloudflare. The installed service uses HTTP/2 because QUIC timed out on this network. All 598 automated tests pass. A real phone call through Cloudflare remains pending; the rejection check does not establish live audio streaming.

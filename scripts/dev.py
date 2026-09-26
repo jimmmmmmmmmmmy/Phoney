@@ -140,14 +140,14 @@ def terminate(record, timeout=5):
 
 
 def tunnel_environment():
-    """Keep the standalone CLI dependency-free; .env overrides shell provider."""
+    """Keep the standalone CLI dependency-free; .env overrides tunnel settings."""
     environment = dict(os.environ)
     path = ROOT / ".env"
     for line in path.read_text().splitlines() if path.exists() else []:
-        match = re.match(r"^\s*(?:export\s+)?TUNNEL_PROVIDER\s*=\s*(.*?)\s*$", line)
+        match = re.match(r"^\s*(?:export\s+)?(TUNNEL_PROVIDER|TUNNEL_TRANSPORT_PROTOCOL)\s*=\s*(.*?)\s*$", line)
         if match:
-            value = match.group(1).split(" #", 1)[0].strip().strip("\"'")
-            environment["TUNNEL_PROVIDER"] = value
+            value = match.group(2).split(" #", 1)[0].strip().strip("\"'")
+            environment[match.group(1)] = value
     return environment
 
 
@@ -262,6 +262,9 @@ def _ensure_ngrok(state, environment, stopping):
 
 
 def _ensure_cloudflare(state, environment, stopping):
+    protocol = environment.get("TUNNEL_TRANSPORT_PROTOCOL", "auto").strip().lower()
+    if protocol not in ("auto", "http2", "quic"):
+        raise RuntimeError("TUNNEL_TRANSPORT_PROTOCOL must be auto, http2, or quic.")
     record = state.get("cloudflared")
     if not owned(record):
         if not available(4041):
@@ -279,7 +282,8 @@ def _ensure_cloudflare(state, environment, stopping):
         # Verify that ownership checks can run before launching a connector.
         listener_pids(4041)
         check_stopping(stopping)
-        spawn("cloudflared", [executable, "tunnel", "--no-autoupdate", "--url", BASE,
+        spawn("cloudflared", [executable, "tunnel", "--no-autoupdate", "--protocol", protocol,
+                              "--url", BASE,
                               "--metrics", "127.0.0.1:4041", "--output", "json"],
               state, environment=environment)
         record = state["cloudflared"]

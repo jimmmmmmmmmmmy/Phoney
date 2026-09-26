@@ -80,7 +80,7 @@ def test_cloudflare_starts_preserves_app_and_persists_private_state(sandbox):
     assert state["app"] == app
     assert state["public_url"] == state["cloudflared"]["public_url"] == URL
     assert state["tunnel_provider"] == "cloudflare"
-    assert sandbox.launched == [("cloudflared", ["/test/cloudflared", "tunnel", "--no-autoupdate",
+    assert sandbox.launched == [("cloudflared", ["/test/cloudflared", "tunnel", "--no-autoupdate", "--protocol", "auto",
         "--url", dev.BASE, "--metrics", "127.0.0.1:4041", "--output", "json"], environment)]
     assert (dev.ROOT / ".env").read_text() == "PRESERVE_ME=yes\nPUBLIC_BASE_URL=" + URL + "\n"
     assert stat.S_IMODE(dev.STATE.stat().st_mode) == 0o600
@@ -343,3 +343,16 @@ def test_stop_handles_both_providers(sandbox):
     assert dev.stop() == 0
     assert sandbox.stopped == [(records["app"], 40), (records["ngrok"], 5), (records["cloudflared"], 5)]
     assert not dev.STATE.exists()
+
+
+def test_http2_override_from_dotenv_reaches_cloudflare(sandbox):
+    (dev.ROOT / ".env").write_text("TUNNEL_PROVIDER=cloudflare\nTUNNEL_TRANSPORT_PROTOCOL=http2\n")
+    dev.ensure_tunnel(dev.tunnel_environment())
+    args = sandbox.launched[0][1]
+    assert args[args.index("--protocol") + 1] == "http2"
+
+
+def test_invalid_cloudflare_protocol_never_launches_connector(sandbox):
+    with pytest.raises(RuntimeError, match="TUNNEL_TRANSPORT_PROTOCOL"):
+        dev.ensure_tunnel({"TUNNEL_PROVIDER": "cloudflare", "TUNNEL_TRANSPORT_PROTOCOL": "invalid"})
+    assert sandbox.launched == []

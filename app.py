@@ -44,7 +44,7 @@ def create_app(settings: Settings) -> FastAPI:
     async def voice(form=Depends(validate_twilio)):
         logger.info("build0_voice call_sid=%s", form["CallSid"])
         response = VoiceResponse()
-        response.say("Operator online. Build zero is ready.", language="en-US")
+        response.say("New College Data Science Team", language="en-US")
         response.hangup()
         return Response(str(response), media_type="application/xml")
 

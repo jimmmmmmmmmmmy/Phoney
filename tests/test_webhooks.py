@@ -31,7 +31,7 @@ def test_valid_webhook_speaks_then_hangs_up(client):
     xml = ET.fromstring(response.text)
     assert xml.tag == "Response"
     assert [child.tag for child in xml] == ["Say", "Hangup"]
-    assert "Operator online" in xml.find("Say").text
+    assert xml.find("Say").text == "New College Data Science Team"
 
 
 def test_unsigned_and_modified_requests_rejected(client):

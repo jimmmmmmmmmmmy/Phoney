@@ -4,7 +4,7 @@ python3 scripts/dev.py status
 
 # Passive Operator — Build 0
 
-**Build 0:** call the configured Twilio number and hear **“Operator online. Build zero is ready.”** The call then ends. FastAPI serves the voice webhook through ngrok. Build 1 is a separate implementation: connect two humans in a conference, with no AI. Follow [the Build 1 plan](docs/BUILD_1.md) when Build 0 passes the phone test.
+**Build 0:** call the configured Twilio number and hear **“New College Data Science Team”**. The call then ends. FastAPI serves the voice webhook through ngrok. Build 1 is a separate implementation: connect two humans in a conference, with no AI. Follow [the Build 1 plan](docs/BUILD_1.md) when Build 0 passes the phone test.
 
 ## Start locally
 
@@ -37,7 +37,7 @@ Allow about 5 minutes with Python, ngrok, and Twilio credentials ready.
 
    This updates the number specified by `TWILIO_NUMBER` to `PUBLIC_BASE_URL/voice` with method **POST** and verifies it. Run without `--apply` to inspect settings without changing them. Repeat after a restart if the ngrok URL changes. The same fields are in the Twilio console under the number’s **Voice → Handling for incoming calls**.
 
-5. Call the Twilio number from a phone. **Pass:** you hear “Operator online. Build zero is ready.” and the call ends. A passing HTTP test alone does not verify the telephone call.
+5. Call the Twilio number from a phone. **Pass:** you hear “New College Data Science Team” and the call ends. A passing HTTP test alone does not verify the telephone call.
 
 Keep this computer awake while testing. The local app and ngrok must both remain running.
 

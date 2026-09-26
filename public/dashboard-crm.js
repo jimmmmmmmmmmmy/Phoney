@@ -2,11 +2,12 @@
   "use strict";
   const STORAGE_KEY = "hacking-banyons.contacts.v1";
   const MAX_CONTACTS = 500;
+  const contactCategories = [["all", "All contacts"], ["real-estate", "Real Estate"], ["legal", "Legal"], ["customers", "Customers"]];
   const demoContacts = [
-    {id: "demo-alex-morgan", firstName: "Alex", lastName: "Morgan", phone: "+19415550101", email: "alex.morgan@example.com", company: "Cedar House Studio", address: "Sarasota, FL", website: "https://example.com", status: "Follow up", createdAt: "2026-07-06T14:00:00Z", note: "Send the updated consultation times before the next call.", demo: true},
-    {id: "demo-maya-patel", firstName: "Maya", lastName: "Patel", phone: "+19415550102", email: "maya.patel@example.com", company: "Harbor Community Market", address: "Bradenton, FL", status: "Active", createdAt: "2026-07-12T14:00:00Z", note: "Prefers a short afternoon check-in.", demo: true},
-    {id: "demo-casey-reed", firstName: "Casey", lastName: "Reed", phone: "+19415550103", email: "casey.reed@example.com", company: "Northside Workshop", address: "Tampa, FL", status: "Follow up", createdAt: "2026-08-01T14:00:00Z", note: "Confirm the workshop attendee count at the next check-in.", demo: true},
-    {id: "demo-jordan-ellis", firstName: "Jordan", lastName: "Ellis", phone: "+19415550104", email: "jordan.ellis@example.com", company: "Sunroom Books", address: "St. Petersburg, FL", status: "Active", createdAt: "2026-08-20T14:00:00Z", note: "Interested in a follow-up demonstration after the event.", demo: true}
+    {id: "demo-alex-morgan", labels: ["Real Estate"], firstName: "Alex", lastName: "Morgan", phone: "+19415550101", email: "alex.morgan@example.com", company: "Cedar House Studio", address: "Sarasota, FL", website: "https://example.com", status: "Follow up", createdAt: "2026-07-06T14:00:00Z", note: "Send the updated consultation times before the next call.", demo: true},
+    {id: "demo-maya-patel", labels: ["Customers"], firstName: "Maya", lastName: "Patel", phone: "+19415550102", email: "maya.patel@example.com", company: "Harbor Community Market", address: "Bradenton, FL", status: "Active", createdAt: "2026-07-12T14:00:00Z", note: "Prefers a short afternoon check-in.", demo: true},
+    {id: "demo-casey-reed", labels: ["Legal"], firstName: "Casey", lastName: "Reed", phone: "+19415550103", email: "casey.reed@example.com", company: "Northside Workshop", address: "Tampa, FL", status: "Follow up", createdAt: "2026-08-01T14:00:00Z", note: "Confirm the workshop attendee count at the next check-in.", demo: true},
+    {id: "demo-jordan-ellis", labels: ["Customers"], firstName: "Jordan", lastName: "Ellis", phone: "+19415550104", email: "jordan.ellis@example.com", company: "Sunroom Books", address: "St. Petersburg, FL", status: "Active", createdAt: "2026-08-20T14:00:00Z", note: "Interested in a follow-up demonstration after the event.", demo: true}
   ];
   const demoCalls = [
     {id: "demo-call-sep08", contactId: "demo-alex-morgan", title: "Consultation follow-up", startedAt: "2026-09-08T18:30:00Z", duration: 284, direction: "Outbound", outcome: "Follow-up needed", summary: "Alex reviewed the consultation options and asked for two revised appointment times. A follow-up is needed once the schedule is confirmed.", transcript: [["New College", "Hi Alex, I’m following up on the consultation we discussed."], ["Alex", "Thanks for calling. I’m interested, but the original time no longer works."], ["New College", "Would a morning appointment or a late afternoon appointment be easier?"], ["Alex", "Late afternoon is best. Could you send me two options?"], ["New College", "Absolutely. We’ll follow up with two afternoon times."], ["Alex", "Perfect, thank you."]]},
@@ -25,6 +26,7 @@
   function link(text, href, className) { const a = node("a", className, text); a.href = href; return a; }
   function fullName(contact) { return `${contact.firstName} ${contact.lastName}`; }
   function badge(contact) { return node("span", `crm-demo${contact.demo ? "" : " crm-local"}`, contact.demo ? "Demo" : "This browser"); }
+  function contactLabels(contact) { return (contact.labels || []).map(label => node("span", "crm-label", label)); }
   function initials(contact) { return (contact.firstName.slice(0, 1) + contact.lastName.slice(0, 1)).toUpperCase(); }
   function contacts() { return [...localContacts, ...demoContacts]; }
   function normalizePhone(value) { return typeof value === "string" ? value.replace(/[\s().-]/g, "") : ""; }
@@ -39,21 +41,82 @@
   function dateTime(value) { const parsed = new Date(value); return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString("en-US", {month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit"}) : "—"; }
   function duration(seconds) { if (!Number.isFinite(seconds)) return "—"; return seconds < 60 ? `${Math.round(seconds)}s` : `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`; }
   function callsFor(contact) { return [...demoCalls.filter(c => c.contactId === contact.id), ...realCalls.filter(c => c.phone === contact.phone)].sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt)); }
-  function sourceNotice() { const n = node("div", "crm-notice"); n.append(node("span", "crm-demo", "Demo workspace"), node("p", "", "4 fictional contacts and 4 sample conversations from July–September 2026. Contacts you create are saved only in this browser.")); return n; }
   function metric(label, value, caption) { const box = node("div", "crm-metric"), dd = node("dd", "", value); if (caption) dd.append(node("small", "", caption)); box.append(node("dt", "", label), dd); return box; }
   function status(contact) { return node("span", `crm-status ${contact.status === "Follow up" ? "crm-status-followup" : contact.status === "New" ? "crm-status-new" : ""}`, contact.status); }
   function validStoredContact(value) { return value && typeof value === "object" && /^local-[a-zA-Z0-9-]{8,80}$/.test(value.id) && ["firstName", "lastName"].every(k => typeof value[k] === "string" && value[k].trim() && value[k].length <= 80) && phonePattern.test(value.phone) && typeof value.createdAt === "string" && Number.isFinite(Date.parse(value.createdAt)) && ["email", "address", "website"].every(k => value[k] === undefined || (typeof value[k] === "string" && value[k].length <= 400)) && (!value.website || /^https?:\/\//i.test(value.website)); }
   function readStorage() { try { const raw = localStorage.getItem(STORAGE_KEY); if (!raw) return; const data = JSON.parse(raw); if (!data || data.version !== 1 || !Array.isArray(data.contacts) || data.contacts.length > MAX_CONTACTS || !data.contacts.every(validStoredContact)) throw new Error("invalid"); const ids = new Set(); localContacts = data.contacts.filter(c => { if (ids.has(c.id)) return false; ids.add(c.id); return true; }).map(c => ({id: c.id, firstName: c.firstName.trim(), lastName: c.lastName.trim(), phone: c.phone, email: c.email || "", address: c.address || "", website: c.website || "", createdAt: c.createdAt, status: "New", demo: false})); } catch (_) { storageWarning = "Saved contacts could not be loaded from this browser. Demo contacts are still available. New contacts cannot be saved until browser storage is available."; } }
-  function filteredContacts() { const query = searchText.trim().toLowerCase(); return contacts().filter(c => (listFilter === "all" || (listFilter === "followup" && c.status === "Follow up") || (listFilter === "demo" && c.demo) || (listFilter === "local" && !c.demo)) && (!query || [fullName(c), c.phone, c.email, c.company].some(value => String(value || "").toLowerCase().includes(query)))); }
-  function renderTable(container, count) { const matches = filteredContacts(); container.replaceChildren(); count.textContent = `${matches.length} ${matches.length === 1 ? "contact" : "contacts"}`; if (!matches.length) { const empty = node("div", "crm-empty"); empty.append(node("strong", "", "No contacts found"), node("p", "", searchText || listFilter !== "all" ? "Try another search or view all contacts." : "Create a contact to get started.")); container.append(empty); return; } const table = node("table", "crm-table"), thead = node("thead"), hr = node("tr"); table.setAttribute("aria-label", "Contacts and call activity"); for (const [label, cls] of [["Contact", ""], ["Phone number", "crm-phone-column"], ["Status", "crm-status-column"], ["Calls", ""], ["Last contact", ""]]) { const th = node("th", cls, label); th.scope = "col"; hr.append(th); } thead.append(hr); const tbody = node("tbody"); for (const contact of matches) { const callHistory = callsFor(contact), row = node("tr"), cell = node("td"), person = node("div", "crm-person"), body = node("div"), name = node("div", "crm-person-name"); name.append(link(fullName(contact), `#contacts/${contact.id}`, "crm-link"), badge(contact)); body.append(name, node("div", "crm-person-sub", contact.email || contact.phone)); person.append(node("span", "crm-avatar", initials(contact)), body); cell.append(person); const statusCell = node("td", "crm-status-column"); statusCell.append(status(contact)); row.append(cell, node("td", "crm-phone-column", contact.phone), statusCell, node("td", "", callHistory.length), node("td", "crm-muted", callHistory.length ? date(callHistory[0].startedAt, false) : "No calls yet")); tbody.append(row); } table.append(thead, tbody); container.append(table); }
-  function fillListMetrics(metrics) {
-    const allCalls = contacts().flatMap(contact => callsFor(contact));
-    const talk = allCalls.reduce((sum, call) => sum + (call.duration || 0), 0);
-    metrics.replaceChildren(metric("Contacts", contacts().length, `${localContacts.length} saved in this browser`),
-      metric("Conversations", allCalls.length, "4 sample conversations"), metric("Talk time", `${Math.floor(talk / 60)}m`, "Across all conversations"),
-      metric("Follow-ups", contacts().filter(contact => contact.status === "Follow up").length, "Contacts to reconnect with"));
+  function filteredContacts() {
+    const query = searchText.trim().toLowerCase();
+    const category = contactCategories.find(([key]) => key === listFilter)?.[1];
+    return contacts().filter(contact => (listFilter === "all" || (contact.labels || []).includes(category)) &&
+      (!query || [fullName(contact), contact.phone, contact.email, contact.company].some(value => String(value || "").toLowerCase().includes(query))));
   }
-  function renderList() { const section = node("div", "crm"), topline = node("div", "crm-topline"), add = button("New contact", "crm-button crm-button-primary", openCreateContact); add.prepend(icon("plus")); topline.append(node("p", "", "Your people, conversations, and next steps."), add); section.append(topline); if (successMessage) { const success = node("p", "crm-save-status", successMessage); success.setAttribute("role", "status"); section.append(success); } if (storageWarning) section.append(node("p", "crm-error", storageWarning)); section.append(sourceNotice()); const metrics = node("dl", "crm-metrics"); fillListMetrics(metrics); section.append(metrics); const filters = node("div", "crm-filters"); filters.setAttribute("aria-label", "Filter contacts"); const tableWrap = node("div", "crm-table-wrap"), resultCount = node("p", "crm-result-count"); resultCount.setAttribute("aria-live", "polite"); for (const [key, label] of [["all", "All contacts"], ["followup", "Follow up"], ["demo", "Demo contacts"], ["local", "This browser"]]) { const filter = button(label, "crm-filter", () => { listFilter = key; for (const sibling of filters.children) sibling.setAttribute("aria-pressed", String(sibling === filter)); renderTable(tableWrap, resultCount); }); filter.setAttribute("aria-pressed", String(listFilter === key)); filters.append(filter); } const search = node("label", "crm-search"), input = node("input"); input.type = "search"; input.placeholder = "Search by name, phone, or email"; input.setAttribute("aria-label", "Search contacts"); input.value = searchText; input.addEventListener("input", () => { searchText = input.value; renderTable(tableWrap, resultCount); }); search.append(icon("search"), input); section.append(filters, search, tableWrap, resultCount); renderTable(tableWrap, resultCount); listUI = {tableWrap, resultCount, metrics}; return section; }
+  function renderTable(container, count) { const matches = filteredContacts(); container.replaceChildren(); count.textContent = `${matches.length} ${matches.length === 1 ? "contact" : "contacts"}`; if (!matches.length) { const empty = node("div", "crm-empty"); empty.append(node("strong", "", "No contacts found"), node("p", "", searchText || listFilter !== "all" ? "Try another search or view all contacts." : "Create a contact to get started.")); container.append(empty); return; } const table = node("table", "crm-table"), thead = node("thead"), hr = node("tr"); table.setAttribute("aria-label", "Contacts and call activity"); for (const [label, cls] of [["Contact", ""], ["Phone number", "crm-phone-column"], ["Status", "crm-status-column"], ["Calls", ""], ["Last contact", ""]]) { const th = node("th", cls, label); th.scope = "col"; hr.append(th); } thead.append(hr); const tbody = node("tbody"); for (const contact of matches) { const callHistory = callsFor(contact), row = node("tr"), cell = node("td"), person = node("div", "crm-person"), body = node("div"), name = node("div", "crm-person-name"); name.append(link(fullName(contact), `#contacts/${contact.id}`, "crm-link"), ...contactLabels(contact)); body.append(name, node("div", "crm-person-sub", contact.email || contact.phone)); person.append(node("span", "crm-avatar", initials(contact)), body); cell.append(person); const statusCell = node("td", "crm-status-column"); statusCell.append(status(contact)); row.append(cell, node("td", "crm-phone-column", contact.phone), statusCell, node("td", "", callHistory.length), node("td", "crm-muted", callHistory.length ? date(callHistory[0].startedAt, false) : "No calls yet")); tbody.append(row); } table.append(thead, tbody); container.append(table); }
+  function renderList() {
+    const section = node("div", "crm"), topline = node("div", "crm-topline");
+    const filters = node("div", "crm-filters"), panel = node("div");
+    filters.setAttribute("role", "tablist");
+    filters.setAttribute("aria-label", "Contact categories");
+    panel.id = "crm-contact-list";
+    panel.setAttribute("role", "tabpanel");
+    const tableWrap = node("div", "crm-table-wrap"), resultCount = node("p", "crm-result-count");
+    resultCount.setAttribute("aria-live", "polite");
+    function selectCategory(key, filter) {
+      listFilter = key;
+      for (const sibling of filters.children) {
+        const selected = sibling === filter;
+        sibling.setAttribute("aria-selected", String(selected));
+        sibling.tabIndex = selected ? 0 : -1;
+      }
+      panel.setAttribute("aria-labelledby", filter.id);
+      renderTable(tableWrap, resultCount);
+    }
+    for (const [key, label] of contactCategories) {
+      const filter = button(label, "crm-filter", () => selectCategory(key, filter));
+      const selected = listFilter === key;
+      filter.id = `crm-category-${key}`;
+      filter.setAttribute("role", "tab");
+      filter.setAttribute("aria-controls", panel.id);
+      filter.setAttribute("aria-selected", String(selected));
+      filter.tabIndex = selected ? 0 : -1;
+      if (selected) panel.setAttribute("aria-labelledby", filter.id);
+      filter.addEventListener("keydown", event => {
+        const tabs = [...filters.children], index = tabs.indexOf(filter);
+        let next;
+        if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+        else if (event.key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = tabs.length - 1;
+        else return;
+        event.preventDefault();
+        tabs[next].click();
+        tabs[next].focus();
+      });
+      filters.append(filter);
+    }
+    const add = button("New contact", "crm-button crm-button-primary", openCreateContact);
+    add.prepend(icon("plus"));
+    topline.append(filters, add);
+    section.append(topline);
+    if (successMessage) {
+      const success = node("p", "crm-save-status", successMessage);
+      success.setAttribute("role", "status");
+      section.append(success);
+    }
+    if (storageWarning) section.append(node("p", "crm-error", storageWarning));
+    const search = node("label", "crm-search"), input = node("input");
+    input.type = "search";
+    input.placeholder = "Search by name, phone, or email";
+    input.setAttribute("aria-label", "Search contacts");
+    input.value = searchText;
+    input.addEventListener("input", () => { searchText = input.value; renderTable(tableWrap, resultCount); });
+    search.append(icon("search"), input);
+    panel.append(search, tableWrap, resultCount);
+    section.append(panel);
+    renderTable(tableWrap, resultCount);
+    listUI = {tableWrap, resultCount};
+    return section;
+  }
   function historyCard(call, contact) { const item = node("details", "crm-call"); item.open = expandedCalls.has(call.id); item.addEventListener("toggle", () => { if (item.open) expandedCalls.add(call.id); else expandedCalls.delete(call.id); }); const summary = node("summary"), callIcon = node("span", "crm-call-icon"), main = node("div", "crm-call-main"), meta = node("div", "crm-call-meta"), chevron = icon("chevron"); summary.id = `crm-summary-${call.id}`; chevron.classList.add("crm-call-chevron"); callIcon.append(icon("phone")); meta.append(node("span", "", dateTime(call.startedAt)), node("span", "", "·"), node("span", "", call.direction), node("span", "", "·"), node("span", "", call.outcome)); main.append(node("div", "crm-call-title", call.title), meta); summary.append(callIcon, main, node("span", "crm-call-duration", duration(call.duration)), chevron); const content = node("div", "crm-call-content"); content.append(node("p", "crm-call-summary", call.summary || "No summary available yet.")); if (call.real) {
       const transcriptLink = link("Open call transcript →", `#calls/${call.collection || "recent"}/${call.id}`, "crm-button");
       transcriptLink.addEventListener("click", event => {
@@ -64,7 +127,7 @@
       content.append(transcriptLink);
     } else { content.append(node("p", "crm-conversation-note", "Sample transcript · Fictional conversation · No audio recording")); const transcript = node("div", "crm-transcript"); transcript.setAttribute("aria-label", `Sample transcript with ${fullName(contact)}`); for (const [speaker, text] of call.transcript) { const turn = node("div", "crm-turn"); turn.append(node("strong", "", speaker), node("p", "", text)); transcript.append(turn); } content.append(transcript); } item.append(summary, content); return item; }
   function detailItem(label, value) { const item = node("div"), dd = node("dd"); dd.append(value instanceof Node ? value : document.createTextNode(value || "—")); item.append(node("dt", "", label), dd); return item; }
-  function renderProfile(contact) { const section = node("div", "crm"), heading = node("div", "crm-profile-heading"); heading.append(link("← All contacts", "#contacts", "crm-link crm-back")); const title = node("div", "crm-profile-title"), titleText = node("div"), titleLine = node("div", "crm-profile-name"); const profileTitle = node("h2", "", fullName(contact)); profileTitle.id = "crm-profile-title"; profileTitle.tabIndex = -1; titleLine.append(profileTitle, badge(contact)); titleText.append(titleLine, node("p", "crm-profile-subtitle", contact.company || contact.phone)); title.append(node("span", "crm-avatar", initials(contact)), titleText); heading.append(title); section.append(heading); if (successMessage && contact.id === savedContactId) { const saved = node("p", "crm-save-status", successMessage); saved.setAttribute("role", "status"); section.append(saved); } const notice = node("div", "crm-notice"); notice.append(badge(contact), node("p", "", contact.demo ? "This is a fictional contact with sample call history. No calls have been placed to this number." : "Saved in this browser. This contact is not shared with other devices.")); section.append(notice); const history = callsFor(contact), sum = history.reduce((total, c) => total + (c.duration || 0), 0), metrics = node("dl", "crm-metrics"); metrics.append(metric("Conversations", history.length, history.length ? "Inbound and outbound calls" : "No conversations yet"), metric("Talk time", duration(sum), "Total conversation time"), metric("Last contact", history.length ? date(history[0].startedAt, false) : "—", history.length ? String(new Date(history[0].startedAt).getFullYear()) : "No calls yet"), metric("Relationship", contact.status, contact.status === "Follow up" ? "A next step is pending" : contact.demo ? "Demo contact" : "New contact")); section.append(metrics); const layout = node("div", "crm-profile-layout"), main = node("section"), callHeading = node("div", "crm-section-title"), historyList = node("div", "crm-history"); callHeading.append(node("h3", "", "Conversations"), node("span", "", `${history.length} ${history.length === 1 ? "call" : "calls"}`)); main.append(callHeading); if (history.length) history.forEach(c => historyList.append(historyCard(c, contact))); else { const empty = node("div", "crm-empty"); empty.append(node("strong", "", "No conversations yet"), node("p", "", "Calls from this phone number will appear here when available.")); historyList.append(empty); } main.append(historyList); if (contact.note) { const note = node("div", "crm-note"); note.append(node("strong", "", "Next step"), node("p", "", contact.note)); main.append(note); } const aside = node("section", "crm-profile-details"), detailsHeading = node("div", "crm-section-title"), details = node("dl", "crm-details"); detailsHeading.append(node("h3", "", "Contact details")); details.append(detailItem("Phone number", contact.phone), detailItem("Email", contact.email), detailItem("Address", contact.address), detailItem("Website", contact.website), detailItem("Contact since", date(contact.createdAt)), detailItem("Status", status(contact)), detailItem("Contact ID", contact.id)); aside.append(detailsHeading, details); layout.append(main, aside); section.append(layout); return section; }
+  function renderProfile(contact) { const section = node("div", "crm"), heading = node("div", "crm-profile-heading"); heading.append(link("← All contacts", "#contacts", "crm-link crm-back")); const title = node("div", "crm-profile-title"), titleText = node("div"), titleLine = node("div", "crm-profile-name"); const profileTitle = node("h2", "", fullName(contact)); profileTitle.id = "crm-profile-title"; profileTitle.tabIndex = -1; titleLine.append(profileTitle, badge(contact)); titleText.append(titleLine, node("p", "crm-profile-subtitle", contact.company || contact.phone)); title.append(node("span", "crm-avatar", initials(contact)), titleText); heading.append(title); section.append(heading); if (successMessage && contact.id === savedContactId) { const saved = node("p", "crm-save-status", successMessage); saved.setAttribute("role", "status"); section.append(saved); } const notice = node("div", "crm-notice"); notice.append(badge(contact), node("p", "", contact.demo ? "This is a fictional contact with sample call history. No calls have been placed to this number." : "Saved in this browser. This contact is not shared with other devices.")); section.append(notice); const history = callsFor(contact), sum = history.reduce((total, c) => total + (c.duration || 0), 0), metrics = node("dl", "crm-metrics"); metrics.append(metric("Conversations", history.length, history.length ? "Inbound and outbound calls" : "No conversations yet"), metric("Talk time", duration(sum), "Total conversation time"), metric("Last contact", history.length ? date(history[0].startedAt, false) : "—", history.length ? String(new Date(history[0].startedAt).getFullYear()) : "No calls yet"), metric("Relationship", contact.status, contact.status === "Follow up" ? "A next step is pending" : contact.demo ? "Demo contact" : "New contact")); section.append(metrics); const layout = node("div", "crm-profile-layout"), main = node("section"), callHeading = node("div", "crm-section-title"), historyList = node("div", "crm-history"); callHeading.append(node("h3", "", "Conversations"), node("span", "", `${history.length} ${history.length === 1 ? "call" : "calls"}`)); main.append(callHeading); if (history.length) history.forEach(c => historyList.append(historyCard(c, contact))); else { const empty = node("div", "crm-empty"); empty.append(node("strong", "", "No conversations yet"), node("p", "", "Calls from this phone number will appear here when available.")); historyList.append(empty); } main.append(historyList); if (contact.note) { const note = node("div", "crm-note"); note.append(node("strong", "", "Next step"), node("p", "", contact.note)); main.append(note); } const aside = node("section", "crm-profile-details"), detailsHeading = node("div", "crm-section-title"), details = node("dl", "crm-details"); detailsHeading.append(node("h3", "", "Contact details")); details.append(detailItem("Phone number", contact.phone), detailItem("Email", contact.email), detailItem("Address", contact.address), detailItem("Website", contact.website), detailItem("Contact since", date(contact.createdAt)), detailItem("Status", status(contact)), ...((contact.labels || []).length ? [detailItem("Labels", contact.labels.join(", "))] : []), detailItem("Contact ID", contact.id)); aside.append(detailsHeading, details); layout.append(main, aside); section.append(layout); return section; }
   function render() {
     if (!root) return;
     const route = window.location.hash;
@@ -80,7 +143,6 @@
     renderedRoute = route;
     const contact = contacts().find(candidate => candidate.id === parts[1]);
     if (sameRoute && !parts[1] && listUI && root.contains(listUI.tableWrap)) {
-      fillListMetrics(listUI.metrics);
       renderTable(listUI.tableWrap, listUI.resultCount);
     } else if (parts[1] && !contact) {
       const missing = node("div", "crm crm-empty");

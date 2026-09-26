@@ -1,4 +1,4 @@
-"""Caller/contact matching and browser-local contact change notifications."""
+"""Contact categories, caller matching, and browser-local change notifications."""
 
 from pathlib import Path
 import shutil
@@ -82,6 +82,26 @@ window.addEventListener('dashboard-contacts-changed', event => notifications.pus
 const $ = id => document.getElementById(id);
 const text = element => element.textContent + element.children.map(text).join(' ');
 const submit = () => $('crm-create-contact').children[0].dispatch('submit');
+const byRole = role => contactRoot.all().filter(element => element.getAttribute('role') === role);
+const tabs = () => byRole('tab');
+const tab = label => tabs().find(element => text(element).trim() === label);
+const rows = () => contactRoot.all().find(element => element.tagName === 'TBODY')?.children || [];
+const names = () => rows().map(row => text(row.all().find(element => element.tagName === 'A')).trim());
+const hasClass = (element, name) => element.className.split(/\s+/).includes(name);
+const hasMetrics = () => contactRoot.all().some(element => hasClass(element, 'crm-metrics'));
+const searchInput = () => contactRoot.all().find(element => element.getAttribute('aria-label') === 'Search contacts');
+const search = value => {searchInput().value = value; searchInput().dispatch('input');};
+const assertSelectedTab = label => {
+  assert.equal(byRole('tabpanel').length, 1);
+  const panel = byRole('tabpanel')[0];
+  for (const element of tabs()) {
+    const selected = text(element).trim() === label;
+    assert.equal(element.getAttribute('aria-selected'), String(selected));
+    assert.equal(Number(element.tabIndex ?? element.getAttribute('tabindex')), selected ? 0 : -1);
+    assert.equal(element.getAttribute('aria-controls'), panel.id);
+    if (selected) assert.equal(panel.getAttribute('aria-labelledby'), element.id);
+  }
+};
 """
 
 
@@ -187,3 +207,92 @@ assert.equal(writes, 0); assert.equal(stored, '{broken');
 assert.match(text($('crm-create-contact')), /could not be read/);
 assert.equal(window.DashboardCRM.findContactByPhone('+19415550101').name, 'Alex Morgan');
 """, before="storeContacts([CONTACT]);")
+
+
+def test_contact_list_uses_category_tabs_and_labels_without_workspace_fluff():
+    run_crm(r"""
+const originalStorage = stored;
+assert.equal(byRole('tablist').length, 1);
+assert.deepEqual(tabs().map(element => text(element).trim()), ['All contacts', 'Real Estate', 'Legal', 'Customers']);
+assertSelectedTab('All contacts');
+assert.equal(hasMetrics(), false);
+assert.doesNotMatch(text(contactRoot), /Demo workspace|fictional contacts and|sample conversations|saved in this browser|Demo contacts|This browser|Talk time|Follow-ups/);
+assert.deepEqual(names(), ['Avery Chen', 'Alex Morgan', 'Maya Patel', 'Casey Reed', 'Jordan Ellis']);
+for (const row of rows()) assert.doesNotMatch(text(row), /\bDemo\b|This browser/);
+assert.match(text(rows().find(row => text(row).includes('Alex Morgan'))), /Real Estate/);
+assert.match(text(rows().find(row => text(row).includes('Casey Reed'))), /Legal/);
+for (const name of ['Maya Patel', 'Jordan Ellis']) assert.match(text(rows().find(row => text(row).includes(name))), /Customers/);
+assert.doesNotMatch(text(rows()[0]), /Real Estate|Legal|Customers/);
+for (const [label, expected] of [['Real Estate', ['Alex Morgan']], ['Legal', ['Casey Reed']], ['Customers', ['Maya Patel', 'Jordan Ellis']]]) {
+  tab(label).click();
+  assertSelectedTab(label);
+  assert.deepEqual(names(), expected);
+}
+tab('All contacts').click();
+assert.equal(names().includes('Avery Chen'), true);
+assert.equal(stored, originalStorage);
+assert.equal(writes, 0);
+assert.equal(window.DashboardCRM.findContactByPhone(CONTACT.phone).name, 'Avery Chen');
+""", before="window.location.hash = '#contacts'; storeContacts([CONTACT]);")
+
+
+def test_contact_category_tabs_support_keyboard_navigation_and_focus():
+    run_crm(r"""
+tab('All contacts').focus();
+for (const [key, label, expected] of [
+  ['ArrowRight', 'Real Estate', ['Alex Morgan']],
+  ['ArrowRight', 'Legal', ['Casey Reed']],
+  ['End', 'Customers', ['Maya Patel', 'Jordan Ellis']],
+  ['ArrowRight', 'All contacts', ['Alex Morgan', 'Maya Patel', 'Casey Reed', 'Jordan Ellis']],
+  ['ArrowLeft', 'Customers', ['Maya Patel', 'Jordan Ellis']],
+  ['Home', 'All contacts', ['Alex Morgan', 'Maya Patel', 'Casey Reed', 'Jordan Ellis']]
+]) {
+  const event = document.activeElement.dispatch('keydown', {key});
+  assert.equal(event.defaultPrevented, true);
+  assertSelectedTab(label);
+  assert.equal(document.activeElement, tab(label));
+  assert.deepEqual(names(), expected);
+}
+const event = document.activeElement.dispatch('keydown', {key: 'Tab'});
+assert.equal(Boolean(event.defaultPrevented), false);
+assertSelectedTab('All contacts');
+""", before="window.location.hash = '#contacts';")
+
+
+def test_category_search_survives_call_refresh_and_profiles_keep_call_metrics():
+    run_crm(r"""
+tab('Customers').click();
+search('Maya');
+assert.deepEqual(names(), ['Maya Patel']);
+search('Alex');
+assert.deepEqual(names(), []);
+assert.match(text(contactRoot), /No contacts found/);
+search('Maya');
+searchInput().focus();
+contactRoot.scrollTop = 240;
+const input = searchInput();
+window.DashboardCRM.setSessions([{call_sid: 'CA11111111111111111111111111111111', status: 'completed',
+  started_at: '2026-09-25T17:00:00Z', ended_at: '2026-09-25T17:02:00Z',
+  call_detail: {caller_number: '+19415550102', started_at: '2026-09-25T17:00:00Z', duration_seconds: 120,
+    summary: {text: 'Confirmed a follow-up appointment.'}}}]);
+window.DashboardCRM.render();
+assertSelectedTab('Customers');
+assert.equal(searchInput(), input);
+assert.equal(searchInput().value, 'Maya');
+assert.equal(document.activeElement, input);
+assert.equal(contactRoot.scrollTop, 240);
+assert.deepEqual(names(), ['Maya Patel']);
+assert.equal(text(rows()[0].children[3]).trim(), '2');
+assert.equal(hasMetrics(), false);
+window.location.hash = '#contacts/demo-maya-patel'; window.DashboardCRM.render();
+assert.equal(hasMetrics(), true);
+assert.match(text(contactRoot), /Talk time/);
+assert.match(text(contactRoot), /Confirmed a follow-up appointment/);
+assert.match(text(contactRoot), /Sample transcript/);
+window.location.hash = '#contacts'; window.DashboardCRM.render();
+assertSelectedTab('Customers');
+assert.equal(searchInput().value, 'Maya');
+assert.deepEqual(names(), ['Maya Patel']);
+assert.equal(hasMetrics(), false);
+assert.equal(writes, 0);
+""", before="window.location.hash = '#contacts';")

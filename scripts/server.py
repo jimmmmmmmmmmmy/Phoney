@@ -2,14 +2,25 @@
 
 import argparse
 import fcntl
+import json
 import os
 from pathlib import Path
 import plistlib
+import re
+import shutil
 import subprocess
 import sys
 import time
 
-ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+HOST_ROOT = Path.home() / "Library/Application Support/NewCollegeOperator"
+POINTER = SOURCE_ROOT / ".runtime/server-root.json"
+ROOT = SOURCE_ROOT
+if POINTER.exists():
+    configured_root = Path(json.loads(POINTER.read_text())["path"])
+    if configured_root != HOST_ROOT:
+        raise RuntimeError("Unexpected server installation path in .runtime/server-root.json")
+    ROOT = configured_root
 LABEL = "com.newcollege.passive-operator"
 DOMAIN = f"gui/{os.getuid()}"
 SERVICE = f"{DOMAIN}/{LABEL}"
@@ -56,12 +67,58 @@ def unload():
                     time.sleep(0.1)
 
 
+def prepare_host():
+    """Keep launchd's program, cwd, logs, and credentials out of protected Documents."""
+    global ROOT, PYTHON, RUNTIME
+    original = ROOT
+    remote = "https://github.com/jimmmmmmmmmmmy/fictional-rotary-phone.git"
+    if not HOST_ROOT.exists():
+        subprocess.run(["git", "clone", remote, str(HOST_ROOT)], check=True, timeout=90)
+    else:
+        origin = subprocess.check_output(["git", "-C", str(HOST_ROOT), "remote", "get-url", "origin"], text=True).strip()
+        if origin != remote:
+            raise RuntimeError("The server installation directory belongs to another repository.")
+        if subprocess.check_output(["git", "-C", str(HOST_ROOT), "status", "--porcelain"], text=True).strip():
+            raise RuntimeError("The installed controller checkout has local edits; preserve them before reinstalling.")
+        subprocess.run(["git", "-C", str(HOST_ROOT), "pull", "--ff-only", "origin", "main"], check=True, timeout=90)
+    HOST_ROOT.chmod(0o700)
+    destination_runtime = HOST_ROOT / ".runtime"
+    destination_runtime.mkdir(mode=0o700, exist_ok=True)
+    destination_env = HOST_ROOT / ".env"
+    if not destination_env.exists():
+        shutil.copyfile(original / ".env", destination_env)
+    lines = [line for line in destination_env.read_text().splitlines()
+             if not re.match(r"^\s*(?:export\s+)?DEPLOY_TRIGGER_PATH\s*=", line)]
+    lines.append("DEPLOY_TRIGGER_PATH=" + json.dumps(str(destination_runtime / "deploy.trigger")))
+    destination_env.write_text("\n".join(lines) + "\n")
+    destination_env.chmod(0o600)
+    if original != HOST_ROOT:
+        for name in ("dev.json", "github-hook.json", "twilio-before.json"):
+            source, target = original / ".runtime" / name, destination_runtime / name
+            if source.exists() and not target.exists():
+                shutil.copyfile(source, target)
+                target.chmod(0o600)
+    host_python = HOST_ROOT / ".venv/bin/python"
+    if not host_python.exists():
+        subprocess.run([str(PYTHON), "-m", "venv", str(HOST_ROOT / ".venv")], check=True, timeout=90)
+    subprocess.run([str(host_python), "-m", "pip", "install", "--disable-pip-version-check", "-r",
+                    str(HOST_ROOT / "requirements-lock.txt")], check=True, timeout=600)
+    if SOURCE_ROOT != HOST_ROOT:
+        POINTER.parent.mkdir(mode=0o700, exist_ok=True)
+        with os.fdopen(os.open(POINTER, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600), "w") as handle:
+            json.dump({"path": str(HOST_ROOT)}, handle)
+    ROOT, PYTHON, RUNTIME = HOST_ROOT, host_python, destination_runtime
+
+
 def install():
     if sys.platform != "darwin":
         raise RuntimeError("This installer is for macOS. Run scripts/deploy.py run under your host's service manager.")
     if not PYTHON.exists():
         raise RuntimeError("Install the root .venv and requirements-lock.txt first.")
     verify_ownership()
+    if installed():
+        unload()
+    prepare_host()
     RUNTIME.mkdir(mode=0o700, exist_ok=True)
     RUNTIME.chmod(0o700)
     for filename in ("server.log", "server-error.log"):
@@ -81,8 +138,6 @@ def install():
         "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                                  "PYTHONUNBUFFERED": "1"},
     }
-    if installed():
-        unload()
     PLIST.parent.mkdir(parents=True, exist_ok=True)
     with PLIST.open("wb") as handle:
         plistlib.dump(config, handle)
@@ -111,6 +166,7 @@ def stop():
 
 
 def status():
+    print("Server installation: " + str(ROOT), flush=True)
     result = launch("print", SERVICE, check=False)
     print("Login service: " + ("loaded" if result.returncode == 0 else "stopped"))
     if result.returncode == 0:

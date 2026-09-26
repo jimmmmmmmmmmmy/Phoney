@@ -2,7 +2,9 @@
 python3 scripts/server.py status
 ```
 
-Run this from the repository on the server Mac to check the supervisor, tunnel, and deployed revision. The source repository is [jimmmmmmmmmmmy/fictional-rotary-phone](https://github.com/jimmmmmmmmmmmy/fictional-rotary-phone); the deployment branch is `main`.
+Run this from the project checkout on the server Mac to check the service location, supervisor, tunnel, and deployed revision. The source repository is [jimmmmmmmmmmmy/fictional-rotary-phone](https://github.com/jimmmmmmmmmmmy/fictional-rotary-phone); the deployment branch is `main`.
+
+The installed service lives at `~/Library/Application Support/NewCollegeOperator`, independently of your editable project folder. Its logs, releases, and configuration live there. The project's private `.runtime/server-root.json` records that location so `scripts/server.py` commands continue to manage the installed service from the project.
 
 ## Publish a change
 
@@ -12,9 +14,9 @@ Run this from the repository on the server Mac to check the supervisor, tunnel, 
 
 GitHub sends a signed push event to `PUBLIC_BASE_URL/github/webhook`. The receiver queues the event; while idle, the deployment supervisor checks the queue every second. It also fetches `main` at 30-second intervals between checks, so missed webhook deliveries do not require a manual pull. These are detection intervals: dependency installation, tests, and startup take additional time. Several closely spaced pushes may be combined into one deployment of the latest `main`.
 
-Each candidate gets its own checkout and Python environment under `.runtime/deploy/releases/<commit>`. The supervisor installs `requirements-lock.txt`, or `requirements-dev.txt` when the lock file is absent, runs `pytest`, and starts a candidate on local port `8001`. A candidate that fails preparation leaves the current app running. Health checks require `status: "ok"` and a `commit` matching `DEPLOY_COMMIT`. Activation moves the new release to port `8000`; failed activation restores the previous release. Switching the app can briefly interrupt requests.
+Each candidate gets its own checkout and Python environment under the installed service's `.runtime/deploy/releases/<commit>`. The supervisor installs `requirements-lock.txt`, or `requirements-dev.txt` when the lock file is absent, runs `pytest`, and starts a candidate on local port `8001`. A candidate that fails preparation leaves the current app running. Health checks require `status: "ok"` and a `commit` matching `DEPLOY_COMMIT`. Activation moves the new release to port `8000`; failed activation restores the previous release. Switching the app can briefly interrupt requests.
 
-**The running application code updates automatically from GitHub.** The editable root checkout stays in place; automatic deployments do not pull into it or reset uncommitted work. Keep code changes in Git and secrets in the server's local `.env`.
+**The running application code updates automatically from GitHub.** The editable project checkout stays in place; automatic deployments do not pull into it or reset uncommitted work. Keep code changes in Git and secrets in `~/Library/Application Support/NewCollegeOperator/.env` after installation.
 
 ## Grant teammate access
 
@@ -28,7 +30,7 @@ Grant write access only to trusted teammates. Their code, dependency installatio
 
 ## Set up server mode
 
-Allow about 5–10 minutes when Python 3.11+, authenticated ngrok, and the GitHub CLI (`gh`) are ready. `gh auth status` must show an account with repository administration access for webhook setup. The first release also needs internet access to install its dependencies.
+Installation takes about 2–5 minutes when Python 3.11+, authenticated ngrok, and the GitHub CLI (`gh`) are ready. `gh auth status` must show an account with repository administration access for webhook setup. Installation and the first release need internet access to fetch code and dependencies.
 
 1. Install the root environment:
 
@@ -37,31 +39,28 @@ Allow about 5–10 minutes when Python 3.11+, authenticated ngrok, and the GitHu
    .venv/bin/python -m pip install -r requirements-lock.txt
    ```
 
-2. Fill the local `.env` using `.env.example`. Preserve existing Twilio credentials. Set `DEPLOY_REPOSITORY` to `jimmmmmmmmmmmy/fictional-rotary-phone`, use a random `GITHUB_WEBHOOK_SECRET` of at least 32 characters, and set `DEPLOY_TRIGGER_PATH` to this repository's absolute `.runtime/deploy.trigger` path. Keep `.env` out of Git.
+2. Fill the project's local `.env` using `.env.example`. Preserve existing Twilio credentials. Set `DEPLOY_REPOSITORY` to `jimmmmmmmmmmmy/fictional-rotary-phone` and use a random `GITHUB_WEBHOOK_SECRET` of at least 32 characters. The installer sets `DEPLOY_TRIGGER_PATH` to the service's absolute `.runtime/deploy.trigger` path. Keep `.env` out of Git.
 
-3. Stop the manual development runner if it is active:
-
-   ```sh
-   python3 scripts/dev.py stop
-   ```
-
-4. Install the macOS service:
+3. Install the macOS service:
 
    ```sh
    python3 scripts/server.py install
    ```
 
-5. Run `python3 scripts/server.py status`, then call the Twilio number. For Build 0, expect **“New College Data Science Team”** and the call to end.
+4. Run `python3 scripts/server.py status`, then call the Twilio number. For Build 0, expect **“New College Data Science Team”** and the call to end.
+
+The installer creates the separate service checkout and Python environment. On first installation it copies the project's `.env` privately and migrates existing runner and webhook metadata so the current ngrok tunnel can be reused. Subsequent configuration changes belong in **`~/Library/Application Support/NewCollegeOperator/.env`**; editing the project's `.env` does not change the installed service's settings.
 
 The service runs as the macOS LaunchAgent `com.newcollege.passive-operator`. It starts at login and restarts if its supervisor exits. It starts or recovers the local app and ngrok tunnel and updates the Twilio voice webhook and GitHub push webhook when the public tunnel URL changes. Repository administration access is required to create or update the GitHub hook.
 
 The hook configuration helper supports an explicit setup or repair:
 
 ```sh
+cd "$HOME/Library/Application Support/NewCollegeOperator"
 .venv/bin/python scripts/configure_github.py --apply
 ```
 
-It creates or updates the repository's push webhook using the current `PUBLIC_BASE_URL` and the secret in `.env`. Running it without `--apply` inspects configuration. The Twilio equivalent is `.venv/bin/python scripts/configure_twilio.py --apply`.
+It creates or updates the repository's push webhook using the current `PUBLIC_BASE_URL` and the secret in the service's `.env`. Running it without `--apply` inspects configuration. From the same service directory, the Twilio equivalent is `.venv/bin/python scripts/configure_twilio.py --apply`.
 
 ## Operate and recover
 
@@ -69,11 +68,20 @@ It creates or updates the repository's push webhook using the current `PUBLIC_BA
 | --- | --- |
 | Inspect managed service | `python3 scripts/server.py status` |
 | Start the installed service | `python3 scripts/server.py start` |
-| Inspect deployment state | `.venv/bin/python scripts/deploy.py status` |
-| Retry the current remote revision after fixing a local cause | `.venv/bin/python scripts/deploy.py retry` |
+| Stop automatic deployment, app, and managed tunnel | `python3 scripts/server.py stop` |
+| Stop and remove the login service | `python3 scripts/server.py remove` |
 | Check the active application's health | `curl http://127.0.0.1:8000/health` |
 
-A failed revision is not continuously rebuilt. Fix the cause and use `retry`, or push a new commit. Keep status output and logs local; `.runtime/` is excluded from Git, as are `.env` and Python environments.
+A failed revision is not continuously rebuilt. After fixing a local cause, request a retry from the installed service directory:
+
+```sh
+cd "$HOME/Library/Application Support/NewCollegeOperator"
+.venv/bin/python scripts/deploy.py retry
+```
+
+Alternatively, push a new commit. In the service directory, `.venv/bin/python scripts/deploy.py status` prints detailed deployment state. Keep status output and logs local; `.runtime/` is excluded from Git, as are `.env` and Python environments.
+
+The following log paths are relative to `~/Library/Application Support/NewCollegeOperator`:
 
 | Log | What it explains |
 | --- | --- |
@@ -86,7 +94,7 @@ Run `python3 scripts/server.py stop` to disable the supervisor and stop the mana
 
 To undo a published application change, push a new commit that restores the intended code. The supervisor deploys that revision through the same dependency, test, and health checks. It does not rewrite GitHub history.
 
-The supervisor uses deployment-management scripts from the root checkout. Changes to those scripts on GitHub require a deliberate update of that checkout and service reinstall; deploying application releases does not replace the running supervisor. Before updating the root checkout, finish or preserve local edits and confirm `git status` is clean.
+The supervisor uses deployment-management scripts from the installed service checkout. Changes to those scripts require a deliberate service update and reinstall; deploying application releases does not replace the running supervisor. Keep the service's `.env` when maintaining it. Before updating your editable project checkout, finish or preserve local edits and confirm `git status` is clean.
 
 ## Keep the Mac available
 

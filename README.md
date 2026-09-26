@@ -10,6 +10,8 @@ Push changes to `main` in [fictional-rotary-phone](https://github.com/jimmmmmmmm
 
 The server Mac needs to be running, connected to the internet, and logged in. Repository writers can cause code to run with that Mac user's local file and credential access; invite trusted teammates only. A public repository link does not grant push access.
 
+The installed service lives at `~/Library/Application Support/NewCollegeOperator`. Its `.env` is the active server configuration after installation; the project checkout remains available for editing. `python3 scripts/server.py status` shows the service location and deployed revision.
+
 ## Start locally
 
 Allow about 5 minutes with Python, ngrok, and Twilio credentials ready.

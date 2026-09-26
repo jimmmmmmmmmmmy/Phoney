@@ -12,7 +12,7 @@ python3 scripts/server.py status
 
 Imagine calling a car dealership. You start the conversation, explain which car you want, and press `#1` when you want to step away. An agent that sounds like you continues the same call with the context already discussed. Instead of elevator music, the other party has your AI representative to talk to.
 
-The phone keypad becomes a prompt selector. These are proposed, configurable assignments:
+The phone keypad becomes a prompt selector. Implement these defaults, configurable before the call:
 
 | Command | Agent instructions |
 | --- | --- |
@@ -21,9 +21,21 @@ The phone keypad becomes a prompt selector. These are proposed, configurable ass
 | `#3` | Complete my saved enquiry, such as asking the dealership for an itemized quote. |
 | `#4` | Switch to another prompt I configured before the call. |
 
-Changing a prompt can route the conversation to a different agent/model while preserving your cloned voice. A proposed `#0` shortcut returns the speaking role to you and interrupts the agent. The final product supports both inbound and outbound calls routed through the operator; manual takeover works whether the other party is human or AI.
+Changing a prompt can route the conversation to a different agent/model while preserving your cloned voice. `#0` returns the speaking role to you and interrupts the agent. The final product supports both inbound and outbound calls routed through the operator; manual takeover works whether the other party is human or AI.
 
-Read [the final-build specification](docs/FINAL_BUILD.md) for the voice profile, handoff context, keypad routing prototype, and acceptance checks. **The current deployed build still only plays the team greeting.**
+### Build it this way
+
+Use **Python/FastAPI + two Twilio bidirectional Media Streams + Deepgram + Claude + ElevenLabs**. The Python bridge forwards the humans' audio until a keypad command substitutes the voice agent. For outbound calls, the server calls your phone first, you accept, and it calls the dealership. Both legs stay under the operator's control.
+
+1. **Bridge the phones.** Add session state, owner acceptance, signed media WebSockets, and two-way audio forwarding.
+2. **Prove takeover with a fixed clip.** Enroll your voice; make `#1` play a cloned phrase and `#0` interrupt it. Map the other keys to distinct profiles.
+3. **Connect the agent.** Stream transcription → context and selected prompt → text model → cloned speech, with interruption and return-to-human handling.
+4. **Handle phone menus and inbound calls.** Send IVR digits by updating only the remote call to play digits and reconnect its audio stream. Reuse the controller for incoming callers.
+5. **Keep it running.** Add owner alerts, summaries, call cleanup, and deployment draining so a push waits for active calls to finish.
+
+[**Implementation recipe →**](docs/IMPLEMENTATION.md) has exact modules, API routes, TwiML/Python examples, keypad parsing, audio mixing, timing policies, failure recovery, and a phone test for each stage. [**Voice provider adapters →**](docs/VOICE_STACK.md) has the actual cloning, STT, text-generation, and speech-streaming requests. [**Product behavior →**](docs/FINAL_BUILD.md) describes the dealership experience and acceptance criteria.
+
+The design includes workarounds for the platform gaps: Python supplies the audio switch, Twilio call updates supply phone-menu digits, and FFmpeg supplies format conversion when needed. **These are build instructions; the current deployed app still only plays the team greeting.** Start implementation with `operator_service/sessions.py` and the owner-only callback described in the recipe.
 
 ## GitHub and the running server
 

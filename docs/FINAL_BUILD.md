@@ -4,7 +4,7 @@
 
 This is the modern version of putting someone on hold: instead of leaving them with elevator music while you step away, your AI representative stays in the conversation. It sounds like you, knows what has already been said, and works on the task you assigned.
 
-**Status: product direction, not implemented.** The running Build 0 only speaks the team greeting. [Build 1](BUILD_1.md) remains the two-human switchboard milestone. This final-build direction extends the original inbound screening concept to user-controlled delegation on both inbound and outbound calls.
+**Status: specified for implementation.** The running Build 0 only speaks the team greeting. [Build 1](BUILD_1.md) remains the two-human switchboard milestone. Build the final behavior with the selected [Python bridge recipe](IMPLEMENTATION.md) and [voice API adapters](VOICE_STACK.md). This extends the original inbound screening concept to user-controlled delegation on both inbound and outbound calls.
 
 ## Example: calling a car dealership
 
@@ -18,16 +18,16 @@ The other party remains on the existing call throughout. The owner can stay conn
 
 ## Keypad as a prompt selector
 
-`#1`, `#2`, `#3`, and `#4` select saved instruction profiles for the agent. The exact assignments below are **proposed defaults**, configurable before a call; the required feature is switching between distinct prompts during the call.
+`#1`, `#2`, `#3`, and `#4` select saved instruction profiles for the agent. Implement the defaults below, configurable before a call; switching profiles preserves the conversation and voice.
 
-| Shortcut | Proposed profile | Example instructions |
+| Shortcut | Default profile | Example instructions |
 | --- | --- | --- |
 | `#1` | Continue for me | Take over using the conversation so far and my current goal. |
 | `#2` | Handle the wait | Stay on the line, respond when someone returns, and notify me when my attention is needed. |
 | `#3` | Complete this enquiry | Ask the saved questions; for a dealership, collect availability and an itemized quote. |
 | `#4` | My custom prompt | Switch to another owner-authored profile, such as comparing options or screening a suspicious caller. |
 
-Reserve `#0` as the proposed **return control to me** command. Its exact binding is configurable too. The owner must always have a way to interrupt agent speech and reclaim the call.
+Reserve `#0` as **return control to me**. It always interrupts agent speech and restores the owner's microphone, including during provider failures.
 
 Each shortcut supplies a trusted instruction update to the agent: it selects a prompt, updates the active goal, and routes the conversation to the configured agent/model if needed. The cloned voice can remain the same across all modes. This is the requested in-call prompt injection experience, implemented as owner-controlled instruction routing. Speech from the other party is conversation content; it cannot select a profile or overwrite the owner's instructions.
 
@@ -38,7 +38,7 @@ Each shortcut supplies a trusted instruction update to the agent: it selects a p
 | Inbound | An incoming call reaches the operator's Twilio number and is bridged to the owner. | Owner keypad command, or the separately configured AI-detection policy. |
 | Outbound | The owner requests a destination through an authenticated operator flow; the operator connects the owner and destination in a managed call. | Owner keypad command at any point after the call is connected. |
 
-A normal mobile call placed directly to the dealership does not automatically pass through this server. Outbound delegation requires the call to be routed through the operator from the start, for example through an app/callback flow or an access number. Choose that entry experience during implementation; both directions should then share the same handoff controller.
+Use the **owner-first callback** as the outbound entry experience: run the call script with the destination and goal, answer the operator's call, press `1` to accept, and let the server dial the dealership. This routes both phones through the Python bridge from the start. A normal mobile call placed directly to the dealership cannot be seized by this server later; the callback creates the managed call with the same ordinary handset experience. Both directions share one handoff controller.
 
 Manual takeover must work without first detecting an AI caller. The dealership can be a human, a phone menu, or another AI. Inbound AI detection remains an optional additional trigger for the same handoff flow.
 
@@ -77,25 +77,19 @@ Prepare the agent and confirm its audio path is ready before changing the owner'
 
 Treat repeated command events safely: one command must not create several agent participants. A mode change updates one active session, preserving its context and voice. If the agent fails, restore the owner's ability to speak and signal that the takeover ended.
 
-## Engineering work after the switchboard
+## Selected implementation
 
-1. **Outbound setup and ownership.** Add an authenticated call-start flow, destination handling, and explicit owner/remote/agent leg identities. Extend the inbound session model without assuming that the caller is always the remote party.
-2. **Owner keypad controls.** Prove a transport that receives owner-leg DTMF while the remote conversation remains connected. Parse complete `#`-prefixed commands with a short timeout; handle ordinary phone-menu digits deliberately.
-3. **Voice and agent bridge.** Select a voice-cloning provider and conversational runtime, enroll the owner voice, and prove two-way agent audio in the existing call. Validate latency, interruption, and voice consistency with real phone audio.
-4. **Context and prompt routing.** Add transcription, summaries, saved prompt profiles, versioned updates, and handoff generation tracking. Map each configured shortcut to a profile and optional agent/model route.
-5. **Return and resilience.** Add interruption, owner notification, call summaries, bounded agent duration, and failure recovery. Extend deployment handling so updating the server does not discard active call state.
+Build the final call path as **two Twilio bidirectional Media Streams joined by a Python audio router**. The owner's incoming stream supplies audio and keypad commands. The remote stream supplies the other person's audio. In human mode, forward both directions. In agent mode, replace owner-to-remote audio with cloned speech while the owner hears a monitor mix and keeps keypad control.
 
-The keypad/audio topology must be proven before promising these shortcuts. The current conference bridge plan does not yet establish a working mid-call DTMF receiver or a cloned-voice agent participant.
+Use **Deepgram Nova-3 → Claude Haiku 4.5 → ElevenLabs Flash v2.5** for the first working pipeline. Enroll the owner's voice before the call. Start with the provider adapters in [VOICE_STACK.md](VOICE_STACK.md), then attach them to the routing and cancellation controller.
 
-### Prototype the keypad route explicitly
+1. Build the owner-first callback, authenticated stream binding, and human audio bridge.
+2. Add `#1`–`#4` and `#0`, initially using fixed cloned clips to prove switching and interruption.
+3. Attach transcription, attributed context, prompt selection, and streaming cloned replies.
+4. Add real IVR navigation by temporarily replacing the remote call's TwiML with `<Play digits>` and a fresh stream. The remote Call SID remains the same; test and handle the reconnect gap.
+5. Add owner notification, inbound entry, summaries, lifecycle recovery, and call-aware deployment.
 
-Twilio's documented conference status events do not include DTMF callbacks. `<Gather>` cannot wrap `<Dial>`, and the verbs do not execute concurrently on a call leg. It also treats `#` as its default finish key, so a menu intended to collect a literal `#1` would need different settings. Sources: [Conference](https://www.twilio.com/docs/voice/twiml/conference), [Gather](https://www.twilio.com/docs/voice/twiml/gather), and [Dial](https://www.twilio.com/docs/voice/twiml/dial).
-
-**Proposed prototype, not a confirmed implementation:** give the owner and remote party separate bidirectional Media Streams and bridge their audio in the application. Each stream exposes its leg's inbound audio; the owner's stream also supplies the owner's DTMF events. Initially relay human audio. At takeover, replace owner-to-remote audio with the voice agent's output while continuing to deliver remote audio to the owner and agent. Consume control sequences only from the authenticated owner leg. Test latency and command isolation before selecting this as the final topology.
-
-Bidirectional streams accept audio and `clear` messages for queued playback, but `<Connect><Stream>` blocks subsequent TwiML; it does not simultaneously proceed into a conference on that same leg. Twilio supports inbound DTMF events for bidirectional streams, not unidirectional streams or outbound DTMF messages. Dealership phone-menu navigation therefore needs its own tested design. Sources: [Media Streams](https://www.twilio.com/docs/voice/media-streams) and [WebSocket messages](https://www.twilio.com/docs/voice/media-streams/websocket-messages).
-
-This application audio bridge would be a deliberate evolution of the early conference implementation. Keep Build 1's two-human conference milestone, then compare this prototype with any alternative telephony control path before building the final keypad experience.
+[IMPLEMENTATION.md](IMPLEMENTATION.md) defines the modules, routes, Python/TwiML examples, audio frames and mixing, exact keypad parser, IVR workarounds, session races, and stage-by-stage phone tests. Platform limitations become explicit adapter work in that recipe; they are not reasons to leave the feature unspecified. Live validation remains necessary before marking a stage complete.
 
 ## Final-build acceptance
 

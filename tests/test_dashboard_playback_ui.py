@@ -545,30 +545,110 @@ assert.ok(!visible($('voicemail-list')).includes(SID.slice(-12)));
 ''')
 
 
-def test_detail_navigation_uses_opened_order_and_back_restores_list_scroll_and_focus(tmp_path):
+def test_call_breadcrumbs_replace_stepper_and_clock_with_accessible_links():
+    parsed = AudioMarkup()
+    parsed.feed(HTML.read_text())
+    assert parsed.tags["call-breadcrumbs"] == "nav"
+    assert parsed.attributes["call-breadcrumbs"]["aria-label"] == "Call navigation"
+    assert parsed.tags["breadcrumb-calls"] == "a"
+    assert parsed.attributes["breadcrumb-calls"]["href"] == "#calls/recent"
+    assert parsed.tags["breadcrumb-caller"] == "a"
+    assert parsed.tags["breadcrumb-date"] == "span"
+    assert parsed.attributes["breadcrumb-date"]["aria-current"] == "page"
+    assert not {"detail-back", "detail-position", "detail-previous", "detail-next", "updated-at"} & set(parsed.ids)
+
+
+def test_calls_breadcrumb_returns_to_unfiltered_list_without_resetting_audio(tmp_path):
     run_browser_logic(tmp_path, r'''
-const newer={...session(),started_at:'2026-09-26T13:00:00Z'};
-state.snapshot=snapshot([newer,session(OTHER)],[recording(),recording(OTHER)]);render();
-$('collection-scroller').scrollTop=87;
-openCall();assert.deepEqual(state.detailOrder,[SID,OTHER]);
-assert.equal($('detail-previous').disabled,true);assert.equal($('detail-next').disabled,false);
-const THIRD='CA'+'c'.repeat(32);
-state.snapshot.sessions.unshift({...session(THIRD),started_at:'2026-09-26T14:00:00Z'});
-render();assert.deepEqual(state.detailOrder,[SID,OTHER]);
-state.paused=true;adjacentCall(1);
-assert.equal(state.selected,OTHER);assert.equal(state.detail,true);
-assert.equal($('detail-previous').disabled,false);assert.equal($('detail-next').disabled,true);
+state.snapshot=snapshot([session(),session(OTHER)],[recording(),recording(OTHER)]);
+state.snapshot.call_details={calls:[{call_sid:SID,caller_number:'+16562520233',started_at:'2026-09-26T16:46:00Z'}]};
+render();$('collection-scroller').scrollTop=87;openCall();
+assert.equal($('call-breadcrumbs').hidden,false);
+assert.equal($('breadcrumb-caller').textContent,'+16562520233');
+assert.equal($('breadcrumb-caller').getAttribute('href'),'#calls/recent?caller=%2B16562520233');
+assert.equal($('breadcrumb-caller-label').hidden,true);
+assert.equal($('breadcrumb-date').textContent,clockTime('2026-09-26T16:46:00Z',true));
 const audio=$('call-audio');audio.play();audio.currentTime=19;
 const src=audio.src,loads=audio.loads,pauses=audio.pauses;
-$('detail-back').events.click();
-assert.equal(state.collection,'recent');assert.equal(state.detail,false);
-assert.equal($('collection-scroller').scrollTop,87);
-assert.equal(document.activeElement.dataset.callSid,OTHER);
+let prevented=0;
+$('breadcrumb-calls').events.click({preventDefault(){prevented++;}});
+assert.equal(prevented,1);assert.equal(state.collection,'recent');assert.equal(state.detail,false);
+assert.equal(state.callerFilter,'');assert.equal(location.hash,'#calls/recent');
+assert.equal($('collection-scroller').scrollTop,87);assert.equal($('call-breadcrumbs').hidden,true);
 assert.equal(audio.src,src);assert.equal(audio.currentTime,19);assert.equal(audio.paused,false);
 assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
-$('audio-return').events.click();
-assert.equal(state.detail,true);assert.equal(state.selected,OTHER);
+state.paused=true;$('audio-return').events.click();
+assert.equal(state.detail,true);assert.equal(state.selected,SID);
 assert.equal(audio.currentTime,19);assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
+''')
+
+
+def test_caller_breadcrumb_filters_both_collections_through_polling_and_history(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const THIRD='CA'+'c'.repeat(32), FOURTH='CA'+'d'.repeat(32), phone='+16562520233';
+state.snapshot=snapshot([session(),session(OTHER),session(THIRD)],[recording()]);
+state.snapshot.call_details={calls:[{call_sid:SID,caller_number:phone},
+ {call_sid:OTHER,caller_number:'+16562520234'}, {call_sid:THIRD,caller_number:'+1 (656) 252-0233'}]};
+state.snapshot.voicemail.voicemails=[{call_sid:THIRD,recording_status:'completed'}];
+render();openCall();
+const audio=$('call-audio');audio.play();audio.currentTime=19;
+const loads=audio.loads,pauses=audio.pauses;
+$('breadcrumb-caller').events.click({preventDefault(){}});
+assert.equal(location.hash,'#calls/recent?caller=%2B16562520233');
+assert.equal(state.detail,false);assert.equal(state.selected,SID);assert.equal(state.callerFilter,phone);
+assert.equal($('breadcrumb-caller').hidden,true);assert.equal($('breadcrumb-caller-label').textContent,phone);
+assert.equal($('breadcrumb-caller-label').getAttribute('aria-current'),'page');
+assert.equal($('breadcrumb-date-item').hidden,true);
+assert.deepEqual($('call-list').children.map(row=>row.dataset.callSid),[SID]);
+assert.deepEqual($('voicemail-list').children.map(row=>row.dataset.callSid),[THIRD]);
+assert.equal($('recent-count').textContent,'1');assert.equal($('voicemail-count').textContent,'1');
+state.snapshot.sessions.push(session(FOURTH));
+state.snapshot.call_details.calls.push({call_sid:FOURTH,caller_number:phone});render();
+assert.deepEqual($('call-list').children.map(row=>row.dataset.callSid),[SID,FOURTH]);
+assert.equal($('recent-count').textContent,'2');
+showCollection('voicemail');assert.equal(location.hash,'#calls/voicemail?caller=%2B16562520233');
+assert.equal($('voicemail-panel').hidden,false);assert.equal(state.callerFilter,phone);
+showCollection('recent');openCall();
+assert.equal(location.hash,`#calls/recent/${SID}?caller=%2B16562520233`);
+state.paused=true;location.hash='#calls/voicemail?caller=%2B16562520233';handlers.get('popstate')();
+assert.equal(state.detail,false);assert.equal(state.collection,'voicemail');assert.equal(state.callerFilter,phone);
+assert.equal($('voicemail-list').children.length,1);
+location.hash='#calls/recent?caller=%2B16562520234';handlers.get('hashchange')();
+assert.equal(state.callerFilter,'+16562520234');assert.deepEqual($('call-list').children.map(row=>row.dataset.callSid),[OTHER]);
+location.hash=`#calls/recent/${SID}?caller=%2B16562520233`;handlers.get('popstate')();
+assert.equal(state.detail,true);assert.equal(state.callerFilter,phone);
+assert.equal(audio.currentTime,19);assert.equal(audio.paused,false);
+assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
+$('breadcrumb-calls').events.click({preventDefault(){}});
+assert.equal(state.callerFilter,'');assert.equal($('call-list').children.length,3);
+assert.equal(location.hash,'#calls/recent');
+''')
+
+
+def test_caller_navigation_handles_unknowns_native_links_and_external_call_selection(tmp_path):
+    run_browser_logic(tmp_path, r'''
+state.snapshot=snapshot([session(),session(OTHER)],[recording(),recording(OTHER)]);render();openCall();
+assert.equal($('breadcrumb-caller').hidden,true);
+assert.equal($('breadcrumb-caller').getAttribute('href'),null);
+assert.equal($('breadcrumb-caller-label').textContent,'Unknown caller');
+showCallerCalls();assert.equal(state.detail,true);assert.equal(state.callerFilter,'');
+state.snapshot.call_details={calls:[{call_sid:SID,caller_number:'+16562520233'},
+ {call_sid:OTHER,caller_number:'+16562520234'}]};render();
+let prevented=0;
+for(const id of ['breadcrumb-calls','breadcrumb-caller']){
+ $(id).events.click({metaKey:true,preventDefault(){prevented++;}});
+}
+assert.equal(prevented,0);assert.equal(state.detail,true);assert.equal(state.callerFilter,'');
+showCallerCalls();openCall(OTHER);
+assert.equal(state.callerFilter,'');assert.equal(location.hash,`#calls/recent/${OTHER}`);
+state.paused=true;
+for(const caller of ['unknown','%E0%A4%A','16562520233','%2B16562520233suffix']){
+ location.hash='#calls/recent?caller='+caller;handlers.get('hashchange')();
+ assert.equal(state.callerFilter,'');assert.equal($('call-list').children.length,2);
+}
+location.hash='#calls/recent?caller=%2B16562529999';handlers.get('hashchange')();
+assert.equal($('call-list').children.length,0);assert.equal($('sidebar-empty').hidden,false);
+assert.equal($('sidebar-empty').textContent,'No recent calls from this number.');
 ''')
 
 

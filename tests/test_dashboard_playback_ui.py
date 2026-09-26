@@ -670,7 +670,7 @@ assert.ok($('session-storage-warning').textContent.includes('last update'));
 assert.equal(state.transcriptRows[0].row.dataset.segmentId,'one');
 assert.equal(audio.src,src);assert.equal(audio.currentTime,17);assert.equal(audio.paused,false);
 assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
-assert.equal($('audio-download').href,src);assert.equal($('audio-return').hidden,true);
+assert.equal($('audio-download').href,src);assert.equal($('audio-return').hidden,false);
 ''')
 
 
@@ -855,4 +855,71 @@ assert.equal($('audio-return').textContent,expected);
 assert.equal(state.audioSession.call_sid,SID);
 state.audioSession.call_detail.started_at='invalid';renderNavigation();
 assert.equal($('audio-return').textContent,'Return to call · +19419930832 · Time unavailable →');
+''')
+
+
+@pytest.mark.parametrize("has_recording", [False, True])
+def test_return_link_stays_available_for_selected_call_across_views_and_recording_states(tmp_path, has_recording):
+    run_browser_logic(tmp_path, "const hasRecording=" + json.dumps(has_recording) + ";\n" + r'''
+state.snapshot=snapshot([session(),session(OTHER)],hasRecording?[recording()]:[]);render();
+assert.equal($('audio-return').hidden,true);assert.equal($('audio-panel').hidden,true);
+state.snapshot.call_details={calls:[{call_sid:SID,caller_number:'+19419930832'}]};openCall();
+const audio=$('call-audio');
+if(hasRecording){audio.play();audio.currentTime=19;}
+const src=audio.src,loads=audio.loads,pauses=audio.pauses,plays=audio.plays;
+const expected='Return to call · +19419930832 · '+clockTime(callStartedAt(state.audioSession),true)+' →';
+function assertReturnVisible(){
+ assert.equal($('audio-panel').hidden,false);
+ assert.equal($('audio-return').hidden,false);
+ assert.equal($('audio-return').textContent,expected);
+}
+assertReturnVisible(); // The link remains visible on the active call, too.
+assert.equal($('call-audio').hidden,!hasRecording);
+backToCalls();assertReturnVisible();
+showPage('contacts');assertReturnVisible();
+state.snapshot=snapshot([session(OTHER)]);render();assertReturnVisible();
+assert.equal(state.sessions.some(call=>call.call_sid===SID),false);
+state.paused=true;$('audio-return').events.click();assertReturnVisible();
+assert.equal(state.page,'calls');assert.equal(state.detail,true);assert.equal(state.selected,SID);
+assert.equal(audio.src,src);assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.plays,plays);
+assert.equal(audio.currentTime,hasRecording?19:0);assert.equal(audio.paused,!hasRecording);
+$('audio-close').events.click();render();assert.equal($('audio-panel').hidden,true);
+$('audio-reopen').events.click();assertReturnVisible();assert.equal(audio.paused,true);
+assert.equal(audio.src,src);assert.equal(audio.loads,loads);assert.equal(audio.plays,plays);
+''')
+
+
+def test_caller_breadcrumb_follows_contact_changes_without_changing_filter_or_playback(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const phone='+19412982923',formattedPhone='+1 (941) 298-2923';
+state.snapshot=snapshot([session(),session(OTHER)],[recording()]);
+state.snapshot.call_details={calls:[{call_sid:SID,caller_number:formattedPhone},
+ {call_sid:OTHER,caller_number:'+19412982924'}]};render();openCall();
+const audio=$('call-audio');audio.play();audio.currentTime=19;
+const src=audio.src,loads=audio.loads,pauses=audio.pauses,plays=audio.plays;
+const filterHref='#calls/recent?caller=%2B19412982923';
+let contact={id:'local-breadcrumb-contact',name:'<img src=x> Taylor Demo',phone};
+window.DashboardCRM={findContactByPhone:number=>number===phone?contact:null,render(){}};
+handlers.get('dashboard-contacts-changed')();
+const link=$('breadcrumb-caller'),label=$('breadcrumb-caller-label');
+assert.equal(link.hidden,false);assert.equal(link.textContent,contact.name);assert.equal(link.children.length,0);
+assert.equal(link.getAttribute('href'),filterHref);assert.equal(link.getAttribute('title'),phone);
+assert.equal(link.getAttribute('aria-label'),'Calls from '+contact.name+' ('+phone+')');
+link.events.click({preventDefault(){}});
+assert.equal(location.hash,filterHref);assert.equal(state.callerFilter,phone);
+assert.equal(link.hidden,true);assert.equal(label.hidden,false);
+assert.equal(label.textContent,contact.name);assert.equal(label.getAttribute('title'),phone);
+assert.equal(label.getAttribute('aria-current'),'page');
+assert.deepEqual($('call-list').children.map(row=>row.dataset.callSid),[SID]);
+contact={...contact,name:'Taylor Renamed'};handlers.get('dashboard-contacts-changed')();
+assert.equal(label.textContent,'Taylor Renamed');assert.equal(label.getAttribute('title'),phone);
+assert.equal(location.hash,filterHref);assert.equal(state.callerFilter,phone);
+openCall();assert.equal(link.textContent,'Taylor Renamed');assert.equal(link.getAttribute('href'),filterHref);
+contact=null;handlers.get('dashboard-contacts-changed')();
+assert.equal(link.textContent,phone);assert.equal(link.getAttribute('href'),filterHref);
+assert.equal(link.getAttribute('title'),null);assert.equal(link.getAttribute('aria-label'),'Calls from '+phone);
+link.events.click({preventDefault(){}});
+assert.equal(label.textContent,phone);assert.equal(label.getAttribute('title'),null);
+assert.equal(audio.src,src);assert.equal(audio.currentTime,19);assert.equal(audio.paused,false);
+assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.plays,plays);
 ''')

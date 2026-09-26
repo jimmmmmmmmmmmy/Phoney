@@ -226,15 +226,21 @@
       $("call-exports").hidden = !visibleDetail();
       const caller = state.detail && state.selectedSession ? callerNumber(state.selectedSession) : state.callerFilter;
       const normalizedCaller = normalizeCaller(caller);
+      const contact = window.DashboardCRM?.findContactByPhone?.(normalizedCaller);
+      const callerLabel = contact ? contact.name : normalizedCaller || caller || "Unknown caller";
       const callerLink = $("breadcrumb-caller");
       $("call-breadcrumbs").hidden = !state.detail && !state.callerFilter;
       callerLink.hidden = !state.detail || !normalizedCaller;
-      callerLink.textContent = normalizedCaller;
+      callerLink.textContent = callerLabel;
       if (normalizedCaller) callerLink.setAttribute("href", callerRoute(normalizedCaller));
       else callerLink.removeAttribute("href");
-      callerLink.setAttribute("aria-label", "Calls from " + normalizedCaller);
+      callerLink.setAttribute("aria-label", "Calls from " + callerLabel + (contact ? " (" + normalizedCaller + ")" : ""));
       $("breadcrumb-caller-label").hidden = !callerLink.hidden;
-      $("breadcrumb-caller-label").textContent = caller || "Unknown caller";
+      $("breadcrumb-caller-label").textContent = callerLabel;
+      for (const item of [callerLink, $("breadcrumb-caller-label")]) {
+        if (contact) item.setAttribute("title", normalizedCaller);
+        else item.removeAttribute("title");
+      }
       if (!state.detail) $("breadcrumb-caller-label").setAttribute("aria-current", "page");
       else $("breadcrumb-caller-label").removeAttribute("aria-current");
       $("breadcrumb-date-item").hidden = !state.detail;
@@ -252,7 +258,7 @@
       $("live-call-notice").hidden = !live || (visibleDetail() && live.call_sid === state.selected);
       const liveText = live ? "Live call from " + callerNumber(live) : "";
       if ($("live-call-text").textContent !== liveText) $("live-call-text").textContent = liveText;
-      $("audio-return").hidden = !state.audioUrl || visibleDetail();
+      $("audio-return").hidden = !state.audioSession;
       $("audio-return").textContent = state.audioSession
         ? `Return to call · ${callerNumber(state.audioSession)} · ${clockTime(callStartedAt(state.audioSession), true)} →`
         : "Return to call →";

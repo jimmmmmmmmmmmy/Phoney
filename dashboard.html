@@ -10,24 +10,21 @@
     :root{--ink:#132c38;--muted:#627780;--teal:#087e83;--teal-light:#e3f3ef;--paper:#f3f6f4;--line:#dce5e1;--red:#aa4238;--red-light:#fff0ed;--shadow:0 12px 40px #153c3410;--radius:20px}
     *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
     button,input,select{font:inherit}button,a,input,select{touch-action:manipulation}button,a{ -webkit-tap-highlight-color:transparent}button{cursor:pointer}button:disabled{cursor:default;opacity:.5}
-    a{color:var(--teal)}[hidden]{display:none!important}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,audio:focus-visible{outline:3px solid #55b8b7;outline-offset:3px}
+    a{color:var(--teal)}[hidden]{display:none!important}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,audio:focus-visible,summary:focus-visible{outline:3px solid #55b8b7;outline-offset:3px}
     .topbar{height:92px;display:flex;align-items:center;justify-content:space-between;gap:20px;border-bottom:1px solid var(--line);padding:0 5vw;background:#ffffffb3}
     .brand{display:flex;align-items:center;gap:13px}.brand-mark{width:44px;height:44px;border-radius:13px;background:var(--ink);color:#fff;display:grid;place-items:center;font-size:15px;font-weight:800;letter-spacing:-1px}
     .brand-name{font-size:14px;font-weight:730;letter-spacing:-.2px}.brand-sub{font-size:11px;color:var(--muted);letter-spacing:1.6px;text-transform:uppercase;margin-top:2px}
     .top-actions{display:flex;align-items:center;gap:14px}.connection{display:inline-flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap}
     .dot{width:7px;height:7px;border-radius:50%;background:#a4b4af;flex:0 0 auto}.connection[data-tone="good"] .dot{background:#0b9180;box-shadow:0 0 0 4px #e0f3ed}.connection[data-tone="bad"] .dot{background:var(--red)}
 
-    main{max-width:1450px;margin:0 auto;padding:42px 5vw 32px}.eyebrow{color:var(--teal);font-size:11px;font-weight:750;letter-spacing:2px;text-transform:uppercase}
-    h1,h2,p{margin:0}h1{font-size:clamp(29px,3vw,40px);letter-spacing:-1.4px;line-height:1.15;font-weight:720}.intro{display:flex;justify-content:space-between;align-items:end;gap:20px;margin:9px 0 28px}.intro p{color:var(--muted);margin-top:10px}
-    .count{font-size:12px;white-space:nowrap;color:var(--muted);padding-bottom:3px}.count strong{font-size:23px;color:var(--ink);margin-right:5px;font-weight:600;font-variant-numeric:tabular-nums}
+    main{max-width:1450px;margin:0 auto;padding:30px 5vw 32px}h1,h2,p{margin:0}
 
     .banner{padding:12px 16px;border-radius:11px;background:#fff4df;color:#74541a;font-size:13px;margin-bottom:18px;border:1px solid #e9d8b1}.banner[data-tone="bad"]{background:var(--red-light);color:var(--red);border-color:#f1d2cc}
     .desk{display:grid;grid-template-columns:245px minmax(0,1fr);gap:22px;align-items:start}.sidebar{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:19px 13px;max-height:calc(100vh - 230px);overflow:auto}
-    .sidebar-heading{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:0 6px 17px}.sidebar-heading h2{font-size:13px;font-weight:750}.follow{border:0;background:#edf3f0;border-radius:8px;color:var(--muted);padding:6px 8px;font-size:10px;font-weight:700}.follow[aria-pressed="true"]{background:var(--teal-light);color:var(--teal)}
+    .section-summary{cursor:pointer;padding:0 5px;font-size:13px;font-weight:750}.summary-content{display:inline-flex;align-items:center;justify-content:space-between;gap:8px;width:calc(100% - 20px)}.sidebar-group[open] .section-summary{margin-bottom:14px}.live-updates{display:inline-flex;align-items:center;gap:5px;background:var(--teal-light);border-radius:7px;padding:5px 7px;color:var(--teal);font-size:9px;white-space:nowrap}.live-updates::before{content:"";width:5px;height:5px;border-radius:50%;background:#0b9180}.voicemail-group{border-top:1px solid var(--line);margin-top:17px;padding-top:17px}
     .call-list{display:flex;flex-direction:column;gap:6px}.call-option{padding:13px 12px;border:1px solid transparent;border-radius:12px;text-align:left;background:transparent;color:var(--ink);width:100%}.call-option:hover{background:#f3f7f4}.call-option[aria-pressed="true"]{background:#eaf5f0;border-color:#c8e5d9}
-    .call-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.call-title{font-size:12px;font-weight:700}.call-time{font-size:10px;color:var(--muted);margin-top:4px}.call-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#85938e;font-size:10px;margin-top:5px}.call-state{width:6px;height:6px;background:#94a7a0;border-radius:100%;flex:0 0 auto}.call-state.live{background:#0b9180}.call-state.error{background:var(--red)}
-    .sidebar-empty{font-size:12px;color:var(--muted);padding:8px 9px 18px;line-height:1.8}.sidebar-note{border-top:1px solid var(--line);margin:16px 6px 0;padding-top:15px;font-size:10px;color:var(--muted);line-height:1.7}
-    .voicemail-heading{border-top:1px solid var(--line);margin-top:15px;padding-top:17px}.voicemail-note{color:var(--muted);font-size:11px;line-height:1.7;margin-top:11px}.voicemail-empty{font-size:11px;padding-bottom:4px}
+    .call-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.call-title{font-size:12px;font-weight:700}.call-time{font-size:10px;color:var(--muted);margin-top:4px}.call-state{width:6px;height:6px;background:#94a7a0;border-radius:100%;flex:0 0 auto}.call-state.live{background:#0b9180}.call-state.error{background:var(--red)}
+    .sidebar-empty{font-size:12px;color:var(--muted);padding:8px 9px 4px;line-height:1.8}.voicemail-note{color:var(--muted);font-size:11px;line-height:1.7;margin-top:11px}
     .transcript-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}.card-heading{padding:23px 26px 19px;border-bottom:1px solid var(--line)}
     .card-row{display:flex;align-items:center;justify-content:space-between;gap:16px}.card-title{display:flex;align-items:center;gap:11px;flex-wrap:wrap}.card-title h2{font-size:19px;font-weight:720;letter-spacing:-.5px}.badge{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:750;color:var(--teal);background:var(--teal-light);border-radius:20px;padding:5px 9px;text-transform:uppercase;letter-spacing:.4px}.badge[data-tone="bad"]{color:var(--red);background:var(--red-light)}.badge[data-tone="neutral"]{color:var(--muted);background:#edf2ef}
     .session-detail{font-size:11px;color:var(--muted);margin-top:7px;overflow-wrap:anywhere}.exports{display:flex;gap:5px;flex:0 0 auto}.export{font-size:10px;border:1px solid var(--line);border-radius:7px;padding:6px 8px;color:var(--muted);text-decoration:none;font-weight:700}.export:hover{color:var(--teal);background:#f0f7f3}.export[aria-disabled="true"]{pointer-events:none;opacity:.4}
@@ -35,29 +32,29 @@
     .tracks{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 26px 0}.track{border:1px solid var(--line);padding:12px 13px;border-radius:12px;background:#fbfcfb;min-width:0}.track-label{display:flex;justify-content:space-between;gap:10px;align-items:center;font-size:11px;font-weight:700}.track-label .direction{width:20px;height:20px;display:inline-grid;place-items:center;border-radius:6px;background:#dff1eb;color:var(--teal);margin-right:5px}.track[data-track="outbound"] .direction{background:#e8edf7;color:#586994}.track-status{font-size:10px;color:var(--muted);font-weight:500}.track-note{font-size:10px;color:var(--muted);margin-top:6px}.track-error{margin-top:7px;font-size:11px;color:var(--red);overflow-wrap:anywhere}
     .transcript-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:21px 26px 12px;color:var(--muted);font-size:10px}.live-label{display:flex;align-items:center;gap:6px;letter-spacing:1px;text-transform:uppercase;font-weight:700}.auto-scroll{display:inline-flex;align-items:center;gap:6px;cursor:pointer}.auto-scroll input{accent-color:var(--teal);margin:0}
     .transcript{height:clamp(340px,49vh,680px);overflow:auto;padding:3px 26px 23px;scroll-behavior:smooth;scrollbar-width:thin;scrollbar-color:#c7d8cf transparent}.messages{display:flex;flex-direction:column;gap:20px}.message{display:grid;grid-template-columns:44px minmax(0,1fr);gap:12px}.timestamp{font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#8d9c95;padding-top:3px;font-variant-numeric:tabular-nums}.message-meta{display:flex;align-items:center;gap:8px;margin-bottom:5px}.speaker{font-size:10px;color:var(--teal);font-weight:800;letter-spacing:.1px}.message[data-track="outbound"] .speaker{color:#596a91}.confidence{font-size:9px;color:#94a29c}.message-text{font-size:15px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;max-width:760px}.interim .message-text{color:#89968f}.interim .speaker{color:#81968c}.interim-label{font-size:9px;background:#f0f4f1;color:#84918a;padding:2px 5px;border-radius:4px}
-    .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:100%;min-height:260px;padding:20px}.empty-icon{display:grid;place-items:center;width:55px;height:55px;border-radius:17px;background:#e9f3ee;color:var(--teal);margin-bottom:17px}.empty h2{font-size:17px;font-weight:650;letter-spacing:-.4px;margin-bottom:8px}.empty p{font-size:12px;color:var(--muted);max-width:305px;line-height:1.8}.empty svg{width:25px;height:25px}.foot{display:flex;justify-content:space-between;gap:18px;padding:12px 26px;border-top:1px solid var(--line);font-size:10px;color:var(--muted);background:#fcfdfb}.foot span{overflow-wrap:anywhere}.page-foot{display:flex;justify-content:space-between;gap:15px;color:#81948a;font-size:10px;padding:21px 2px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:100%;min-height:260px;padding:20px}.empty-icon{display:grid;place-items:center;width:55px;height:55px;border-radius:17px;background:#e9f3ee;color:var(--teal);margin-bottom:17px}.empty h2{font-size:17px;font-weight:650;letter-spacing:-.4px;margin-bottom:8px}.empty p{font-size:12px;color:var(--muted);max-width:305px;line-height:1.8}.empty svg{width:25px;height:25px}.page-foot{display:flex;justify-content:space-between;gap:15px;color:#81948a;font-size:10px;padding:21px 2px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
     @media(min-width:1450px){main{padding-left:55px;padding-right:55px}.topbar{padding-left:calc((100vw - 1340px)/2);padding-right:calc((100vw - 1340px)/2)}}
     @media(max-width:850px){.desk{grid-template-columns:195px minmax(0,1fr);gap:15px}.card-heading,.tracks{padding-left:19px;padding-right:19px}.transcript,.transcript-toolbar{padding-left:19px;padding-right:19px}.card-row{align-items:start}.tracks{gap:8px}.track-label{align-items:start;flex-direction:column;gap:3px}}
-    @media(max-width:650px){.topbar{height:77px;padding:0 20px}.brand-name{font-size:11px}.brand-sub{font-size:9px;letter-spacing:1px}.brand-mark{width:36px;height:36px;border-radius:11px}.top-actions{gap:9px}.connection{font-size:10px}main{padding:29px 20px 20px}.intro{margin-bottom:22px;align-items:start}.intro p{font-size:12px;max-width:235px}.count{font-size:10px}.count strong{font-size:20px}.desk{display:block}.sidebar{max-height:none;padding:14px;margin-bottom:15px}.sidebar-heading{padding-bottom:10px}.call-list{flex-direction:row;overflow:auto;max-height:110px;padding-bottom:3px}.call-option{width:165px;flex:0 0 165px}.sidebar-empty{padding:0 6px 4px}.sidebar-note{display:none}.tracks{padding-top:13px}.track{padding:9px}.track-note{line-height:1.6}.transcript{height:51vh;min-height:320px}.message{grid-template-columns:37px minmax(0,1fr);gap:8px}.message-text{font-size:14px}.card-heading{padding-top:18px;padding-bottom:15px}.card-title h2{font-size:17px}.badge{font-size:8px;padding:4px 7px}.foot{padding:11px 18px;flex-wrap:wrap;gap:5px}.page-foot{flex-wrap:wrap;font-size:9px}.exports{gap:4px}.export{padding:5px 6px}.session-detail{font-size:10px}}
+    @media(max-width:650px){.topbar{height:77px;padding:0 20px}.brand-name{font-size:11px}.brand-sub{font-size:9px;letter-spacing:1px}.brand-mark{width:36px;height:36px;border-radius:11px}.top-actions{gap:9px}.connection{font-size:10px}main{padding:29px 20px 20px}.desk{display:block}.sidebar{max-height:none;padding:14px;margin-bottom:15px}.call-list{flex-direction:row;overflow:auto;max-height:110px;padding-bottom:3px}.call-option{width:165px;flex:0 0 165px}.sidebar-empty{padding:0 6px 4px}.tracks{padding-top:13px}.track{padding:9px}.track-note{line-height:1.6}.transcript{height:51vh;min-height:320px}.message{grid-template-columns:37px minmax(0,1fr);gap:8px}.message-text{font-size:14px}.card-heading{padding-top:18px;padding-bottom:15px}.card-title h2{font-size:17px}.badge{font-size:8px;padding:4px 7px}.page-foot{flex-wrap:wrap;font-size:9px}.exports{gap:4px}.export{padding:5px 6px}.session-detail{font-size:10px}}
     @media(prefers-reduced-motion:reduce){.transcript{scroll-behavior:auto}}
+    .message{border-radius:10px;padding:8px 10px;margin:0 -10px;border-left:3px solid transparent}.message.playing-line{background:#e3f3e9;border-left-color:var(--teal)}.message.playing-line .message-text{color:var(--ink)}.message[data-track="outbound"].playing-line{background:#ecf0fa;border-left-color:#677bad}
     @media(max-width:850px){.audio-panel{margin-left:19px;margin-right:19px}}@media(max-width:650px){.audio-panel{padding:13px;margin-top:14px}.audio-heading{gap:10px}.audio-actions{gap:7px}.audio-status{font-size:11px}}
   </style>
 </head>
 <body>
   <header class="topbar">
     <div class="brand"><div class="brand-mark" aria-hidden="true">NC</div><div><div class="brand-name">New College Data Science Team</div><div class="brand-sub">Call desk</div></div></div>
-    <div class="top-actions"><div id="connection" class="connection" data-tone="neutral" role="status"><span class="dot" aria-hidden="true"></span><span id="connection-text">Connecting</span></div></div>
+    <div class="top-actions"><div id="connection" class="connection" data-tone="neutral" role="status" aria-label="Connecting" title="Connecting"><span class="dot" aria-hidden="true"></span></div></div>
   </header>
   <main>
     <section id="dashboard-view" aria-labelledby="desk-heading">
-      <div class="eyebrow">Call recordings &amp; live transcripts</div>
-      <div class="intro"><div><h1 id="desk-heading">A place for the conversation.</h1><p>Follow the current call, or return to a recent one.</p></div><div class="count"><strong id="session-count">0</strong><span id="session-count-label">calls</span></div></div>
+      <h1 id="desk-heading" class="sr-only">Call desk</h1>
       <div id="banner" class="banner" role="status" hidden></div>
       <div id="storage-warning" class="banner" data-tone="bad" role="status" hidden></div>
       <div id="voicemail-warning" class="banner" data-tone="bad" role="status" hidden></div>
       <div id="recording-warning" class="banner" data-tone="bad" role="status" hidden></div>
       <div class="desk">
-        <aside class="sidebar" aria-label="Call selection"><div class="sidebar-heading"><h2>Recent calls</h2><button id="follow-live" class="follow" aria-pressed="true">Following live</button></div><div id="call-list" class="call-list"></div><p id="sidebar-empty" class="sidebar-empty">New calls will appear here automatically.</p><div class="sidebar-heading voicemail-heading"><h2>Voicemail inbox</h2></div><div id="voicemail-list" class="call-list"></div><p id="voicemail-empty" class="sidebar-empty voicemail-empty">Voicemail will appear here after an unanswered call.</p><p class="sidebar-note">This view follows the caller’s audio directions. Playback can include the other participant, hold music, and prompts.</p></aside>
+        <aside class="sidebar" aria-label="Call selection"><details id="recent-calls" class="sidebar-group" open><summary class="section-summary"><span class="summary-content"><span>Recent calls</span><span class="live-updates">Live updates</span></span></summary><div id="call-list" class="call-list"></div><p id="sidebar-empty" class="sidebar-empty">No calls yet.</p></details><details id="voicemail-section" class="sidebar-group voicemail-group"><summary class="section-summary">Voicemail</summary><div id="voicemail-list" class="call-list"></div></details></aside>
         <section class="transcript-card" aria-labelledby="transcript-title">
           <div class="card-heading"><div class="card-row"><div><div class="card-title"><h2 id="transcript-title">Waiting for a call</h2><span id="session-badge" class="badge" data-tone="neutral">Ready</span><span id="voicemail-badge" class="badge" data-tone="neutral" hidden></span></div><p id="session-detail" class="session-detail">Transcripts will appear as people speak.</p></div><div class="exports" aria-label="Export selected call"><a id="export-txt" class="export" aria-disabled="true" tabindex="-1">TXT <span aria-hidden="true">↓</span></a><a id="export-json" class="export" aria-disabled="true" tabindex="-1">JSON <span aria-hidden="true">↓</span></a></div></div><p id="voicemail-detail" class="voicemail-note" hidden></p><p id="session-storage-warning" class="track-error" role="status" hidden></p></div>
           <section id="audio-panel" class="audio-panel" aria-labelledby="audio-heading">
@@ -74,7 +71,6 @@
             <div id="empty" class="empty"><div class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4M8 22h8"></path></svg></div><h2 id="empty-title">Ready when you are.</h2><p id="empty-description">When a call connects, its transcript will appear here. The view updates automatically.</p></div>
             <div id="messages" class="messages" hidden></div>
           </div>
-          <div class="foot"><span id="provider-detail">Deepgram · live speech transcription</span><span id="transcript-summary">No finalized text yet</span></div>
         </section>
       </div>
       <footer class="page-foot"><span>New College Data Science Team · Twilio call desk</span><span id="updated-at">Waiting for an update</span></footer>
@@ -85,10 +81,11 @@
     "use strict";
     const $ = id => document.getElementById(id);
     const trackNames = {inbound: "Caller input", outbound: "Caller playback"};
-    const state = {snapshot: null, selected: null, followLive: true, timer: null,
+    const state = {snapshot: null, selected: null, manualSelection: false, latestLive: null, pendingLive: null, playbackPinned: null, timer: null,
       controller: null, polling: false, paused: false, renderKey: "", listKey: "",
       voicemailKey: "", refreshRequested: false, audioCall: null, audioTrack: "combined",
-      audioUrl: "", audioPhase: "idle", audioSession: null};
+      audioUrl: "", audioPhase: "idle", audioSession: null, highlightEnabled: false,
+      transcriptRows: [], renderedCall: null, voicemailInitialized: false};
     const callSidPattern = /^CA[0-9a-fA-F]{32}$/;
     const audioTracks = {combined: "Both directions", inbound: "Caller input", outbound: "Caller playback"};
     const endedStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
@@ -121,7 +118,8 @@
         ? `${Math.round(entry.duration_seconds)} sec` : "";
     }
     function chooseCall(callSid) {
-      state.followLive = false;
+      state.manualSelection = true;
+      state.pendingLive = null;
       state.selected = callSid;
       state.renderKey = "";
       render();
@@ -152,7 +150,8 @@
       return element;
     }
     function connection(label, tone = "neutral") {
-      if ($("connection-text").textContent !== label) $("connection-text").textContent = label;
+      $("connection").setAttribute("aria-label", label);
+      $("connection").setAttribute("title", label);
       $("connection").dataset.tone = tone;
     }
     function banner(message, tone = "neutral") {
@@ -206,6 +205,9 @@
       const recording = session && session.recording;
       const call = session ? session.call_sid : null;
       if (state.audioCall !== call) {
+        state.playbackPinned = null;
+        state.highlightEnabled = false;
+        updatePlaybackHighlight(true);
         state.audioCall = call;
         state.audioTrack = "combined";
       }
@@ -218,6 +220,8 @@
       const url = recordingUrl(recording, state.audioTrack);
       const audio = $("call-audio");
       if (url !== state.audioUrl) {
+        state.highlightEnabled = false;
+        updatePlaybackHighlight(true);
         state.audioUrl = url;
         audio.pause();
         if (url) audio.setAttribute("src", url);
@@ -245,7 +249,7 @@
       updateAudioStatus();
     }
     function renderCallList(sessions) {
-      const key = JSON.stringify([state.selected, state.followLive,
+      const key = JSON.stringify([state.selected,
         sessions.map(session => [session.call_sid, session.status, session.started_at, session.ended_at,
           Boolean(session.recording), session.transcript_unavailable])]);
       if (key === state.listKey) return;
@@ -264,8 +268,7 @@
         const dot = node("span", "call-state" + (active ? " live" : session.status === "error" ? " error" : ""));
         dot.setAttribute("aria-hidden", "true");
         top.append(dot);
-        button.append(top, node("div", "call-time", `${clockTime(session.started_at, true)} · ${readable(session.status)}${session.recording ? " · Audio" : ""}`),
-          node("div", "call-id", text(session.call_sid).slice(-12)));
+        button.append(top, node("div", "call-time", `${clockTime(session.started_at, true)} · ${readable(session.status)}${session.recording ? " · Audio" : ""}`));
         button.addEventListener("click", () => chooseCall(session.call_sid));
         fragment.append(button);
       });
@@ -276,10 +279,12 @@
         }
       }
       $("sidebar-empty").hidden = sessions.length > 0;
-      $("follow-live").setAttribute("aria-pressed", String(state.followLive));
-      $("follow-live").textContent = state.followLive ? "Following live" : "Follow live";
     }
     function renderVoicemails(entries) {
+      if (!state.voicemailInitialized) {
+        state.voicemailInitialized = true;
+        $("voicemail-section").open = entries.length > 0;
+      }
       const key = JSON.stringify([state.selected, entries, state.snapshot.voicemail && state.snapshot.voicemail.enabled]);
       if (key === state.voicemailKey) return;
       state.voicemailKey = key;
@@ -291,8 +296,7 @@
         button.dataset.voicemailSid = entry.call_sid;
         button.setAttribute("aria-pressed", String(entry.call_sid === state.selected));
         button.append(node("div", "call-title", "Voicemail · " + voicemailLabel(entry)),
-          node("div", "call-time", [clockTime(entry.started_at, true), voicemailDuration(entry)].filter(Boolean).join(" · ")),
-          node("div", "call-id", entry.call_sid.slice(-12)));
+          node("div", "call-time", [clockTime(entry.started_at, true), voicemailDuration(entry)].filter(Boolean).join(" · ")));
         button.addEventListener("click", () => chooseCall(entry.call_sid));
         fragment.append(button);
       });
@@ -302,9 +306,6 @@
           if (button.dataset.voicemailSid === focused) button.focus({preventScroll: true});
         }
       }
-      $("voicemail-empty").hidden = entries.length > 0;
-      $("voicemail-empty").textContent = state.snapshot.voicemail && state.snapshot.voicemail.enabled
-        ? "Voicemail will appear here after an unanswered call." : "Voicemail is not enabled on this server.";
     }
     function messageRow(segment, interim = false) {
       const track = segment.track === "outbound" ? "outbound" : "inbound";
@@ -321,6 +322,34 @@
       content.append(meta, node("p", "message-text", text(segment.text)));
       row.append(content);
       return row;
+    }
+    function updatePlaybackHighlight(clear = false) {
+      const audio = $("call-audio");
+      const time = audio.currentTime * 1000;
+      const enabled = !clear && state.highlightEnabled && state.audioUrl && !audio.ended
+        && state.audioCall === state.selected && state.renderedCall === state.audioCall && Number.isFinite(time);
+      const recording = state.audioSession && state.audioSession.recording;
+      let first = null;
+      for (const item of state.transcriptRows) {
+        const seconds = recording && recording.tracks && recording.tracks[item.track]
+          && recording.tracks[item.track].duration_seconds;
+        const limit = Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000
+          : Number.isFinite(audio.duration) && audio.duration >= 0 ? audio.duration * 1000 : Infinity;
+        const active = Boolean(enabled && (state.audioTrack === "combined" || state.audioTrack === item.track)
+          && item.start <= time && time < Math.min(item.end, limit));
+        item.row.classList.toggle("playing-line", active);
+        if (active) {
+          item.row.setAttribute("aria-current", "true");
+          if (!first) first = item.row;
+        } else item.row.removeAttribute("aria-current");
+      }
+      if (first && $("auto-scroll").checked) {
+        const viewport = $("transcript");
+        const view = viewport.getBoundingClientRect();
+        const row = first.getBoundingClientRect();
+        if (row.top < view.top) viewport.scrollTop += row.top - view.top - 8;
+        else if (row.bottom > view.bottom) viewport.scrollTop += row.bottom - view.bottom + 8;
+      }
     }
     function renderStorageWarnings(session) {
       const globalError = text(state.snapshot && state.snapshot.storage_error);
@@ -377,7 +406,7 @@
       $("session-badge").dataset.tone = noTranscript ? "neutral"
         : session && ["error", "failed"].includes(session.status) ? "bad" : active ? "good" : "neutral";
       $("session-detail").textContent = session
-        ? `${clockTime(session.started_at, true)}${session.ended_at ? " · Ended " + clockTime(session.ended_at) : ""} · ${text(session.call_sid)}`
+        ? `${clockTime(session.started_at, true)}${session.ended_at ? " · Ended " + clockTime(session.ended_at) : ""}`
         : "Transcripts will appear as people speak.";
       for (const format of ["txt", "json"]) {
         const link = $("export-" + format);
@@ -410,11 +439,21 @@
         .slice().sort((a, b) => (Number(a.start_ms) || 0) - (Number(b.start_ms) || 0)) : [];
       const key = JSON.stringify([session && session.call_sid, segments, interims, enabled, loading, session && session.status, noTranscript, voicemail]);
       if (key !== state.renderKey) {
-        const changingCall = state.renderKey === "";
+        const changingCall = state.renderedCall !== (session && session.call_sid);
         const viewport = $("transcript");
         const previousScroll = viewport.scrollTop;
         const fragment = document.createDocumentFragment();
-        segments.forEach(segment => fragment.append(messageRow(segment)));
+        state.transcriptRows = [];
+        segments.forEach(segment => {
+          const row = messageRow(segment);
+          row.dataset.segmentId = String(segment.id);
+          fragment.append(row);
+          if (Number.isFinite(segment.start_ms) && Number.isFinite(segment.end_ms)
+              && segment.start_ms >= 0 && segment.end_ms > segment.start_ms
+              && (segment.track === "inbound" || segment.track === "outbound")) {
+            state.transcriptRows.push({row, track: segment.track, start: segment.start_ms, end: segment.end_ms});
+          }
+        });
         interims.forEach(segment => fragment.append(messageRow(segment, true)));
         $("messages").replaceChildren(fragment);
         const hasText = segments.length + interims.length > 0;
@@ -433,12 +472,13 @@
           : !session ? "When a call connects, its transcript will appear here. The view updates automatically."
           : active ? "Text will appear when speech is recognized. You can check each audio direction’s status above."
           : "This call has no finalized transcript. Check the audio direction statuses above for details.";
-        if (changingCall || $("auto-scroll").checked) viewport.scrollTop = viewport.scrollHeight;
+        const playback = state.highlightEnabled && state.audioCall === state.selected;
+        if (changingCall || ($("auto-scroll").checked && !playback)) viewport.scrollTop = viewport.scrollHeight;
         else viewport.scrollTop = previousScroll;
+        state.renderedCall = session && session.call_sid;
         state.renderKey = key;
       }
-      const words = segments.reduce((total, segment) => total + text(segment.text).trim().split(/\s+/).length, 0);
-      $("transcript-summary").textContent = segments.length ? `${segments.length} finalized ${segments.length === 1 ? "segment" : "segments"} · ${words} words` : "No finalized text yet";
+      updatePlaybackHighlight();
     }
     function render() {
       const snapshot = state.snapshot;
@@ -470,14 +510,23 @@
         }
       }
       sessions.sort((a, b) => (dateValue(b.started_at).getTime() || 0) - (dateValue(a.started_at).getTime() || 0));
-      if (state.followLive) state.selected = (sessions.find(isActive) || sessions[0] || {}).call_sid || null;
+      const live = sessions.find(isActive);
+      const liveSid = live ? live.call_sid : null;
+      if (liveSid && liveSid !== state.latestLive) state.pendingLive = liveSid;
+      state.latestLive = liveSid;
+      if (!sessions.some(session => session.call_sid === state.pendingLive && isActive(session))) state.pendingLive = null;
+      const pinned = state.playbackPinned && state.playbackPinned === state.selected;
+      if (state.pendingLive && !pinned) {
+        state.selected = state.pendingLive;
+        state.pendingLive = null;
+        state.manualSelection = false;
+      } else if (!state.manualSelection && !pinned) {
+        state.selected = (live || sessions[0] || {}).call_sid || null;
+      }
       if (!sessions.some(session => session.call_sid === state.selected)) {
         state.selected = (sessions.find(session => session.call_sid === snapshot.selected_call_sid)
           || sessions[0] || {}).call_sid || null;
       }
-      $("session-count").textContent = String(sessions.length);
-      $("session-count-label").textContent = sessions.length === 1 ? "call" : "calls";
-      $("provider-detail").textContent = `${readable(snapshot.provider || "deepgram")}${snapshot.model ? " · " + text(snapshot.model) : ""} · Speech transcription`;
       recordedSessions.sort((a, b) => (dateValue(b.started_at).getTime() || 0) - (dateValue(a.started_at).getTime() || 0));
       renderCallList(recordedSessions);
       renderVoicemails(voicemails);
@@ -525,14 +574,12 @@
         state.refreshRequested = false;
       }
     }
-    $("follow-live").addEventListener("click", () => {
-      state.followLive = true;
-      state.renderKey = "";
-      render();
-      refresh();
+    $("voicemail-section").addEventListener("toggle", () => {
+      state.voicemailInitialized = true;
     });
     $("auto-scroll").addEventListener("change", () => {
-      if ($("auto-scroll").checked) $("transcript").scrollTop = $("transcript").scrollHeight;
+      if (state.highlightEnabled) updatePlaybackHighlight();
+      else if ($("auto-scroll").checked) $("transcript").scrollTop = $("transcript").scrollHeight;
     });
     $("audio-track").addEventListener("change", () => {
       const selected = $("audio-track").value;
@@ -546,21 +593,34 @@
         if (!state.audioUrl) return;
         state.audioPhase = phase;
         updateAudioStatus();
+        if (event === "ended" || event === "error") {
+          state.highlightEnabled = false;
+          updatePlaybackHighlight(true);
+          if (event === "ended") state.playbackPinned = null;
+        }
       });
     }
     $("call-audio").addEventListener("play", () => {
       if (!state.audioUrl) return;
-      state.followLive = false;
-      $("follow-live").setAttribute("aria-pressed", "false");
-      $("follow-live").textContent = "Follow live";
+      state.playbackPinned = state.audioCall;
+      state.highlightEnabled = true;
       state.audioPhase = "playing";
       updateAudioStatus();
+      updatePlaybackHighlight();
     });
     $("call-audio").addEventListener("pause", () => {
       if (!state.audioUrl || $("call-audio").ended) return;
       state.audioPhase = "paused";
       updateAudioStatus();
     });
+    $("call-audio").addEventListener("timeupdate", () => updatePlaybackHighlight());
+    for (const event of ["seeking", "seeked"]) {
+      $("call-audio").addEventListener(event, () => {
+        state.highlightEnabled = Boolean(state.audioUrl && !$("call-audio").ended);
+        if (state.highlightEnabled) state.playbackPinned = state.audioCall;
+        updatePlaybackHighlight();
+      });
+    }
     window.addEventListener("pagehide", stopPolling);
     window.addEventListener("pageshow", event => {
       if (event.persisted) {

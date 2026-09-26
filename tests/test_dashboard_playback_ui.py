@@ -17,6 +17,7 @@ class AudioMarkup(HTMLParser):
         super().__init__()
         self.players = []
         self.ids = []
+        self.details = {}
 
     def handle_starttag(self, tag, attributes):
         attributes = dict(attributes)
@@ -24,6 +25,8 @@ class AudioMarkup(HTMLParser):
             self.players.append(attributes)
         if "id" in attributes:
             self.ids.append(attributes["id"])
+        if tag == "details":
+            self.details[attributes["id"]] = attributes
 
 
 def test_one_native_player_is_accessible_and_never_autoplays_or_preloads_audio():
@@ -36,6 +39,8 @@ def test_one_native_player_is_accessible_and_never_autoplays_or_preloads_audio()
     assert player["aria-label"] and player["aria-describedby"] == "audio-status audio-direction-note"
     assert len(parsed.ids) == len(set(parsed.ids))
     assert {"audio-track", "audio-download", "audio-status", "recording-warning"} <= set(parsed.ids)
+    assert "open" in parsed.details["recent-calls"]
+    assert "open" not in parsed.details["voicemail-section"]
 
 
 HARNESS = r'''
@@ -43,16 +48,18 @@ const assert = require('node:assert/strict');
 const elements = new Map(), handlers = new Map();
 class Element {
  constructor(tag='div') {Object.assign(this,{tag,dataset:{},attributes:{},children:[],textContent:'',hidden:false,
-  checked:true,scrollTop:0,scrollHeight:100,events:{},paused:true,ended:false,currentTime:0,loads:0,pauses:0,plays:0});}
+  checked:true,open:false,scrollTop:0,scrollHeight:100,events:{},paused:true,ended:false,currentTime:0,duration:120,loads:0,pauses:0,plays:0,rect:{top:10,bottom:50}});
+  const classes=new Set();this.classList={toggle(name,on){if(on)classes.add(name);else classes.delete(name);},contains(name){return classes.has(name);}};}
  setAttribute(name,value) {this.attributes[name]=value;}
  removeAttribute(name) {delete this.attributes[name];if(name==='href')delete this.href;}
  get src() {return this.attributes.src || '';}
+ getBoundingClientRect() {return this.rect;}
  append(...children) {this.children.push(...children);}
  replaceChildren(...children) {this.children=children.flatMap(child=>child.tag==='fragment'?child.children:[child]);}
  addEventListener(name,fn) {this.events[name]=fn;}
  focus() {document.activeElement=this;}
  pause() {this.pauses++;this.paused=true;}
- load() {this.loads++;this.currentTime=0;this.paused=true;}
+ load() {this.loads++;this.currentTime=0;this.paused=true;this.ended=false;}
  play() {this.plays++;this.paused=false;this.events.play?.();}
 }
 const document = {activeElement:null,getElementById(id) {if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},
@@ -108,13 +115,13 @@ assert.equal(requests[0].options.credentials,'same-origin');
 assert.equal(requests[0].options.headers.Accept,'application/json');
 assert.equal(requests[0].options.headers['ngrok-skip-browser-warning'],'1');
 assert.equal(requests[0].options.headers.Authorization,undefined);
-assert.equal($('connection-text').textContent,'Connected');assert.equal($('session-count').textContent,'2');
+assert.equal($('connection').attributes['aria-label'],'Connected');assert.equal($('call-list').children.length,2);
 const audio=$('call-audio');audio.play();audio.currentTime=17;
 const loads=audio.loads,pauses=audio.pauses;
 await poll();
 assert.equal(requests[1].url,`/api/transcripts?call_sid=${SID}`);
 assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.currentTime,17);
-assert.equal($('connection-text').textContent,'Connected');
+assert.equal($('connection').attributes['aria-label'],'Connected');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 ''')
 
@@ -126,7 +133,7 @@ const audio=$('call-audio');
 assert.equal(audio.src,`/api/recordings/${SID}/audio?track=combined`);
 assert.equal(audio.loads,1);assert.equal(audio.pauses,1);assert.equal(audio.plays,0);
 audio.play();audio.currentTime=17;
-assert.equal(state.followLive,false);
+assert.equal(state.playbackPinned,SID);
 for(let i=0;i<5;i++){state.snapshot.sessions[0].segments[0].text='update '+i;render();}
 assert.equal($('call-audio'),audio);assert.equal(audio.loads,1);assert.equal(audio.pauses,1);
 assert.equal(audio.currentTime,17);assert.equal(audio.paused,false);assert.ok($('audio-status').textContent.startsWith('Playing'));
@@ -147,7 +154,7 @@ def test_recordings_without_transcripts_are_selectable_and_urls_stay_local(tmp_p
     run_browser_logic(tmp_path, r'''
 const entry=recording();entry.url='https://attacker.invalid/collect';entry.tracks.inbound.url='javascript:alert(1)';
 state.snapshot=snapshot([],[entry]);state.snapshot.enabled=false;render();
-assert.equal(state.selected,SID);assert.equal($('session-count').textContent,'1');
+assert.equal(state.selected,SID);assert.equal($('call-list').children.length,1);
 assert.equal($('call-list').children.length,1);assert.equal($('sidebar-empty').hidden,true);
 assert.equal($('transcript-title').textContent,'Call recording');assert.equal($('empty-title').textContent,'No transcript for this recording.');
 assert.equal($('export-json').attributes['aria-disabled'],'true');assert.ok(!$('export-json').href);
@@ -178,4 +185,98 @@ state.snapshot.recordings.storage_error='/private/path';render();
 assert.equal($('recording-warning').hidden,false);assert.ok(!$('recording-warning').textContent.includes('/private/path'));
 assert.equal(voicemailLabel({recording_status:'processing'}),'Unconfirmed recording');
 assert.ok(voicemailDescriptions.processing.includes('has not been confirmed'));
+''')
+
+
+def test_line_highlights_follow_overlaps_seek_direction_and_each_track_duration(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const call=session();call.tracks={inbound:{interim:'Unfinished text'}};
+call.segments=[
+ {id:'input',track:'inbound',start_ms:0,end_ms:3000,text:'caller'},
+ {id:'playback',track:'outbound',start_ms:1000,end_ms:4000,text:'overlap'},
+ {id:'zero',track:'inbound',start_ms:2000,end_ms:2000,text:'zero length'},
+ {id:'later',track:'inbound',start_ms:4000,end_ms:6000,text:'later'}];
+const saved=recording();saved.tracks.inbound.duration_seconds=5;saved.tracks.outbound.duration_seconds=2.5;
+state.snapshot=snapshot([call],[saved]);render();
+const audio=$('call-audio');
+const highlighted=()=>state.transcriptRows.filter(item=>item.row.classList.contains('playing-line')).map(item=>item.row.dataset.segmentId);
+assert.deepEqual(highlighted(),[]); // Merely loading a recording must not start highlighting.
+audio.play();audio.currentTime=1.5;audio.events.timeupdate();assert.deepEqual(highlighted(),['input','playback']);
+assert.ok(!$('messages').children.at(-1).classList.contains('playing-line')); // Interim text has no timing.
+audio.currentTime=2;audio.events.seeking();assert.deepEqual(highlighted(),['input','playback']);
+audio.currentTime=2.5;audio.events.seeked();assert.deepEqual(highlighted(),['input']); // The shorter track ends here.
+audio.currentTime=3;audio.events.timeupdate();assert.deepEqual(highlighted(),[]); // End time is exclusive.
+audio.currentTime=4.5;audio.events.timeupdate();assert.deepEqual(highlighted(),['later']);
+audio.currentTime=5;audio.events.timeupdate();assert.deepEqual(highlighted(),[]); // No highlight beyond the saved audio.
+$('audio-track').value='outbound';$('audio-track').events.change();assert.deepEqual(highlighted(),[]);
+audio.currentTime=1.5;audio.events.seeking();assert.deepEqual(highlighted(),['playback']);
+audio.paused=true;audio.events.pause();assert.deepEqual(highlighted(),['playback']);
+$('audio-track').value='combined';$('audio-track').events.change();assert.deepEqual(highlighted(),[]);
+audio.play();audio.currentTime=1.5;audio.events.timeupdate();assert.deepEqual(highlighted(),['input','playback']);
+audio.ended=true;audio.events.ended();assert.deepEqual(highlighted(),[]);render();assert.deepEqual(highlighted(),[]);
+audio.ended=false;audio.currentTime=1.5;audio.events.seeked();assert.deepEqual(highlighted(),['input','playback']);
+''')
+
+
+def test_highlights_survive_polled_text_updates_and_clear_on_another_call(tmp_path):
+    run_browser_logic(tmp_path, r'''
+(async()=>{
+const call=session();call.segments=[{id:'one',track:'inbound',start_ms:0,end_ms:3000,text:'first wording'}];
+state.snapshot=snapshot([call,session(OTHER)],[recording(),recording(OTHER)]);render();
+const audio=$('call-audio');audio.play();audio.currentTime=1.5;audio.events.timeupdate();
+const original=state.transcriptRows[0].row,loads=audio.loads,pauses=audio.pauses;
+fetch=async()=>({ok:true,json:async()=>snapshot([{...call,segments:[{...call.segments[0],text:'corrected wording'}]},session(OTHER)],[recording(),recording(OTHER)])});
+await poll();
+assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.currentTime,1.5);
+assert.notEqual(state.transcriptRows[0].row,original);assert.equal(state.transcriptRows[0].row.classList.contains('playing-line'),true);
+const previousRows=state.transcriptRows.map(item=>item.row);
+state.paused=true;chooseCall(OTHER);
+assert.equal(state.selected,OTHER);assert.equal(audio.currentTime,0);assert.equal(state.highlightEnabled,false);
+assert.ok(previousRows.every(row=>!row.classList.contains('playing-line')));
+assert.ok(state.transcriptRows.every(item=>!item.row.classList.contains('playing-line')));
+})().catch(error=>{console.error(error);process.exitCode=1;});
+''')
+
+
+def test_highlight_scrolls_only_outside_the_viewport_when_follow_text_is_checked(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const call=session();call.segments[0].end_ms=3000;
+state.snapshot=snapshot([call],[recording()]);render();
+const audio=$('call-audio'),viewport=$('transcript'),row=state.transcriptRows[0].row;
+viewport.rect={top:100,bottom:300};row.rect={top:150,bottom:210};viewport.scrollTop=40;
+audio.play();audio.currentTime=1.5;audio.events.timeupdate();assert.equal(viewport.scrollTop,40);
+row.rect={top:350,bottom:410};audio.events.timeupdate();assert.equal(viewport.scrollTop,158);
+$('auto-scroll').checked=false;audio.events.timeupdate();assert.equal(viewport.scrollTop,158);
+''')
+
+
+def test_live_updates_keep_paused_history_and_respect_another_manual_selection(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const THIRD='CA'+'c'.repeat(32),FOURTH='CA'+'d'.repeat(32);
+state.snapshot=snapshot([session(),session(THIRD)],[recording(),recording(THIRD)]);render();
+const audio=$('call-audio');audio.play();audio.currentTime=17;audio.paused=true;audio.events.pause();
+state.snapshot.sessions.unshift({...session(OTHER),started_at:'2026-09-26T13:00:00Z',ended_at:null,status:'live'});
+render();assert.equal(state.selected,SID);assert.equal(state.pendingLive,OTHER);assert.equal(audio.currentTime,17);
+state.paused=true;chooseCall(THIRD); // Explicit manual selection wins over the queued live call.
+assert.equal(state.selected,THIRD);assert.equal(state.pendingLive,null);render();assert.equal(state.selected,THIRD);
+audio.play();audio.paused=true;audio.events.pause();
+state.snapshot.sessions.unshift({...session(FOURTH),started_at:'2026-09-26T14:00:00Z',ended_at:null,status:'live'});
+render();assert.equal(state.selected,THIRD);assert.equal(state.pendingLive,FOURTH);
+audio.ended=true;audio.events.ended();render();assert.equal(state.selected,FOURTH);
+''')
+
+
+def test_collapsible_sections_preserve_manual_choices_across_updates(tmp_path):
+    run_browser_logic(tmp_path, r'''
+state.snapshot=snapshot([session()],[recording()]);$('recent-calls').open=true;render();
+assert.equal($('voicemail-section').open,false);
+$('recent-calls').open=false;$('voicemail-section').open=true;$('voicemail-section').events.toggle();
+render();assert.equal($('recent-calls').open,false);assert.equal($('voicemail-section').open,true);
+$('voicemail-section').open=false;$('voicemail-section').events.toggle();
+state.snapshot.voicemail.voicemails=[{call_sid:SID,recording_status:'processing',started_at:'2026-09-26T12:00:00Z'}];
+render();assert.equal($('voicemail-section').open,false);assert.equal($('voicemail-list').children.length,1);
+const visible=node=>node.textContent+' '+node.children.map(visible).join(' ');
+assert.ok(!visible($('call-list')).includes(SID.slice(-12)));
+assert.ok(!visible($('voicemail-list')).includes(SID.slice(-12)));
+assert.ok(!$('session-detail').textContent.includes(SID));
 ''')

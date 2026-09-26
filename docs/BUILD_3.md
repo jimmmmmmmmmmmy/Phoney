@@ -8,7 +8,7 @@ Run this from the source checkout on the server Mac. It reads the installed serv
 
 Build 3 adds speech-to-text to the existing two-human Twilio conference and passive audio capture. It sends enabled call audio to Deepgram Nova-3, presents interim/final text in HTML, and preserves transcript data for partner development. The caller's conversation remains connected through Twilio; Python observes a copy of the media.
 
-**Acceptance status:** all 395 automated tests pass, including recorded-audio playback, byte ranges, stereo alignment, and public-route checks. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. This confirms player behavior, not recorded speech quality.
+**Acceptance status:** all 400 automated tests pass, including recorded-audio playback, byte ranges, stereo alignment, and public-route checks. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. The compact dashboard also passed Chrome checks for line highlighting, overlap, seek/track changes, persistent collapsible sections, and manual call selection during incoming live activity. This confirms player behavior, not recorded speech quality.
 
 A browser check verified anonymous voicemail-inbox access using an isolated fake receipt; that check placed no phone call and invoked no speech/agent provider. Earlier generated speech passed the real Deepgram API and a full local Uvicorn signed-media/browser/export test, with both WAV tracks completed. The live service has one completed capture with valid mono PCM16/8 kHz headers: inbound 27.73 seconds and outbound 27.67 seconds. Only file metadata/headers were checked; audio content was not assessed.
 
@@ -93,6 +93,8 @@ Deepgram distinguishes finalized processed ranges (`is_final`) from endpointing 
 
 The page polls selected-call data once per second; provider processing and network delay add to that refresh interval. There is no viewer login/logout flow or viewer session cookie.
 
+The compact viewer uses a connection dot with an accessible status label and a non-interactive **Live updates** indicator. **Recent calls** and **Voicemail** can be collapsed; an empty voicemail section starts collapsed. Manual call selection remains available. A new live call does not interrupt recorded playback, including a paused recording. Call identifiers and provider/count metadata remain available in the API and exports rather than appearing as dashboard labels.
+
 On a free ngrok tunnel, click **Visit Site** if its initial notice appears. Snapshot requests send `Accept: application/json` and `ngrok-skip-browser-warning: 1`, with same-origin cookies, so ngrok does not substitute an HTML notice for the JSON response. Native audio and download links use the browser's normal same-origin requests and ngrok's notice-acceptance cookie. This does not add application authentication.
 
 The API and downloads require no authorization header. They provide read-only access to recognized words, metadata, and finalized local WAV recordings; they do not place calls, redirect a call, change configuration, or deploy code. The same public origin serves Twilio and deployment endpoints, but those endpoints keep their existing signature/token checks.
@@ -102,6 +104,8 @@ JSON exports contain `schema_version`, `provider`, `model`, `sample_rate: 8000`,
 ### Play or download a finalized recording
 
 Select a call in the dashboard and use its audio player. **Combined** is the default: left channel is caller input, right channel is caller playback. Choose **Caller input** or **Caller playback** for one mono track. The download saves a WAV for the selected view.
+
+During playback, the transcript highlights each finalized line whose media-time interval contains the player's current position. Seeking updates the highlight; pausing keeps the current position. Combined audio can highlight overlapping lines from both directions, while an individual track highlights only its own lines. Highlights stop at each track's recorded duration, including partial captures. These are provider segment intervals and can contain silence; word-level timing is not currently stored or inferred. Interim text is not highlighted. **Follow new text** also controls whether playback scrolls an active line into view.
 
 Use an external Chrome window for the verified playback path. The in-app browser preview crashed when starting the fixture player; the Brave player path is unverified. WAV download remains available if an embedded player fails.
 

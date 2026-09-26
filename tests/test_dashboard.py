@@ -178,6 +178,7 @@ def test_html_opens_the_dashboard_directly_and_keeps_csp_safe_text_rendering():
         assert '.textContent = content' in html
         csp = response.headers["content-security-policy"]
         assert "frame-ancestors 'none'" in csp and "connect-src 'self'" in csp
+        assert "media-src 'self'" in csp
         for block in re.findall(r"<(?:script|style)>(.*?)</(?:script|style)>", html, re.S):
             digest = base64.b64encode(hashlib.sha256(block.encode()).digest()).decode()
             assert "'sha256-" + digest + "'" in csp

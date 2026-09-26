@@ -4,7 +4,11 @@ Open the public dashboard with `.venv/bin/python scripts/open_dashboard.py`. Lea
 
 This increment adds a fixed greeting and message recording when the configured teammate has not connected. It uses Twilio `Say` and `Record`, while the existing optional Deepgram observer can supply text. It does not call Gemini, ElevenLabs, Modulate, or another agent/detector. An established two-human conversation keeps its normal call and hangup behavior.
 
-**Acceptance status:** all 310 automated tests pass. Anonymous browser access to the voicemail inbox was verified with an isolated fake receipt, without placing a phone call or invoking a speech/agent provider. The incoming Twilio number's `/voice` and caller-status `/status` POST callbacks were configured and verified by API read-back. **An actual Twilio phone test of capture, transcription, and voicemail is still pending.** Synthetic callbacks cannot prove the live redirect, recording, or continued Media Stream. Check the deployed revision using `python3 scripts/server.py status` and `/health`; the published app revision is a separate deployment check.
+**Acceptance status:** all 394 automated tests pass, including the recorded-audio playback routes. Chrome passed native playback, continued playback during polling, seeking to the end, and switching to an individual track using an isolated silent WAV fixture; no console warnings/errors were observed. This confirms player behavior, not recorded speech quality.
+
+Anonymous browser access to the voicemail inbox was verified with an isolated fake receipt, without placing a phone call or invoking a speech/agent provider. The incoming Twilio number's `/voice` and caller-status `/status` POST callbacks were configured and verified by API read-back.
+
+**An actual Twilio phone test of capture, transcription, and voicemail is still pending.** Synthetic callbacks cannot prove the live redirect, recording, or continued Media Stream. Check the deployed revision using `python3 scripts/server.py status` and `/health`; the published app revision is a separate deployment check.
 
 ## Configure and open
 
@@ -21,7 +25,7 @@ VOICEMAIL_STORAGE_DIR=/absolute/private/path/to/voicemails
 1. Set the voicemail values in the installed environment. Keep Twilio credentials and the fixed `CALLEE_NUMBER` configured.
 2. For optional text, retain `MEDIA_CAPTURE_ENABLED=true`, `TRANSCRIPTION_ENABLED=true`, the Deepgram API key, and private capture/transcript roots from [Build 3](BUILD_3.md). Voicemail recording does not depend on successful STT or local WAV writing.
 3. Apply environment changes during an idle period using the [server controls](SERVER.md). A GitHub code deployment does not populate private environment values.
-4. Open `PUBLIC_BASE_URL/dashboard`. Anyone with the ngrok URL can view voicemail metadata and read/download available transcripts without signing in.
+4. Open `PUBLIC_BASE_URL/dashboard`. Anyone with the ngrok URL can view voicemail metadata, read/download available transcripts, and play/download finalized local WAVs without signing in.
 
 The configuration helper sets and verifies both incoming-call webhooks. From the source checkout, target the installed environment explicitly:
 
@@ -32,7 +36,7 @@ The configuration helper sets and verifies both incoming-call webhooks. From the
 
 It sets `PUBLIC_BASE_URL/voice` and `PUBLIC_BASE_URL/status` with POST. The status callback is required for prompt cleanup if the caller hangs up before `Record` begins. Rerun the helper if the public origin changes; server mode also reconciles the configured hooks.
 
-The public viewer has no call-control or deployment authority. Twilio callback/media signature checks, signed GitHub webhooks, and the separate deployment-control token remain enabled. Neither cloud recording URLs nor raw audio are returned by the public data API.
+The public viewer has no call-control or deployment authority. Twilio callback/media signature checks, signed GitHub webhooks, and the separate deployment-control token remain enabled. Twilio cloud recording URLs are not exposed. The public recording library separately serves finalized local WAV audio, using fixed call/track identifiers rather than arbitrary filesystem paths.
 
 ## Call behavior
 
@@ -90,18 +94,20 @@ An illustrative response for the first route, with Deepgram transcription enable
 
 Handle callback races and retries idempotently. A recording completion may arrive after the call and its capture have ended. Preserve that result without reopening the phone session. A late intermediate callback must not overwrite a final recording status. Treat absent/failed recording separately from an ordinary completed message; duration alone is not proof of intelligible speech.
 
-## Three separate outputs
+## Audio and message outputs
 
 | Output | What it contains | Access |
 | --- | --- | --- |
 | Twilio cloud recording | The `Record` message, separate from the conference capture | Twilio account tooling; no media URL/audio proxy in the public API. |
-| Local `inbound.wav`, `outbound.wav`, `manifest.json` | Caller input and caller playback from the existing whole-call Media Stream | Private `MEDIA_STORAGE_DIR/<CallSid>/`; offline replay only. |
+| Local `inbound.wav`, `outbound.wav`, `manifest.json` | Caller input and caller playback from the existing whole-call Media Stream | Private filesystem permissions under `MEDIA_STORAGE_DIR/<CallSid>/`; public finalized WAV playback/download plus offline replay. |
 | Deepgram transcript JSON/text | Recognized words across the captured call, when enabled and available | Public dashboard/API; private-permission JSON files on disk. |
 | Voicemail metadata JSON | Mode, reason, lifecycle, recording SID/status/duration, storage result | Public metadata API; private-permission JSON files on disk. |
 
 Whole-call WAVs and transcripts can include waiting, greetings, beeps, and the message. They are **not cropped voicemail files**. Caller playback is what the original caller heard, including prompts; it is not an isolated teammate microphone. Cloud recording duration describes the message recording, not the duration of the whole local capture.
 
 The existing Media Stream still exports mono μ-law at 8 kHz; changing the call's TwiML does not add a higher-rate capture path. Its `Start` operation forks audio and allows subsequent TwiML to run. [Twilio Stream reference](https://www.twilio.com/docs/voice/twiml/stream). See [audio quality](AUDIO_QUALITY.md) and [partner handoff](PARTNER_HANDOFF.md) for exact local PCM contracts.
+
+The [dashboard recording player](BUILD_3.md#play-or-download-a-finalized-recording) defaults to combined stereo: caller input left, caller playback right. It can also play/download either original mono WAV. Audio appears after a valid `completed` or `partial` capture finalizes, with partial status shown. No third combined file is saved. A successful Twilio cloud recording alone does not provide playable local audio; if local capture failed or was disabled, the inbox can still show metadata without audio.
 
 ## Public metadata API
 
@@ -132,7 +138,7 @@ This is an illustrative record, not evidence of a placed phone call. `recording_
 
 `GET /api/transcripts` includes this same snapshot under top-level `voicemail`. A selected-call JSON export can include that call's voicemail metadata when available. The metadata inbox remains useful with Deepgram disabled; no transcript is promised for a call that was not transcribed. Join records by `call_sid` and preserve both recording and transcription statuses.
 
-No public response includes cloud `RecordingUrl`, raw audio, private filesystem paths, or the caller's `From` phone number. Call identifiers and available message text/metadata are public to anyone with the origin. A public read route is not a signed Twilio callback and cannot submit a new recording result.
+Voicemail metadata does not include cloud `RecordingUrl`, audio bytes, private filesystem paths, or the caller's `From` phone number. Separate public recording routes serve finalized local WAVs. Call identifiers, available message text/metadata, and finalized local recorded audio are public to anyone with the origin. A public read route is not a signed Twilio callback and cannot submit a new recording result.
 
 ## Storage and failure behavior
 
@@ -146,7 +152,7 @@ Automated tests use a mocked Twilio client and signed synthetic callbacks; they 
 
 1. **Eligibility and cleanup:** no-answer/busy/setup failure selects one voicemail transition before connection; established conversations never transition. Caller hangup and late creation/callback races leave no orphaned teammate leg.
 2. **Callback identity:** missing/invalid signatures, wrong account/call, unknown sessions, and duplicate/out-of-order callbacks cannot create or reopen another session's recording. A failed redirect cleans up safely. Test caller hangup during the greeting and a late signed recording callback for a persisted receipt outside the ten-row startup history.
-3. **Public output:** ordinary HTTP requests read metadata/transcripts/exports without credentials. Verify cloud URLs, phone numbers, credentials, and filesystem paths are absent; Twilio and deployment mutation routes retain authentication.
+3. **Public output:** ordinary HTTP requests read metadata/transcripts/exports without credentials. Verify cloud URLs, caller `From` metadata, credentials, and filesystem paths are absent; finalized local WAV playback is intentionally public and unfinished captures remain unavailable; Twilio and deployment mutation routes retain authentication.
 4. **Real phone, about two minutes:** call from a phone different from `CALLEE_NUMBER`, leave the teammate unanswered, hear the team message/beep, say a short unique phrase, pause, and press `#`. Confirm the call finishes, the recording becomes available in Twilio, metadata finalizes, and the same phrase appears in the inbound transcript/local WAV if those features are enabled.
 5. **Human regression, about one minute:** answer a second call and speak both ways. Hang up from each side on separate attempts; voicemail must not interrupt the established conversation. Record these outcomes separately from synthetic tests.
 

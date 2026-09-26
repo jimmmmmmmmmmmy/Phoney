@@ -2,7 +2,7 @@
 
 Open [BUILD_3.md](BUILD_3.md) to use the live transcript dashboard. Partners can start with [DEEPFAKE_DETECTION.md](DEEPFAKE_DETECTION.md) for detection or [VOICE_STACK.md](VOICE_STACK.md) for Gemini + ElevenLabs.
 
-**Implemented through Build 3:** Twilio conference, optional unanswered-call voicemail, passive WAV recording, live Deepgram transcription, public HTML/JSON/text viewing, and offline PCM replay. Anyone with the public ngrok URL can read/download transcript text without signing in. Synthetic audio passed real Deepgram and local transport/browser checks; actual phone capture/transcription remains pending. No detector, Gemini dialogue, ElevenLabs voice, or keypad agent is installed. See the root [verification status](../README.md) for test and deployment evidence.
+**Implemented through Build 3:** Twilio conference, optional unanswered-call voicemail, passive WAV recording, live Deepgram transcription, public HTML/JSON/text viewing, finalized local WAV playback/downloads, and offline PCM replay. Anyone with the public ngrok URL can read/download transcript text and play/download finalized local recordings without signing in. Synthetic audio passed real Deepgram and local transport/browser checks; actual phone capture/transcription remains pending. No detector, Gemini dialogue, ElevenLabs voice, or keypad agent is installed. See the root [verification status](../README.md) for test and deployment evidence.
 
 | Work | Start here | Concrete outcome |
 | --- | --- | --- |
@@ -17,7 +17,7 @@ Open [BUILD_3.md](BUILD_3.md) to use the live transcript dashboard. Partners can
 | Work | Guide |
 | --- | --- |
 | Unanswered-call message recording and provider-free next tasks | [Voicemail](VOICEMAIL.md) |
-| Current live transcript dashboard and acceptance | [Build 3](BUILD_3.md) |
+| Current transcript/recorded-audio dashboard and acceptance | [Build 3](BUILD_3.md) |
 | Telephone audio quality and higher-rate options | [Audio quality / VoIP](AUDIO_QUALITY.md) |
 | Recording and capture acceptance | [Build 2](BUILD_2.md) |
 | Human-to-human conference | [Build 1](BUILD_1.md) |

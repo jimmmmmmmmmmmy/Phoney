@@ -1,6 +1,6 @@
 # Build 2 — Twilio audio capture
 
-**Make a short two-phone call, hang up, then inspect its private capture directory.**
+**Make a short two-phone call, hang up, then play its finalized recording in the dashboard.**
 
 Build 2 adds a passive Media Stream to the working Build 1 conference. The phone bridge still connects the incoming caller to the fixed `CALLEE_NUMBER`. The server saves two playable WAV files and a manifest for partner development. Allow about two minutes for the phone check after configuration. Automated checks and a real local WebSocket transport check pass; real Twilio capture verification must be recorded separately below.
 
@@ -67,7 +67,15 @@ From the repository, inspect one completed call without playing or printing its 
 
 Replace `<CallSid>` with the actual directory name. Add `--frames --realtime` to emit timed frame metadata to the example consumer. The replay tool performs no network requests and does not invoke a model. It accepts only completed captures and validates both WAV files before delivering frames. Its typed interface and a complete local consumer example are in [the partner handoff](PARTNER_HANDOFF.md).
 
-Saved WAV captures stay local until manually removed or explicitly shared. They are excluded from Git, and no public audio-download route is exposed. Enabled Build 3 transcription separately sends live audio to Deepgram; it does not upload old WAV files. New deployments reuse the stable capture directory. There is no automatic deletion policy in this milestone.
+Saved WAV captures remain under `MEDIA_STORAGE_DIR` and are excluded from Git. The current dashboard publicly serves finalized `completed` and `partial` local recordings for playback/download; anyone with the ngrok URL can access available audio. Files retain private local filesystem permissions, but their HTTP audio is public. Unfinished captures are not served, and Twilio cloud voicemail recordings are not proxied. Enabled Build 3 transcription separately sends live audio to Deepgram; it does not upload old WAV files. New deployments reuse the stable capture directory. There is no automatic deletion policy in this milestone.
+
+## Play a saved capture
+
+Open `.venv/bin/python scripts/open_dashboard.py`, select an available call, and press play. The default combined stereo WAV puts caller input on the left and caller playback on the right. Select a mono direction or download the selected WAV when needed. The combined response is generated from the original files, with silence padding when one is shorter; it creates no third disk file.
+
+`GET /api/recordings` scans at most the first 1,000 directory entries and lists the newest ten valid captures found there; it does not guarantee newest-first discovery across a larger archive. `GET` or `HEAD /api/recordings/<CallSid>/audio?track=combined|inbound|outbound` serves the selected view and supports byte-range requests for browser seeking. The full contract is in [Build 3 playback](BUILD_3.md#play-or-download-a-finalized-recording).
+
+Playback becomes available only after the WAV headers are final and the capture manifest has been published. A finalized `partial` capture can be inspected in the player, with that status shown; offline partner replay remains stricter and accepts only `completed` captures. Live/in-progress audio is not served. The browser uses the existing PCM16/8 kHz WAV format, so MP3/M4A conversion is not part of this implementation.
 
 ## Interfaces and failure behavior
 
@@ -95,4 +103,4 @@ On call end, the capture gets a brief trailing-frame grace period and bounded fi
 4. **Real phone:** two people talk normally, then hang up. Both files are nonempty and playable, each contains the expected direction, and the manifest is completed. Verify the real signed WebSocket was accepted.
 5. **Partner replay:** load that completed manifest through the CLI and a simple typed consumer without Twilio or AI API calls. The replay tool must reject partial captures and invalid WAV paths/formats.
 
-**Live capture result:** pending the Build 2 phone test. Build 1's two-human call and cleanup tests already passed; they do not alone establish successful audio capture.
+**Live capture evidence (2026-09-26):** the running service has one completed capture with valid mono PCM16/8 kHz WAV headers: inbound 27.73 seconds, outbound 27.67 seconds. This verifies files and headers only; no listening/content check was performed. Full phone capture acceptance remains pending. Build 1's two-human call and cleanup tests already passed.

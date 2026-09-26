@@ -18,6 +18,7 @@ from config import Settings
 from webhooks import require_sid, twilio_validator, valid_media_signature
 from switchboard.service import SessionRejected, Switchboard
 from media_capture import CaptureManager
+from media_capture.playback import RecordingLibrary
 from transcription import TranscriptionManager
 from dashboard import register_dashboard
 from voicemail import VoicemailStore
@@ -47,6 +48,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
     transcription = TranscriptionManager(settings, connector=transcription_connector)
     media_capture = CaptureManager(settings, observer=transcription)
     voicemails = VoicemailStore(settings)
+    recordings = RecordingLibrary(settings)
 
     async def call_ended(call_sid):
         voicemails.finish(call_sid)
@@ -68,7 +70,9 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
     app.state.media_capture = media_capture
     app.state.transcription = transcription
     app.state.voicemails = voicemails
-    register_dashboard(app, settings, transcription, voicemail_store=voicemails)
+    app.state.recordings = recordings
+    register_dashboard(app, settings, transcription, voicemail_store=voicemails,
+                       recording_library=recordings)
     validate_twilio = twilio_validator(settings)
 
     @app.get("/health")

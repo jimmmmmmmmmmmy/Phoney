@@ -1,12 +1,13 @@
 """Public, read-only transcript views; provider credentials stay server-side."""
 
 import base64
+import asyncio
 from copy import deepcopy
 import hashlib
 from pathlib import Path
 import re
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 
@@ -15,11 +16,15 @@ SAFE_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
 SID = re.compile(r"CA[0-9a-fA-F]{32}\Z")
 
 
-def register_dashboard(app, settings, manager, voicemail_store=None):
+def register_dashboard(app, settings, manager, voicemail_store=None, recording_library=None):
     """Attach a URL-accessible viewer and API without call-control capabilities."""
     def voicemail_snapshot():
         return (deepcopy(voicemail_store.snapshot()) if voicemail_store is not None else
                 {"enabled": False, "storage_error": "", "voicemails": []})
+
+    def recording_snapshot():
+        return (recording_library.snapshot() if recording_library is not None else
+                {"enabled": False, "storage_error": "", "recordings": []})
 
     @app.get("/dashboard", response_class=HTMLResponse)
     async def page():
@@ -32,7 +37,7 @@ def register_dashboard(app, settings, manager, voicemail_store=None):
         headers = dict(SAFE_HEADERS)
         headers["Content-Security-Policy"] = (
             "default-src 'none'; script-src " + hashes(scripts) + "; style-src " + hashes(styles)
-            + "; connect-src 'self'; img-src 'self' data:; base-uri 'none'; "
+            + "; connect-src 'self'; media-src 'self'; img-src 'self' data:; base-uri 'none'; "
               "frame-ancestors 'none'; form-action 'self'")
         return HTMLResponse(html, headers=headers)
 
@@ -41,6 +46,7 @@ def register_dashboard(app, settings, manager, voicemail_store=None):
         snapshot = deepcopy(manager.snapshot())
         snapshot["schema_version"] = 1
         snapshot["voicemail"] = voicemail_snapshot()
+        snapshot["recordings"] = await asyncio.to_thread(recording_snapshot)
         sessions = snapshot["sessions"]
         active = [s for s in sessions if not s.get("ended_at")]
         selected = next((s for s in sessions if s["call_sid"] == call_sid), None)
@@ -57,6 +63,16 @@ def register_dashboard(app, settings, manager, voicemail_store=None):
     @app.get("/api/voicemails")
     async def voicemails():
         return JSONResponse(voicemail_snapshot(), headers=SAFE_HEADERS)
+
+    @app.get("/api/recordings")
+    def recordings():
+        return JSONResponse(recording_snapshot(), headers=SAFE_HEADERS)
+
+    @app.api_route("/api/recordings/{call_sid}/audio", methods=["GET", "HEAD"])
+    def recording_audio(call_sid: str, request: Request, track: str = "combined"):
+        if recording_library is None:
+            raise HTTPException(404, "Recording is unavailable", headers=SAFE_HEADERS)
+        return recording_library.response(call_sid, track, request)
 
     @app.get("/api/transcripts/{call_sid}/export")
     async def export(call_sid: str, format: str = "json"):

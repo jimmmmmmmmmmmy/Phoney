@@ -1,6 +1,6 @@
 # Build 3 partner handoff — audio and transcripts
 
-Open the [live transcript dashboard](BUILD_3.md), export a selected call as JSON/text, or replay one **completed local capture** with `scripts/replay_capture.py`. These interfaces let partners use recognized words or typed PCM without changing the phone bridge.
+Open the [audio/transcript dashboard](BUILD_3.md), play/download a finalized local WAV, export a selected call as JSON/text, or replay one **completed local capture** with `scripts/replay_capture.py`. These interfaces let partners use recognized words or typed PCM without changing the phone bridge.
 
 Build 3 keeps the working two-person conference and Build 2's two WAV tracks plus manifest. It adds live Deepgram STT with a public viewer and saved transcripts. The code in `integrations/` still provides an offline-only audio contract and replay reader. Deepfake detection, Gemini dialogue, ElevenLabs voice cloning, prompt routing, and audio takeover remain partner work.
 
@@ -12,7 +12,7 @@ Build 3 keeps the working two-person conference and Build 2's two WAV tracks plu
 .venv/bin/python scripts/open_dashboard.py
 ```
 
-The helper reads the installed service's configured public URL when its server-root pointer exists and opens `/dashboard`. Anyone with that ngrok URL can read and download transcript text. No viewer token, login, or authorization header is needed. Twilio signatures and deployment-control authentication remain in place for their separate routes.
+The helper reads the installed service's configured public URL when its server-root pointer exists and opens `/dashboard`. Anyone with that ngrok URL can read/download transcript text and play/download finalized local recordings. No viewer token, login, or authorization header is needed. Twilio signatures and deployment-control authentication remain in place for their separate routes.
 
 | Route / artifact | Partner use |
 | --- | --- |
@@ -28,7 +28,17 @@ Interim text may be replaced. Use final segments for durable downstream records,
 
 The viewer holds ten recent finished sessions, while disk files have no automatic expiry. Transcription admits two concurrent calls, uses two independently bounded track streams per call, and reports capacity/overflow failures rather than slowing the humans. See [Build 3 limits](BUILD_3.md#limits-and-retention) before designing a live consumer. The separate replay tool below never contacts Deepgram.
 
-The [voicemail placeholder](VOICEMAIL.md) adds a Twilio message recording after an unanswered call. Public `GET /api/voicemails` exposes bounded message metadata; the transcript snapshot includes the same data under `voicemail`. This metadata inbox works with Deepgram disabled. Its cloud recording is separate from local capture and is not exposed by the transcript API. The same guide lists four useful provider-free partner tasks and a proposed structured message handoff.
+The [voicemail placeholder](VOICEMAIL.md) adds a Twilio message recording after an unanswered call. Public `GET /api/voicemails` exposes bounded message metadata; the transcript snapshot includes the same data under `voicemail`. This metadata inbox works with Deepgram disabled. Its cloud recording is separate from local capture and is not exposed by the transcript API. Local whole-call WAVs can be played/downloaded separately through the recording library, including finalized partial captures. The same guide lists four useful provider-free partner tasks and a proposed structured message handoff.
+
+## Consume recorded audio over HTTP
+
+`GET /api/recordings` returns `{enabled, storage_error, recordings}` with the newest ten valid finalized captures among the first 1,000 directory entries scanned; newer captures beyond that scan are not guaranteed to appear. The transcript API includes the same snapshot under `recordings`. Use `GET` or `HEAD /api/recordings/<CallSid>/audio?track=combined|inbound|outbound` to retrieve audio. Byte-range requests support seeking.
+
+The default `combined` response is stereo PCM16/8 kHz: left is caller input and right is caller playback. It is synthesized from the two stored mono WAVs without saving a third file; the shorter direction gets zero-padding. Individual `inbound`/`outbound` downloads preserve the original mono format. MP3/M4A exports are not implemented.
+
+Public playback permits finalized `completed` and `partial` captures, with partial status visible. A published manifest and finalized valid WAV headers are required; active captures are not exposed. The offline replay API below still rejects partial captures. For detector evaluation, download original individual tracks, retain manifest quality/timing information from the local handoff, and do not silently mix the combined stereo channels into mono.
+
+No file paths, arbitrary filenames, or Twilio cloud recording URLs are accepted by the public audio route. A voicemail cloud recording can exist without a playable local capture; its metadata status does not establish local audio availability. See [the recording API contract](BUILD_3.md#play-or-download-a-finalized-recording).
 
 ## Run the local example
 
@@ -170,7 +180,7 @@ The values above illustrate the schema; they are not a claim that a real call wa
 2. **Own your output contract.** Build 3 already exports transcript segments. Emit later detection results or agent decisions separately, keyed by call/session, stream, track, and timestamp; the switchboard does not consume those future decisions.
 3. **Add new live consumers explicitly.** This synchronous replay protocol is not registered as a generic callback in FastAPI. The implemented Deepgram adapter uses its own bounded live path. Any new detector/agent consumer must likewise isolate slow or failed work from capture and the conference.
 4. **Treat playback and takeover as a separate milestone.** Observing these files cannot send speech into the call, mute participants, or select prompts. The planned bidirectional bridge and command routes are described in [the implementation recipe](IMPLEMENTATION.md).
-5. **Keep recordings local.** Runtime captures are excluded from Git. Use locally generated or explicitly shared fixtures for partner tests; never commit a real call capture or provider credentials.
+5. **Keep recordings out of Git.** Runtime captures are excluded from Git; the public dashboard intentionally serves finalized WAVs. Use locally generated or explicitly shared fixtures for partner tests; never commit a real call capture or provider credentials.
 
 Verify this seam without any phone or provider account:
 

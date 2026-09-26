@@ -9,8 +9,8 @@
   <style>
     :root{--ink:#132c38;--muted:#627780;--teal:#087e83;--teal-light:#e3f3ef;--paper:#f3f6f4;--line:#dce5e1;--red:#aa4238;--red-light:#fff0ed;--shadow:0 12px 40px #153c3410;--radius:20px}
     *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    button,input{font:inherit}button,a,input{touch-action:manipulation}button,a{ -webkit-tap-highlight-color:transparent}button{cursor:pointer}button:disabled{cursor:default;opacity:.5}
-    a{color:var(--teal)}[hidden]{display:none!important}button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #55b8b7;outline-offset:3px}
+    button,input,select{font:inherit}button,a,input,select{touch-action:manipulation}button,a{ -webkit-tap-highlight-color:transparent}button{cursor:pointer}button:disabled{cursor:default;opacity:.5}
+    a{color:var(--teal)}[hidden]{display:none!important}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,audio:focus-visible{outline:3px solid #55b8b7;outline-offset:3px}
     .topbar{height:92px;display:flex;align-items:center;justify-content:space-between;gap:20px;border-bottom:1px solid var(--line);padding:0 5vw;background:#ffffffb3}
     .brand{display:flex;align-items:center;gap:13px}.brand-mark{width:44px;height:44px;border-radius:13px;background:var(--ink);color:#fff;display:grid;place-items:center;font-size:15px;font-weight:800;letter-spacing:-1px}
     .brand-name{font-size:14px;font-weight:730;letter-spacing:-.2px}.brand-sub{font-size:11px;color:var(--muted);letter-spacing:1.6px;text-transform:uppercase;margin-top:2px}
@@ -31,6 +31,7 @@
     .transcript-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}.card-heading{padding:23px 26px 19px;border-bottom:1px solid var(--line)}
     .card-row{display:flex;align-items:center;justify-content:space-between;gap:16px}.card-title{display:flex;align-items:center;gap:11px;flex-wrap:wrap}.card-title h2{font-size:19px;font-weight:720;letter-spacing:-.5px}.badge{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:750;color:var(--teal);background:var(--teal-light);border-radius:20px;padding:5px 9px;text-transform:uppercase;letter-spacing:.4px}.badge[data-tone="bad"]{color:var(--red);background:var(--red-light)}.badge[data-tone="neutral"]{color:var(--muted);background:#edf2ef}
     .session-detail{font-size:11px;color:var(--muted);margin-top:7px;overflow-wrap:anywhere}.exports{display:flex;gap:5px;flex:0 0 auto}.export{font-size:10px;border:1px solid var(--line);border-radius:7px;padding:6px 8px;color:var(--muted);text-decoration:none;font-weight:700}.export:hover{color:var(--teal);background:#f0f7f3}.export[aria-disabled="true"]{pointer-events:none;opacity:.4}
+    .audio-panel{margin:18px 26px 0;padding:17px 18px;background:#f2f8f5;border:1px solid #d7e7df;border-radius:13px}.audio-heading{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap}.audio-heading h2{font-size:13px;font-weight:750}.audio-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.audio-actions select{max-width:100%;padding:6px 28px 6px 9px;border:1px solid #cdded4;border-radius:7px;color:var(--ink);background:white;font-size:11px}.audio-actions select:disabled{color:var(--muted)}.audio-panel audio{display:block;width:100%;height:42px;margin-top:13px}.audio-status{font-size:12px;color:var(--ink);margin-top:11px}.audio-status[data-tone="bad"]{color:var(--red)}.audio-note{font-size:10px;color:var(--muted);line-height:1.6;margin-top:6px}.audio-download{background:white;white-space:nowrap}
     .tracks{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 26px 0}.track{border:1px solid var(--line);padding:12px 13px;border-radius:12px;background:#fbfcfb;min-width:0}.track-label{display:flex;justify-content:space-between;gap:10px;align-items:center;font-size:11px;font-weight:700}.track-label .direction{width:20px;height:20px;display:inline-grid;place-items:center;border-radius:6px;background:#dff1eb;color:var(--teal);margin-right:5px}.track[data-track="outbound"] .direction{background:#e8edf7;color:#586994}.track-status{font-size:10px;color:var(--muted);font-weight:500}.track-note{font-size:10px;color:var(--muted);margin-top:6px}.track-error{margin-top:7px;font-size:11px;color:var(--red);overflow-wrap:anywhere}
     .transcript-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:21px 26px 12px;color:var(--muted);font-size:10px}.live-label{display:flex;align-items:center;gap:6px;letter-spacing:1px;text-transform:uppercase;font-weight:700}.auto-scroll{display:inline-flex;align-items:center;gap:6px;cursor:pointer}.auto-scroll input{accent-color:var(--teal);margin:0}
     .transcript{height:clamp(340px,49vh,680px);overflow:auto;padding:3px 26px 23px;scroll-behavior:smooth;scrollbar-width:thin;scrollbar-color:#c7d8cf transparent}.messages{display:flex;flex-direction:column;gap:20px}.message{display:grid;grid-template-columns:44px minmax(0,1fr);gap:12px}.timestamp{font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#8d9c95;padding-top:3px;font-variant-numeric:tabular-nums}.message-meta{display:flex;align-items:center;gap:8px;margin-bottom:5px}.speaker{font-size:10px;color:var(--teal);font-weight:800;letter-spacing:.1px}.message[data-track="outbound"] .speaker{color:#596a91}.confidence{font-size:9px;color:#94a29c}.message-text{font-size:15px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;max-width:760px}.interim .message-text{color:#89968f}.interim .speaker{color:#81968c}.interim-label{font-size:9px;background:#f0f4f1;color:#84918a;padding:2px 5px;border-radius:4px}
@@ -39,6 +40,7 @@
     @media(max-width:850px){.desk{grid-template-columns:195px minmax(0,1fr);gap:15px}.card-heading,.tracks{padding-left:19px;padding-right:19px}.transcript,.transcript-toolbar{padding-left:19px;padding-right:19px}.card-row{align-items:start}.tracks{gap:8px}.track-label{align-items:start;flex-direction:column;gap:3px}}
     @media(max-width:650px){.topbar{height:77px;padding:0 20px}.brand-name{font-size:11px}.brand-sub{font-size:9px;letter-spacing:1px}.brand-mark{width:36px;height:36px;border-radius:11px}.top-actions{gap:9px}.connection{font-size:10px}main{padding:29px 20px 20px}.intro{margin-bottom:22px;align-items:start}.intro p{font-size:12px;max-width:235px}.count{font-size:10px}.count strong{font-size:20px}.desk{display:block}.sidebar{max-height:none;padding:14px;margin-bottom:15px}.sidebar-heading{padding-bottom:10px}.call-list{flex-direction:row;overflow:auto;max-height:110px;padding-bottom:3px}.call-option{width:165px;flex:0 0 165px}.sidebar-empty{padding:0 6px 4px}.sidebar-note{display:none}.tracks{padding-top:13px}.track{padding:9px}.track-note{line-height:1.6}.transcript{height:51vh;min-height:320px}.message{grid-template-columns:37px minmax(0,1fr);gap:8px}.message-text{font-size:14px}.card-heading{padding-top:18px;padding-bottom:15px}.card-title h2{font-size:17px}.badge{font-size:8px;padding:4px 7px}.foot{padding:11px 18px;flex-wrap:wrap;gap:5px}.page-foot{flex-wrap:wrap;font-size:9px}.exports{gap:4px}.export{padding:5px 6px}.session-detail{font-size:10px}}
     @media(prefers-reduced-motion:reduce){.transcript{scroll-behavior:auto}}
+    @media(max-width:850px){.audio-panel{margin-left:19px;margin-right:19px}}@media(max-width:650px){.audio-panel{padding:13px;margin-top:14px}.audio-heading{gap:10px}.audio-actions{gap:7px}.audio-status{font-size:11px}}
   </style>
 </head>
 <body>
@@ -48,15 +50,21 @@
   </header>
   <main>
     <section id="dashboard-view" aria-labelledby="desk-heading">
-      <div class="eyebrow">Live transcription</div>
+      <div class="eyebrow">Call recordings &amp; live transcripts</div>
       <div class="intro"><div><h1 id="desk-heading">A place for the conversation.</h1><p>Follow the current call, or return to a recent one.</p></div><div class="count"><strong id="session-count">0</strong><span id="session-count-label">calls</span></div></div>
       <div id="banner" class="banner" role="status" hidden></div>
       <div id="storage-warning" class="banner" data-tone="bad" role="status" hidden></div>
       <div id="voicemail-warning" class="banner" data-tone="bad" role="status" hidden></div>
+      <div id="recording-warning" class="banner" data-tone="bad" role="status" hidden></div>
       <div class="desk">
         <aside class="sidebar" aria-label="Call selection"><div class="sidebar-heading"><h2>Recent calls</h2><button id="follow-live" class="follow" aria-pressed="true">Following live</button></div><div id="call-list" class="call-list"></div><p id="sidebar-empty" class="sidebar-empty">New calls will appear here automatically.</p><div class="sidebar-heading voicemail-heading"><h2>Voicemail inbox</h2></div><div id="voicemail-list" class="call-list"></div><p id="voicemail-empty" class="sidebar-empty voicemail-empty">Voicemail will appear here after an unanswered call.</p><p class="sidebar-note">This view follows the caller’s audio directions. Playback can include the other participant, hold music, and prompts.</p></aside>
         <section class="transcript-card" aria-labelledby="transcript-title">
           <div class="card-heading"><div class="card-row"><div><div class="card-title"><h2 id="transcript-title">Waiting for a call</h2><span id="session-badge" class="badge" data-tone="neutral">Ready</span><span id="voicemail-badge" class="badge" data-tone="neutral" hidden></span></div><p id="session-detail" class="session-detail">Transcripts will appear as people speak.</p></div><div class="exports" aria-label="Export selected call"><a id="export-txt" class="export" aria-disabled="true" tabindex="-1">TXT <span aria-hidden="true">↓</span></a><a id="export-json" class="export" aria-disabled="true" tabindex="-1">JSON <span aria-hidden="true">↓</span></a></div></div><p id="voicemail-detail" class="voicemail-note" hidden></p><p id="session-storage-warning" class="track-error" role="status" hidden></p></div>
+          <section id="audio-panel" class="audio-panel" aria-labelledby="audio-heading">
+            <div class="audio-heading"><h2 id="audio-heading">Call recording</h2><div class="audio-actions"><label class="sr-only" for="audio-track">Audio direction</label><select id="audio-track" aria-describedby="audio-direction-note" disabled><option id="audio-option-combined" value="combined">Both directions</option><option id="audio-option-inbound" value="inbound">Caller input</option><option id="audio-option-outbound" value="outbound">Caller playback</option></select><a id="audio-download" class="export audio-download" aria-disabled="true" tabindex="-1">Download WAV <span aria-hidden="true">↓</span></a></div></div>
+            <audio id="call-audio" controls preload="none" aria-label="Play selected call recording" aria-describedby="audio-status audio-direction-note" hidden></audio>
+            <p id="audio-status" class="audio-status" role="status">Select a recorded call to listen.</p><p id="audio-direction-note" class="audio-note">Both directions uses stereo: caller input on the left, caller playback on the right.</p>
+          </section>
           <div class="tracks">
             <div class="track" data-track="inbound"><div class="track-label"><span><span class="direction" aria-hidden="true">↘</span>Caller input</span><span id="inbound-status" class="track-status">Waiting</span></div><p class="track-note">Audio from the caller’s microphone.</p><p id="inbound-error" class="track-error" hidden></p></div>
             <div class="track" data-track="outbound"><div class="track-label"><span><span class="direction" aria-hidden="true">↗</span>Caller playback</span><span id="outbound-status" class="track-status">Waiting</span></div><p class="track-note">Audio delivered to the caller.</p><p id="outbound-error" class="track-error" hidden></p></div>
@@ -79,14 +87,17 @@
     const trackNames = {inbound: "Caller input", outbound: "Caller playback"};
     const state = {snapshot: null, selected: null, followLive: true, timer: null,
       controller: null, polling: false, paused: false, renderKey: "", listKey: "",
-      voicemailKey: "", refreshRequested: false};
-    const endedStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent"]);
-    const voicemailLabels = {awaiting: "Awaiting recording", recording: "Recording", processing: "Processing",
+      voicemailKey: "", refreshRequested: false, audioCall: null, audioTrack: "combined",
+      audioUrl: "", audioPhase: "idle", audioSession: null};
+    const callSidPattern = /^CA[0-9a-fA-F]{32}$/;
+    const audioTracks = {combined: "Both directions", inbound: "Caller input", outbound: "Caller playback"};
+    const endedStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
+    const voicemailLabels = {awaiting: "Awaiting recording", recording: "Recording", processing: "Unconfirmed recording",
       completed: "Recorded", absent: "No recording", failed: "Recording failed"};
     const voicemailDescriptions = {
       awaiting: "Voicemail mode started; Twilio has not confirmed a recording.",
       recording: "Twilio is recording a voicemail.",
-      processing: "The recording is processing; completion has not been confirmed.",
+      processing: "Awaiting recording confirmation from Twilio. A saved message has not been confirmed.",
       completed: "Twilio confirmed the voicemail recording.",
       absent: "Twilio reported that no voicemail recording is available.",
       failed: "The voicemail recording failed."
@@ -155,9 +166,88 @@
       state.timer = null;
       if (state.controller) state.controller.abort();
     }
+    function recordingUrl(recording, track) {
+      if (!recording || !callSidPattern.test(recording.call_sid) || !Object.hasOwn(audioTracks, track)) return "";
+      const advertised = track === "combined" ? recording.url
+        : recording.tracks && recording.tracks[track] && recording.tracks[track].url;
+      if (!text(advertised).trim()) return "";
+      // Metadata signals availability; only this validated local route becomes a media URL.
+      return `/api/recordings/${recording.call_sid}/audio?track=${track}`;
+    }
+    function updateAudioStatus() {
+      const session = state.audioSession;
+      const recording = session && session.recording;
+      let message;
+      if (state.audioUrl) {
+        const seconds = state.audioTrack === "combined" ? recording.duration_seconds
+          : recording.tracks && recording.tracks[state.audioTrack] && recording.tracks[state.audioTrack].duration_seconds;
+        const details = [audioTracks[state.audioTrack], Number.isFinite(seconds) && seconds >= 0
+          ? timestamp(seconds * 1000) : "", recording.status === "partial" ? "Partial recording" : ""].filter(Boolean).join(" · ");
+        const labels = {idle: "Press play to listen", loading: "Loading audio…", ready: "Ready to play",
+          playing: "Playing", paused: "Paused", buffering: "Buffering audio…", ended: "Playback finished"};
+        message = state.audioPhase === "error"
+          ? "Audio could not be loaded. Try the WAV download or select another direction."
+          : `${labels[state.audioPhase] || labels.idle} · ${details}`;
+      } else if (!session) {
+        message = "Select a recorded call to listen.";
+      } else if (state.snapshot && state.snapshot.recordings && state.snapshot.recordings.enabled === false) {
+        message = "Call recording is disabled on this server.";
+      } else if (recording && recording.status === "failed") {
+        message = "This call’s audio recording could not be finalized.";
+      } else if (isActive(session) || (recording && ["recording", "capturing", "processing", "pending", "live"].includes(recording.status))) {
+        message = "Audio is not finalized yet. Playback will appear after the recording finishes.";
+      } else {
+        message = "No finalized audio is available for this call.";
+      }
+      $("audio-status").textContent = message;
+      $("audio-status").dataset.tone = state.audioPhase === "error" ? "bad" : "neutral";
+    }
+    function renderAudio(session) {
+      const recording = session && session.recording;
+      const call = session ? session.call_sid : null;
+      if (state.audioCall !== call) {
+        state.audioCall = call;
+        state.audioTrack = "combined";
+      }
+      state.audioSession = session || null;
+      const available = Object.keys(audioTracks).filter(track => recordingUrl(recording, track));
+      if (!available.includes(state.audioTrack) && available.length) state.audioTrack = available[0];
+      for (const track of Object.keys(audioTracks)) $("audio-option-" + track).disabled = !available.includes(track);
+      $("audio-track").disabled = available.length === 0;
+      $("audio-track").value = state.audioTrack;
+      const url = recordingUrl(recording, state.audioTrack);
+      const audio = $("call-audio");
+      if (url !== state.audioUrl) {
+        state.audioUrl = url;
+        audio.pause();
+        if (url) audio.setAttribute("src", url);
+        else audio.removeAttribute("src");
+        audio.load();
+        state.audioPhase = "idle";
+      }
+      audio.hidden = !url;
+      audio.setAttribute("aria-label", `Play call recording: ${audioTracks[state.audioTrack]}`);
+      const download = $("audio-download");
+      download.setAttribute("aria-disabled", String(!url));
+      if (url) {
+        download.href = url;
+        download.download = `${call}-${state.audioTrack}.wav`;
+        download.removeAttribute("tabindex");
+      } else {
+        download.removeAttribute("href");
+        download.removeAttribute("download");
+        download.setAttribute("tabindex", "-1");
+      }
+      $("audio-direction-note").textContent = state.audioTrack === "combined"
+        ? "Both directions uses stereo: caller input on the left, caller playback on the right."
+        : state.audioTrack === "inbound" ? "Caller input is audio from the caller’s microphone."
+          : "Caller playback includes the other participant, hold music, and prompts sent to the caller.";
+      updateAudioStatus();
+    }
     function renderCallList(sessions) {
       const key = JSON.stringify([state.selected, state.followLive,
-        sessions.map(session => [session.call_sid, session.status, session.started_at, session.ended_at])]);
+        sessions.map(session => [session.call_sid, session.status, session.started_at, session.ended_at,
+          Boolean(session.recording), session.transcript_unavailable])]);
       if (key === state.listKey) return;
       state.listKey = key;
       const focusedCall = document.activeElement && document.activeElement.dataset.callSid;
@@ -169,11 +259,12 @@
         button.setAttribute("aria-pressed", String(session.call_sid === state.selected));
         const top = node("div", "call-top");
         const active = isActive(session);
-        top.append(node("span", "call-title", active ? "Current call" : `Call at ${clockTime(session.started_at)}`));
+        top.append(node("span", "call-title", active ? "Current call"
+          : `${session.recording && session.transcript_unavailable ? "Recording" : "Call"} at ${clockTime(session.started_at)}`));
         const dot = node("span", "call-state" + (active ? " live" : session.status === "error" ? " error" : ""));
         dot.setAttribute("aria-hidden", "true");
         top.append(dot);
-        button.append(top, node("div", "call-time", `${clockTime(session.started_at, true)} · ${readable(session.status)}`),
+        button.append(top, node("div", "call-time", `${clockTime(session.started_at, true)} · ${readable(session.status)}${session.recording ? " · Audio" : ""}`),
           node("div", "call-id", text(session.call_sid).slice(-12)));
         button.addEventListener("click", () => chooseCall(session.call_sid));
         fragment.append(button);
@@ -242,6 +333,10 @@
       $("voicemail-warning").textContent = voicemailError
         ? "Saved voicemail history could not be loaded. Ask the server owner to check voicemail storage." : "";
       $("voicemail-warning").hidden = !voicemailError;
+      const recordingError = state.snapshot && state.snapshot.recordings && state.snapshot.recordings.storage_error;
+      $("recording-warning").textContent = recordingError
+        ? "Saved call recordings could not be loaded. Ask the server owner to check audio storage." : "";
+      $("recording-warning").hidden = !recordingError;
       const error = text(session && session.storage_error);
       const capacity = session && (session.finish_reason === "capacity-limit"
         || ["inbound", "outbound"].some(track => session.tracks && session.tracks[track]
@@ -260,15 +355,17 @@
     }
     function renderSession(session) {
       renderStorageWarnings(session);
+      renderAudio(session);
       const enabled = state.snapshot && state.snapshot.enabled;
       const active = session && isActive(session);
       const voicemail = session && session.voicemail;
       const voicemailOnly = Boolean(session && session.voicemail_only);
-      const loading = session && !voicemailOnly && typeof state.snapshot.selected_call_sid === "string"
+      const noTranscript = Boolean(session && session.transcript_unavailable);
+      const loading = session && !noTranscript && typeof state.snapshot.selected_call_sid === "string"
         && state.snapshot.selected_call_sid !== session.call_sid;
-      $("transcript-title").textContent = voicemailOnly ? "Voicemail details"
+      $("transcript-title").textContent = noTranscript && session.recording ? "Call recording" : voicemailOnly ? "Voicemail details"
         : session ? (active ? "Current conversation" : "Call transcript") : "Waiting for a call";
-      $("session-badge").textContent = voicemailOnly ? "No transcript" : session ? readable(session.status) : enabled ? "Ready" : "Off";
+      $("session-badge").textContent = noTranscript ? "No transcript" : session ? readable(session.status) : enabled ? "Ready" : "Off";
       $("voicemail-badge").hidden = !voicemail;
       $("voicemail-badge").textContent = voicemail ? "Voicemail · " + voicemailLabel(voicemail) : "";
       $("voicemail-badge").dataset.tone = voicemail && ["absent", "failed"].includes(voicemail.recording_status)
@@ -277,15 +374,15 @@
       $("voicemail-detail").textContent = voicemail
         ? [voicemailDescriptions[voicemail.recording_status] || "Recording status is unavailable.",
           voicemailDuration(voicemail) ? "Duration: " + voicemailDuration(voicemail) + "." : ""].filter(Boolean).join(" ") : "";
-      $("session-badge").dataset.tone = voicemailOnly ? "neutral"
+      $("session-badge").dataset.tone = noTranscript ? "neutral"
         : session && ["error", "failed"].includes(session.status) ? "bad" : active ? "good" : "neutral";
       $("session-detail").textContent = session
         ? `${clockTime(session.started_at, true)}${session.ended_at ? " · Ended " + clockTime(session.ended_at) : ""} · ${text(session.call_sid)}`
         : "Transcripts will appear as people speak.";
       for (const format of ["txt", "json"]) {
         const link = $("export-" + format);
-        link.setAttribute("aria-disabled", String(!session || voicemailOnly));
-        if (session && !voicemailOnly) {
+        link.setAttribute("aria-disabled", String(!session || noTranscript));
+        if (session && !noTranscript) {
           link.href = `/api/transcripts/${encodeURIComponent(session.call_sid)}/export?format=${format}`;
           link.removeAttribute("tabindex");
           link.setAttribute("download", "");
@@ -297,7 +394,7 @@
       const interims = [];
       for (const track of ["inbound", "outbound"]) {
         const details = session && session.tracks && session.tracks[track] || {};
-        $(track + "-status").textContent = voicemailOnly ? "Not transcribed"
+        $(track + "-status").textContent = noTranscript ? "Not transcribed"
           : readable(details.status || (session ? "waiting" : "idle"));
         const error = typeof details.error === "string" ? details.error
           : details.error && typeof details.error.message === "string" ? details.error.message : "";
@@ -311,7 +408,7 @@
       const segments = session && Array.isArray(session.segments) ? session.segments
         .filter(segment => segment && typeof segment === "object" && text(segment.text).trim())
         .slice().sort((a, b) => (Number(a.start_ms) || 0) - (Number(b.start_ms) || 0)) : [];
-      const key = JSON.stringify([session && session.call_sid, segments, interims, enabled, loading, session && session.status, voicemailOnly, voicemail]);
+      const key = JSON.stringify([session && session.call_sid, segments, interims, enabled, loading, session && session.status, noTranscript, voicemail]);
       if (key !== state.renderKey) {
         const changingCall = state.renderKey === "";
         const viewport = $("transcript");
@@ -323,10 +420,13 @@
         const hasText = segments.length + interims.length > 0;
         $("messages").hidden = !hasText;
         $("empty").hidden = hasText;
-        $("empty-title").textContent = voicemailOnly ? "This voicemail has no transcript yet."
+        $("empty-title").textContent = noTranscript && session.recording ? "No transcript for this recording."
+          : voicemailOnly ? "This voicemail has no transcript yet."
           : loading ? "Loading this conversation…" : !enabled ? "Transcription is switched off."
           : !session ? "Ready when you are." : active ? "Listening for the conversation…" : "No speech was finalized.";
-        $("empty-description").textContent = voicemailOnly
+        $("empty-description").textContent = noTranscript && session.recording
+          ? "Use the call recording player above to listen when audio is available."
+          : voicemailOnly
           ? "Recording status is shown above. A recording can exist even when live transcription is unavailable."
           : loading ? "Fetching the selected call’s transcript."
           : !enabled ? "The server is connected, but transcription has not been enabled."
@@ -347,15 +447,26 @@
         ? snapshot.voicemail.voicemails.filter(entry => entry && typeof entry.call_sid === "string").slice() : [];
       voicemails.sort((a, b) => (dateValue(b.started_at).getTime() || 0) - (dateValue(a.started_at).getTime() || 0));
       const byCall = new Map(voicemails.map(entry => [entry.call_sid, entry]));
+      const recordings = snapshot.recordings && Array.isArray(snapshot.recordings.recordings)
+        ? snapshot.recordings.recordings.filter(entry => entry && typeof entry.call_sid === "string"
+          && callSidPattern.test(entry.call_sid)) : [];
+      const recordingsByCall = new Map(recordings.map(entry => [entry.call_sid, entry]));
       const sessions = Array.isArray(snapshot.sessions)
         ? snapshot.sessions.filter(session => session && typeof session.call_sid === "string")
-          .map(session => ({...session, voicemail: byCall.get(session.call_sid)})) : [];
+          .map(session => ({...session, voicemail: byCall.get(session.call_sid), recording: recordingsByCall.get(session.call_sid)})) : [];
+      for (const recording of recordings) {
+        if (!sessions.some(session => session.call_sid === recording.call_sid)) {
+          sessions.push({call_sid: recording.call_sid, started_at: recording.started_at,
+            ended_at: recording.finished_at, status: recording.status, tracks: {}, segments: [],
+            recording, voicemail: byCall.get(recording.call_sid), transcript_unavailable: true});
+        }
+      }
       const recordedSessions = sessions.slice();
       for (const voicemail of voicemails) {
         if (!sessions.some(session => session.call_sid === voicemail.call_sid)) {
           sessions.push({call_sid: voicemail.call_sid, started_at: voicemail.started_at,
             ended_at: voicemail.ended_at, status: voicemail.recording_status, tracks: {},
-            segments: [], voicemail, voicemail_only: true});
+            segments: [], voicemail, voicemail_only: true, transcript_unavailable: true});
         }
       }
       sessions.sort((a, b) => (dateValue(b.started_at).getTime() || 0) - (dateValue(a.started_at).getTime() || 0));
@@ -421,6 +532,33 @@
     });
     $("auto-scroll").addEventListener("change", () => {
       if ($("auto-scroll").checked) $("transcript").scrollTop = $("transcript").scrollHeight;
+    });
+    $("audio-track").addEventListener("change", () => {
+      const selected = $("audio-track").value;
+      if (!Object.hasOwn(audioTracks, selected)) return;
+      state.audioTrack = selected;
+      renderAudio(state.audioSession);
+    });
+    for (const [event, phase] of Object.entries({loadstart: "loading", loadedmetadata: "ready",
+      canplay: "ready", playing: "playing", waiting: "buffering", ended: "ended", error: "error"})) {
+      $("call-audio").addEventListener(event, () => {
+        if (!state.audioUrl) return;
+        state.audioPhase = phase;
+        updateAudioStatus();
+      });
+    }
+    $("call-audio").addEventListener("play", () => {
+      if (!state.audioUrl) return;
+      state.followLive = false;
+      $("follow-live").setAttribute("aria-pressed", "false");
+      $("follow-live").textContent = "Follow live";
+      state.audioPhase = "playing";
+      updateAudioStatus();
+    });
+    $("call-audio").addEventListener("pause", () => {
+      if (!state.audioUrl || $("call-audio").ended) return;
+      state.audioPhase = "paused";
+      updateAudioStatus();
     });
     window.addEventListener("pagehide", stopPolling);
     window.addEventListener("pageshow", event => {

@@ -12,6 +12,15 @@ The installed service lives at `~/Library/Application Support/NewCollegeOperator
 2. Commit the intended files and run `git push origin main`.
 3. On the server Mac, run `python3 scripts/server.py status` and compare the active revision with the commit you pushed.
 
+To compare GitHub directly with the running application from this Mac:
+
+```sh
+git ls-remote https://github.com/jimmmmmmmmmmmy/fictional-rotary-phone.git refs/heads/main
+curl --silent http://127.0.0.1:8000/health
+```
+
+The GitHub SHA and the health response's `commit` value must match after deployment finishes. A different SHA during `preparing` means the previous healthy app is still serving while the candidate is checked.
+
 GitHub sends a signed push event to `PUBLIC_BASE_URL/github/webhook`. The receiver queues the event; while idle, the deployment supervisor checks the queue every second. It also fetches `main` at 30-second intervals between checks, so missed webhook deliveries do not require a manual pull. These are detection intervals: dependency installation, tests, and startup take additional time. Several closely spaced pushes may be combined into one deployment of the latest `main`.
 
 Each candidate gets its own checkout and Python environment under the installed service's `.runtime/deploy/releases/<commit>`. The supervisor installs `requirements-lock.txt`, or `requirements-dev.txt` when the lock file is absent, runs `pytest`, and starts a candidate on local port `8001`. A candidate that fails preparation leaves the current app running. Health checks require `status: "ok"` and a `commit` matching `DEPLOY_COMMIT`. Activation moves the new release to port `8000`; failed activation restores the previous release. Switching the app can briefly interrupt requests.

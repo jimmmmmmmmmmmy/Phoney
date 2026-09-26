@@ -28,6 +28,13 @@
   function initials(contact) { return (contact.firstName.slice(0, 1) + contact.lastName.slice(0, 1)).toUpperCase(); }
   function contacts() { return [...localContacts, ...demoContacts]; }
   function normalizePhone(value) { return typeof value === "string" ? value.replace(/[\s().-]/g, "") : ""; }
+  function findContactByPhone(rawPhone) {
+    const phone = normalizePhone(rawPhone);
+    if (!phonePattern.test(phone)) return null;
+    const contact = contacts().find(candidate => candidate.phone === phone);
+    return contact ? {id: contact.id, name: fullName(contact), phone: contact.phone} : null;
+  }
+  function notifyContactsChanged() { window.dispatchEvent(new CustomEvent("dashboard-contacts-changed")); }
   function date(value, withYear = true) { const parsed = new Date(value); return Number.isFinite(parsed.getTime()) ? parsed.toLocaleDateString("en-US", {month: "short", day: "numeric", ...(withYear ? {year: "numeric"} : {})}) : "—"; }
   function dateTime(value) { const parsed = new Date(value); return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString("en-US", {month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit"}) : "—"; }
   function duration(seconds) { if (!Number.isFinite(seconds)) return "—"; return seconds < 60 ? `${Math.round(seconds)}s` : `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`; }
@@ -94,7 +101,7 @@
   function closeDialog() { if (dialog.open) dialog.close(); }
   function openCreateContact() { if (!dialog) return; opener = document.activeElement; form.reset(); optionalFields.replaceChildren(); errorMessage.hidden = true; closeAdditionalMenu(); syncAdditionalMenu(); dialog.showModal(); form.elements.namedItem("firstName").focus(); }
   function formError(message, input) { errorMessage.textContent = message; errorMessage.hidden = false; input?.focus(); }
-  function saveContact(event) { event.preventDefault(); const data = new FormData(form), get = name => String(data.get(name) || "").trim(); const firstName = get("firstName"), lastName = get("lastName"), phone = normalizePhone(get("phone")); for (const [name, value, label] of [["firstName", firstName, "first name"], ["lastName", lastName, "last name"]]) { if (!value || value.length > 80) { formError(`Enter a ${label} of up to 80 characters.`, form.elements.namedItem(name)); return; } } if (!phonePattern.test(phone)) { formError("Enter a valid phone number with a + country code, such as +1 941 555 0123.", form.elements.namedItem("phone")); return; } const email = get("email"), address = get("address"), website = get("website"); if (email && (!form.elements.namedItem("email").validity.valid || email.length > 254)) { formError("Enter a valid email address.", form.elements.namedItem("email")); return; } if (website) { try { const url = new URL(website); if (!["https:", "http:"].includes(url.protocol) || !url.hostname || website.length > 400) throw new Error("invalid"); } catch (_) { formError("Enter a website beginning with https:// or http://.", form.elements.namedItem("website")); return; } } if (address.length > 400) { formError("Use 400 characters or fewer for the address.", form.elements.namedItem("address")); return; } if (contacts().some(c => c.phone === phone)) { formError("A contact with this phone number already exists.", form.elements.namedItem("phone")); return; } if (storageWarning) { formError("Browser storage is unavailable or saved contact data could not be read. Your contact has not been saved."); return; } if (localContacts.length >= MAX_CONTACTS) { formError("This browser has reached its limit of 500 contacts. Your contact has not been saved."); return; } const contact = {id: `local-${crypto.randomUUID()}`, firstName, lastName, phone, email, address, website, createdAt: new Date().toISOString(), status: "New", demo: false}; const next = [contact, ...localContacts]; try { localStorage.setItem(STORAGE_KEY, JSON.stringify({version: 1, contacts: next})); } catch (_) { formError("Browser storage is unavailable or full. Your contact has not been saved. Allow site storage and try again."); return; } localContacts = next; revision += 1; successMessage = `${fullName(contact)} created. Saved in this browser.`; savedContactId = contact.id; listFilter = "all"; searchText = ""; closeDialog(); window.location.hash = `contacts/${contact.id}`; render(); setTimeout(() => document.getElementById("crm-profile-title")?.focus({preventScroll: true}), 0); }
+  function saveContact(event) { event.preventDefault(); const data = new FormData(form), get = name => String(data.get(name) || "").trim(); const firstName = get("firstName"), lastName = get("lastName"), phone = normalizePhone(get("phone")); for (const [name, value, label] of [["firstName", firstName, "first name"], ["lastName", lastName, "last name"]]) { if (!value || value.length > 80) { formError(`Enter a ${label} of up to 80 characters.`, form.elements.namedItem(name)); return; } } if (!phonePattern.test(phone)) { formError("Enter a valid phone number with a + country code, such as +1 941 555 0123.", form.elements.namedItem("phone")); return; } const email = get("email"), address = get("address"), website = get("website"); if (email && (!form.elements.namedItem("email").validity.valid || email.length > 254)) { formError("Enter a valid email address.", form.elements.namedItem("email")); return; } if (website) { try { const url = new URL(website); if (!["https:", "http:"].includes(url.protocol) || !url.hostname || website.length > 400) throw new Error("invalid"); } catch (_) { formError("Enter a website beginning with https:// or http://.", form.elements.namedItem("website")); return; } } if (address.length > 400) { formError("Use 400 characters or fewer for the address.", form.elements.namedItem("address")); return; } if (contacts().some(c => c.phone === phone)) { formError("A contact with this phone number already exists.", form.elements.namedItem("phone")); return; } if (storageWarning) { formError("Browser storage is unavailable or saved contact data could not be read. Your contact has not been saved."); return; } if (localContacts.length >= MAX_CONTACTS) { formError("This browser has reached its limit of 500 contacts. Your contact has not been saved."); return; } const contact = {id: `local-${crypto.randomUUID()}`, firstName, lastName, phone, email, address, website, createdAt: new Date().toISOString(), status: "New", demo: false}; const next = [contact, ...localContacts]; try { localStorage.setItem(STORAGE_KEY, JSON.stringify({version: 1, contacts: next})); } catch (_) { formError("Browser storage is unavailable or full. Your contact has not been saved. Allow site storage and try again."); return; } localContacts = next; revision += 1; notifyContactsChanged(); successMessage = `${fullName(contact)} created. Saved in this browser.`; savedContactId = contact.id; listFilter = "all"; searchText = ""; closeDialog(); window.location.hash = `contacts/${contact.id}`; render(); setTimeout(() => document.getElementById("crm-profile-title")?.focus({preventScroll: true}), 0); }
   function setSessions(sessions) {
     const knownPhones = new Set(contacts().map(contact => contact.phone));
     const terminalStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
@@ -108,7 +115,24 @@
     });
     if (JSON.stringify(next) !== JSON.stringify(realCalls)) { realCalls = next; revision += 1; }
   }
-  function initialize() { root = document.getElementById("contacts-view"); if (!root) return; readStorage(); buildDialog(); render(); window.addEventListener("hashchange", render); window.addEventListener("storage", event => { if (event.key !== STORAGE_KEY && event.key !== null) return; localContacts = []; storageWarning = ""; readStorage(); revision += 1; render(); }); }
-  window.DashboardCRM = {openCreateContact, render, setSessions};
+  function initialize() {
+    root = document.getElementById("contacts-view");
+    if (!root) return;
+    readStorage();
+    buildDialog();
+    notifyContactsChanged();
+    render();
+    window.addEventListener("hashchange", render);
+    window.addEventListener("storage", event => {
+      if ((event.storageArea && event.storageArea !== localStorage) || (event.key !== STORAGE_KEY && event.key !== null)) return;
+      localContacts = [];
+      storageWarning = "";
+      readStorage();
+      revision += 1;
+      notifyContactsChanged();
+      render();
+    });
+  }
+  window.DashboardCRM = {openCreateContact, render, setSessions, findContactByPhone};
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initialize, {once: true}); else initialize();
 })();

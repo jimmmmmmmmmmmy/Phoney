@@ -763,7 +763,7 @@ const details={call_sid:SID,caller_number:'+14155550111',started_at:'2026-09-26T
 state.snapshot.call_details={enabled:true,storage_error:'',calls:[details]};render();openCall();
 const button=$('call-list').children.find(row=>row.dataset.callSid===SID);
 assert.equal(button.children[0].textContent,'+14155550111');
-assert.equal(button.children[1].textContent,details.summary.text);
+assert.equal(button.children[2].textContent,details.summary.text);
 assert.equal($('call-summary').textContent,details.summary.text);assert.equal($('call-summary').children.length,0);
 assert.equal($('call-summary').dataset.empty,'false');
 const audio=$('call-audio');audio.play();audio.currentTime=1.5;audio.events.timeupdate();
@@ -782,15 +782,15 @@ def test_call_list_uses_honest_fallbacks_when_metadata_is_missing(tmp_path):
 const call=session(),saved=recording();state.snapshot=snapshot([call],[saved]);render();openCall();
 let button=$('call-list').children[0];
 assert.equal(button.children[0].textContent,'Unknown caller');
-assert.equal(button.children[2].textContent,clockTime(call.started_at,true));
-assert.equal(button.children[3].textContent,'02:00');
+assert.equal(button.children[1].children[0].textContent,clockTime(call.started_at,true));
+assert.equal(button.children[1].children[1].textContent,'Duration · 02:00');
 assert.equal($('call-summary').textContent,'No summary yet.');
 saved.duration_seconds=undefined;call.ended_at='2026-09-26T12:01:00Z';render();
-assert.equal($('call-list').children[0].children[3].textContent,'01:00');
-call.ended_at=null;render();assert.ok($('call-list').children[0].children[3].textContent.endsWith('Duration unavailable'));
+assert.equal($('call-list').children[0].children[1].children[1].textContent,'Duration · 01:00');
+call.ended_at=null;render();assert.ok($('call-list').children[0].children[1].children[1].textContent.endsWith('Duration unavailable'));
 state.snapshot.call_details={enabled:true,storage_error:'',calls:[{call_sid:SID,caller_number:'',duration_seconds:0,summary:null}]};render();
 assert.equal($('call-list').children[0].children[0].textContent,'Unknown caller');
-assert.ok($('call-list').children[0].children[3].textContent.endsWith('00:00')); // Zero is known, not missing.
+assert.ok($('call-list').children[0].children[1].children[1].textContent.endsWith('00:00')); // Zero is known, not missing.
 ''')
 
 
@@ -805,4 +805,54 @@ assert.equal($('call-list').children[0].children[0].textContent,'+14155550222');
 assert.equal($('call-summary').textContent,'Saved summary without live transcription.');
 assert.equal($('export-json').attributes['aria-disabled'],'true');assert.equal($('call-audio').hidden,true);
 assert.equal(trackNames.outbound,'New College');
+''')
+
+
+def test_contact_changes_refresh_both_call_lists_without_disturbing_audio_or_focus(tmp_path):
+    run_browser_logic(tmp_path, r'''
+state.snapshot=snapshot([session(),session(OTHER)],[recording()]);
+const phone='+14155550111';
+state.snapshot.call_details={calls:[{call_sid:SID,caller_number:phone},{call_sid:OTHER,caller_number:phone}]};
+state.snapshot.voicemail.voicemails=[{call_sid:OTHER,recording_status:'completed'}];
+render();openCall();backToCalls();
+const audio=$('call-audio');audio.play();audio.currentTime=19;
+const loads=audio.loads,pauses=audio.pauses;
+$('call-list').children[0].focus();
+let contact={id:'local-test-contact',name:'<img src=x> Taylor Demo',phone}, synchronized;
+window.DashboardCRM={findContactByPhone: number=>number===phone?contact:null,
+ setSessions:sessions=>{synchronized=sessions;},render(){}};
+handlers.get('dashboard-contacts-changed')();
+for(const list of ['call-list','voicemail-list']){
+ const row=$(list).children[0];
+ assert.equal(row.children[0].textContent,contact.name);
+ assert.equal(row.children[0].children.length,1);
+ assert.equal(row.children[0].children[0].textContent,phone);
+ assert.equal(row.children[1].className,'call-time');
+ assert.equal(row.children[2].className,'call-summary-preview');
+}
+assert.equal(document.activeElement.dataset.callSid,SID);
+assert.equal(synchronized,state.sessions);
+contact={...contact,name:'Taylor Renamed'};render();
+assert.equal($('call-list').children[0].children[0].textContent,'Taylor Renamed');
+contact=null;handlers.get('dashboard-contacts-changed')();
+assert.equal($('call-list').children[0].children[0].textContent,phone);
+assert.equal($('call-list').children[0].children[0].children.length,0);
+assert.equal(audio.currentTime,19);assert.equal(audio.paused,false);
+assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
+''')
+
+
+def test_return_link_uses_recording_call_date_and_retains_it_outside_recent_history(tmp_path):
+    run_browser_logic(tmp_path, r'''
+state.snapshot=snapshot([session(),session(OTHER)],[recording(),recording(OTHER)]);
+const startedAt='2026-09-26T16:46:00Z';
+state.snapshot.call_details={calls:[{call_sid:SID,caller_number:'+19419930832',started_at:startedAt}]};
+render();openCall();showPage('contacts');
+const expected='Return to call · +19419930832 · '+clockTime(startedAt,true)+' →';
+assert.equal($('audio-return').textContent,expected);
+state.snapshot=snapshot([session(OTHER)],[recording(OTHER)]);render();
+assert.equal($('audio-return').textContent,expected);
+assert.equal(state.audioSession.call_sid,SID);
+state.audioSession.call_detail.started_at='invalid';renderNavigation();
+assert.equal($('audio-return').textContent,'Return to call · +19419930832 · Time unavailable →');
 ''')

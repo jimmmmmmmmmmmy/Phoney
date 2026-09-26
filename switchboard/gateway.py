@@ -1,9 +1,10 @@
 """Bounded async facade over the blocking Twilio REST SDK.
 
-The engine's injectable gateway contract consists of four async methods:
+The engine's injectable gateway contract consists of five async methods:
 create_participant(conference_sid, parent_sid) -> outbound CallSid;
 find_participant(conference_sid, label='callee') -> CallSid or None;
-end_conference(conference_sid) -> None; end_call(call_sid) -> None.
+end_conference(conference_sid) -> None; end_call(call_sid) -> None;
+redirect_call(call_sid, url) -> None.
 Construction is side-effect free. Only create_participant places a call.
 """
 
@@ -39,7 +40,7 @@ class TwilioGateway:
                 from_=self.settings.twilio_number,
                 to=self.settings.callee_number,
                 label="callee",
-                timeout=25,
+                timeout=20 if getattr(self.settings, "voicemail_enabled", False) else 25,
                 max_participants=2,
                 beep="false",
                 start_conference_on_enter=True,
@@ -66,6 +67,10 @@ class TwilioGateway:
                 raise
 
         return await asyncio.to_thread(find)
+
+    async def redirect_call(self, call_sid, url):
+        """One redirect attempt; retries can restart the voicemail recording."""
+        await asyncio.to_thread(lambda: self._client().calls(call_sid).update(url=url, method="POST"))
 
     async def end_conference(self, conference_sid):
         def end():

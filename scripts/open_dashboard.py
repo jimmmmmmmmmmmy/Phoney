@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Open the private transcript viewer without putting its access code in stdout."""
+"""Open the URL-accessible transcript viewer for the installed server."""
 
 import argparse
 import json
 from pathlib import Path
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlsplit
 import webbrowser
 
 from dotenv import dotenv_values
@@ -26,18 +26,15 @@ def main():
     else:
         env_file = root / ".env"
     values = dotenv_values(env_file)
-    token = values.get("DASHBOARD_TOKEN", "")
-    origin = values.get("PUBLIC_BASE_URL", "").rstrip("/")
+    origin = (values.get("PUBLIC_BASE_URL") or "").rstrip("/")
     parsed = urlsplit(origin)
-    if (len(token) < 32 or parsed.scheme != "https" or not parsed.hostname
+    if (parsed.scheme != "https" or not parsed.hostname
             or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment):
-        parser.error("Configure PUBLIC_BASE_URL and DASHBOARD_TOKEN in the server environment")
-    # Fragments are not sent in HTTP requests. The page exchanges this for a
-    # short-lived HttpOnly cookie, then removes it from the address bar.
-    url = origin + "/dashboard#" + urlencode({"token": token})
+        parser.error("Configure PUBLIC_BASE_URL in the server environment")
+    url = origin + "/dashboard"
     if not webbrowser.open(url):
         parser.error("The default browser could not be opened")
-    print("Opened the private transcript viewer. Its access code was not printed.")
+    print("Opened the call transcript dashboard.")
 
 
 if __name__ == "__main__":

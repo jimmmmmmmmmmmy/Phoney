@@ -2,7 +2,7 @@
 
 Open the [live transcript dashboard](BUILD_3.md), export a selected call as JSON/text, or replay one **completed local capture** with `scripts/replay_capture.py`. These interfaces let partners use recognized words or typed PCM without changing the phone bridge.
 
-Build 3 keeps the working two-person conference and Build 2's two WAV tracks plus manifest. It adds live Deepgram STT with a protected viewer and saved transcripts. The code in `integrations/` still provides an offline-only audio contract and replay reader. Deepfake detection, Gemini dialogue, ElevenLabs voice cloning, prompt routing, and audio takeover remain partner work.
+Build 3 keeps the working two-person conference and Build 2's two WAV tracks plus manifest. It adds live Deepgram STT with a public viewer and saved transcripts. The code in `integrations/` still provides an offline-only audio contract and replay reader. Deepfake detection, Gemini dialogue, ElevenLabs voice cloning, prompt routing, and audio takeover remain partner work.
 
 **Choose a partner implementation:** [deepfake detection](DEEPFAKE_DETECTION.md) specifies windowing, quality gates, provider adapters, results, evaluation, and later live integration. [Modulate](MODULATE.md) and [other detection options](DETECTION_ALTERNATIVES.md) supply concrete API contracts. [Gemini + ElevenLabs](VOICE_STACK.md) covers the separate conversational voice agent. You can write and test these adapters with synthetic/local fixtures while actual phone capture/transcription acceptance remains pending. Generated-audio integration checks do not replace that phone test.
 
@@ -12,7 +12,7 @@ Build 3 keeps the working two-person conference and Build 2's two WAV tracks plu
 .venv/bin/python scripts/open_dashboard.py
 ```
 
-The helper reads the installed service's private `.env` when its server-root pointer exists. It opens the viewer without printing the token. The page exchanges the token for an HttpOnly session cookie; a programmatic consumer may instead use `Authorization: Bearer <DASHBOARD_TOKEN>`. Keep that viewer credential out of code and logs. It has no call-control or deployment authority.
+The helper reads the installed service's configured public URL when its server-root pointer exists and opens `/dashboard`. Anyone with that ngrok URL can read and download transcript text. No viewer token, login, or authorization header is needed. Twilio signatures and deployment-control authentication remain in place for their separate routes.
 
 | Route / artifact | Partner use |
 | --- | --- |
@@ -22,11 +22,13 @@ The helper reads the installed service's private `.env` when its server-root poi
 | Same export with `format=txt` | Download readable finalized speech. |
 | `TRANSCRIPT_STORAGE_DIR/<CallSid>.json` | Private atomic finalized session on the server Mac. |
 
-These HTTP routes require viewer authentication. The list response always reports `selected_call_sid`; an absent or unavailable selector falls back to the first active session, otherwise the first recent session. Only that selected session contains segments and interim text. The JSON export envelope contains `schema_version`, `provider`, `model`, `sample_rate`, `track_meanings`, and `session`. Final segments contain `id`, `track`, `start_ms`, `end_ms`, `text`, and `confidence`. Join the session's `call_sid`/`stream_sid` to the capture manifest; retain both direction and timeline offsets. [Full API and status contract](BUILD_3.md#viewer-api-and-authentication).
+These HTTP routes are public and read-only. The list response always reports `selected_call_sid`; an absent or unavailable selector falls back to the first active session, otherwise the first recent session. Only that selected session contains segments and interim text. The JSON export envelope contains `schema_version`, `provider`, `model`, `sample_rate`, `track_meanings`, and `session`. Final segments contain `id`, `track`, `start_ms`, `end_ms`, `text`, and `confidence`. Join the session's `call_sid`/`stream_sid` to the capture manifest; retain both direction and timeline offsets. [Full API and status contract](BUILD_3.md#public-viewer-api).
 
 Interim text may be replaced. Use final segments for durable downstream records, deduplicate by segment ID, and read session/track status before assuming coverage. A `completed` transcription remains a model prediction, not a guaranteed verbatim transcript. `storage_error` is separate from recognition status: a readable in-memory result can still have failed to save to disk.
 
 The viewer holds ten recent finished sessions, while disk files have no automatic expiry. Transcription admits two concurrent calls, uses two independently bounded track streams per call, and reports capacity/overflow failures rather than slowing the humans. See [Build 3 limits](BUILD_3.md#limits-and-retention) before designing a live consumer. The separate replay tool below never contacts Deepgram.
+
+The [voicemail placeholder](VOICEMAIL.md) adds a Twilio message recording after an unanswered call. Public `GET /api/voicemails` exposes bounded message metadata; the transcript snapshot includes the same data under `voicemail`. This metadata inbox works with Deepgram disabled. Its cloud recording is separate from local capture and is not exposed by the transcript API. The same guide lists four useful provider-free partner tasks and a proposed structured message handoff.
 
 ## Run the local example
 

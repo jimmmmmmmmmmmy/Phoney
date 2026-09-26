@@ -2,7 +2,7 @@
 
 Open [BUILD_3.md](BUILD_3.md) to use the live transcript dashboard. Partners can start with [DEEPFAKE_DETECTION.md](DEEPFAKE_DETECTION.md) for detection or [VOICE_STACK.md](VOICE_STACK.md) for Gemini + ElevenLabs.
 
-**Implemented through Build 3:** Twilio conference, passive WAV recording, live Deepgram transcription, authenticated HTML/JSON/text viewing, and offline PCM replay. Synthetic audio passed real Deepgram and local transport/browser checks; actual phone capture/transcription remains pending. No detector, Gemini dialogue, ElevenLabs voice, or keypad agent is installed. See the root [verification status](../README.md) for test and deployment evidence.
+**Implemented through Build 3:** Twilio conference, optional unanswered-call voicemail, passive WAV recording, live Deepgram transcription, public HTML/JSON/text viewing, and offline PCM replay. Anyone with the public ngrok URL can read/download transcript text without signing in. Synthetic audio passed real Deepgram and local transport/browser checks; actual phone capture/transcription remains pending. No detector, Gemini dialogue, ElevenLabs voice, or keypad agent is installed. See the root [verification status](../README.md) for test and deployment evidence.
 
 | Work | Start here | Concrete outcome |
 | --- | --- | --- |
@@ -10,12 +10,13 @@ Open [BUILD_3.md](BUILD_3.md) to use the live transcript dashboard. Partners can
 | Modulate integration | [Exact batch and streaming contracts](MODULATE.md) | API adapters with correct authentication, formats, verdicts, and timestamps. |
 | Other detector choices | [Resemble, Reality Defender, and local baseline](DETECTION_ALTERNATIVES.md) | Alternatives if account access, cost, or accuracy changes the choice. |
 | Conversational voice clone | [Gemini + ElevenLabs voice stack](VOICE_STACK.md) | Transcription → Gemini dialogue/tools → authorized cloned speech. |
-| Audio and text inputs for partners | [Partner handoff](PARTNER_HANDOFF.md) | Typed PCM replay, manifest schema, transcript segments and authenticated exports. |
+| Audio and text inputs for partners | [Partner handoff](PARTNER_HANDOFF.md) | Typed PCM replay, manifest schema, transcript segments and public exports. |
 
 ## Twilio and product references
 
 | Work | Guide |
 | --- | --- |
+| Unanswered-call message recording and provider-free next tasks | [Voicemail](VOICEMAIL.md) |
 | Current live transcript dashboard and acceptance | [Build 3](BUILD_3.md) |
 | Telephone audio quality and higher-rate options | [Audio quality / VoIP](AUDIO_QUALITY.md) |
 | Recording and capture acceptance | [Build 2](BUILD_2.md) |

@@ -1,4 +1,4 @@
-"""Check or set the existing number's voice webhook. Does not place calls."""
+"""Check or set voice and caller-status webhooks. Does not place calls."""
 
 import argparse
 import json
@@ -19,9 +19,10 @@ from config import Settings
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--apply", action="store_true", help="Save PUBLIC_BASE_URL/voice as HTTP POST")
+    parser.add_argument("--apply", action="store_true", help="Save voice and caller-status URLs as HTTP POST")
+    parser.add_argument("--env-file", type=Path, help="Read the installed service's environment")
     args = parser.parse_args()
-    load_dotenv(ROOT / ".env")
+    load_dotenv(args.env_file or ROOT / ".env", override=bool(args.env_file))
     settings = Settings.from_env()
     number = os.getenv("TWILIO_NUMBER", "")
     if not number:
@@ -38,6 +39,7 @@ def main():
     if current.voice_application_sid or current.trunk_sid:
         raise ValueError("Number uses a TwiML App or SIP trunk. Inspect its routing before changing it.")
     expected = settings.public_base_url + "/voice"
+    expected_status = settings.public_base_url + "/status"
     if args.apply:
         runtime = ROOT / ".runtime"
         runtime.mkdir(mode=0o700, exist_ok=True)
@@ -46,12 +48,24 @@ def main():
             backup.write_text(json.dumps({"number_sid": current.sid, "voice_url": current.voice_url,
                                            "voice_method": current.voice_method}, indent=2) + "\n")
             backup.chmod(0o600)
-        client.incoming_phone_numbers(current.sid).update(voice_url=expected, voice_method="POST")
+        status_backup = runtime / "twilio-before-status.json"
+        if not status_backup.exists():
+            status_backup.write_text(json.dumps({"number_sid": current.sid,
+                "status_callback": current.status_callback,
+                "status_callback_method": current.status_callback_method}, indent=2) + "\n")
+            status_backup.chmod(0o600)
+        client.incoming_phone_numbers(current.sid).update(
+            voice_url=expected, voice_method="POST",
+            status_callback=expected_status, status_callback_method="POST")
         current = client.incoming_phone_numbers(current.sid).fetch()
     print(json.dumps({"phone_number": current.phone_number, "voice_url": current.voice_url,
                       "voice_method": current.voice_method,
-                      "matches_local_tunnel": current.voice_url == expected and current.voice_method == "POST"}, indent=2))
-    if args.apply and (current.voice_url != expected or current.voice_method != "POST"):
+                      "status_callback": current.status_callback,
+                      "status_callback_method": current.status_callback_method,
+                      "matches_local_tunnel": current.voice_url == expected and current.voice_method == "POST"
+                          and current.status_callback == expected_status and current.status_callback_method == "POST"}, indent=2))
+    if args.apply and (current.voice_url != expected or current.voice_method != "POST"
+                      or current.status_callback != expected_status or current.status_callback_method != "POST"):
         raise ValueError("Twilio read-back did not match the requested webhook.")
 
 

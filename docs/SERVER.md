@@ -60,7 +60,7 @@ Installation takes about 2–5 minutes when Python 3.11+, authenticated ngrok, a
 
 The installer creates the separate service checkout and Python environment. On first installation it copies the project's `.env` privately and migrates existing runner and webhook metadata so the current ngrok tunnel can be reused. Reinstalling preserves the service's `.env`. Subsequent configuration changes belong in **`~/Library/Application Support/NewCollegeOperator/.env`**; editing the project's `.env` does not change the installed service's settings. After editing the active configuration, run `python3 scripts/server.py stop`, then `python3 scripts/server.py start` from the project to restart the application with those settings.
 
-The service runs as the macOS LaunchAgent `com.newcollege.passive-operator`. It starts at login and restarts if its supervisor exits. It starts or recovers the local app and ngrok tunnel and updates the Twilio voice webhook and GitHub push webhook when the public tunnel URL changes. Repository administration access is required to create or update the GitHub hook.
+The service runs as the macOS LaunchAgent `com.newcollege.passive-operator`. It starts at login and restarts if its supervisor exits. It starts or recovers the local app and ngrok tunnel and updates both Twilio incoming-voice/caller-status webhooks and the GitHub push webhook when the public tunnel URL changes. Repository administration access is required to create or update the GitHub hook.
 
 The hook configuration helper supports an explicit setup or repair:
 
@@ -69,7 +69,7 @@ cd "$HOME/Library/Application Support/NewCollegeOperator"
 .venv/bin/python scripts/configure_github.py --apply
 ```
 
-It creates or updates the repository's push webhook using the current `PUBLIC_BASE_URL` and the secret in the service's `.env`. Run this helper after rotating `GITHUB_WEBHOOK_SECRET`, too. Running it without `--apply` inspects configuration. From the same service directory, the Twilio equivalent is `.venv/bin/python scripts/configure_twilio.py --apply`.
+It creates or updates the repository's push webhook using the current `PUBLIC_BASE_URL` and the secret in the service's `.env`. Run this helper after rotating `GITHUB_WEBHOOK_SECRET`, too. Running it without `--apply` inspects configuration. From the same service directory, the Twilio equivalent is `.venv/bin/python scripts/configure_twilio.py --apply`; it sets and verifies `PUBLIC_BASE_URL/voice` and `PUBLIC_BASE_URL/status`, both POST. From the source checkout, use `.venv/bin/python scripts/configure_twilio.py --env-file "$HOME/Library/Application Support/NewCollegeOperator/.env" --apply` to target the installed configuration explicitly.
 
 ## Operate and recover
 
@@ -120,3 +120,9 @@ Set `MEDIA_CAPTURE_ENABLED=true`, an absolute `MEDIA_STORAGE_DIR`, and optionall
 Capture workers count toward deployment draining until their WAV files are finalized. The supervisor launches Uvicorn with a 64 KiB WebSocket message limit. Updating those launch arguments requires the usual manager reinstall after pushing; application-only revisions still deploy automatically. Explicit service stop ends the call and attempts bounded capture finalization; a process crash can leave incomplete files. Only completed manifests are accepted by partner replay.
 
 Read [BUILD_2.md](BUILD_2.md) for the phone test and [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md) for the local audio interface. Captures are private and excluded from Git. They persist until an operator removes them; deployment never deletes existing recordings.
+
+## Public viewer and unanswered-call voicemail
+
+Run `.venv/bin/python scripts/open_dashboard.py` from the source checkout to open the installed service's configured `PUBLIC_BASE_URL/dashboard`. The dashboard, transcript API, and JSON/text downloads are public: anyone with the ngrok URL can read available text without signing in. Provider keys and audio files stay server-side; existing Twilio signature checks, GitHub webhook signatures, and deployment-control authentication remain enabled.
+
+Set `VOICEMAIL_ENABLED=true`, `VOICEMAIL_MAX_SECONDS=120`, and an absolute private `VOICEMAIL_STORAGE_DIR` in the installed service's private `.env` to record a message when the teammate does not connect. This option defaults to off in a new checkout and is enabled for the live setup. Apply environment changes during an idle period with the server controls above. Keep the signed `/status` incoming-call callback configured so hangup during the greeting cleans up promptly. Saved receipts outside the ten-row startup inbox can be restored for late signed recording callbacks after deployment. See [VOICEMAIL.md](VOICEMAIL.md) for callback contracts, storage boundaries, and the pending real-phone acceptance checks.

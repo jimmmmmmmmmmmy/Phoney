@@ -4,7 +4,7 @@
 
 Build 2 adds a passive Media Stream to the working Build 1 conference. The phone bridge still connects the incoming caller to the fixed `CALLEE_NUMBER`. The server saves two playable WAV files and a manifest for partner development. Allow about two minutes for the phone check after configuration. Automated checks and a real local WebSocket transport check pass; real Twilio capture verification must be recorded separately below.
 
-**Build 2 milestone scope: Twilio capture.** This guide documents the recording layer. [Build 3](BUILD_3.md) now adds optional live Deepgram transcription and an authenticated viewer. Detection, voice cloning, agent speech, and takeover remain unimplemented; partners also get typed audio contracts and an offline replay runner in [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md).
+**Build 2 milestone scope: Twilio capture.** This guide documents the recording layer. [Build 3](BUILD_3.md) now adds optional live Deepgram transcription and a public viewer. Detection, voice cloning, agent speech, and takeover remain unimplemented; partners also get typed audio contracts and an offline replay runner in [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md).
 
 ## Call and capture path
 

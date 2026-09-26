@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 CALL_SID = re.compile(r"CA[0-9a-fA-F]{32}\Z")
 CONFERENCE_SID = re.compile(r"CF[0-9a-fA-F]{32}\Z")
 STATUS_RANK = {"queued": 0, "initiated": 1, "ringing": 2, "in-progress": 3}
+UNANSWERED_STATUSES = {"no-answer", "busy", "failed"}
 
 
 class Switchboard:
@@ -126,6 +127,17 @@ class Switchboard:
             s.seen_events.add(identity)
             if sequence.isdigit():
                 s.last_event_sequence = max(s.last_event_sequence, int(sequence))
+            if s.phase == "voicemail":
+                # The caller leaving the old room is expected during a redirect.
+                # Ending the old callee before redirect confirmation can also
+                # end that room, so defer its cleanup until the new TwiML runs.
+                if label == "callee":
+                    s.outbound_sid = call_sid
+                    self._cleanup_late_callee_locked(s)
+                if event == "conference-end" or (event == "participant-leave" and label == "caller"):
+                    s.voicemail_caller_left = True
+                    self._cleanup_voicemail_room_locked(s)
+                return
             if s.phase == "ended":
                 # A timed-out REST request can complete after reconciliation.
                 # Learn that eventual participant without reviving the session.
@@ -140,6 +152,10 @@ class Switchboard:
             elif event == "participant-leave":
                 if label == "callee":
                     s.outbound_sid = call_sid
+                    status = str(form.get("ParticipantCallStatus", ""))
+                    if status in UNANSWERED_STATUSES:
+                        self._apply_status(s, status)
+                        return
                 self._end_locked(s, f"{label}_left")
             elif event == "conference-start":
                 s.conference_started = True
@@ -154,6 +170,7 @@ class Switchboard:
             else:
                 s.outbound_sid = call_sid
                 s.callee_joined = True
+                s.callee_answered = True
                 self._apply_pending(s)
                 self._mark_connected(s)
 
@@ -180,6 +197,8 @@ class Switchboard:
                     # An early callback without endpoint evidence is not enough
                     # to claim a SID; await REST or a labeled conference event.
                     if call_sid in s.pending_status or len(s.pending_status) < 8:
+                        if status == "in-progress":
+                            s.pending_answered.add(call_sid)
                         previous = s.pending_status.get(call_sid, "")
                         if previous not in TERMINAL_STATUSES:
                             s.pending_status[call_sid] = status
@@ -193,20 +212,31 @@ class Switchboard:
     def _apply_status(self, s, status):
         if s.phase == "ended":
             return
+        if status == "in-progress":
+            s.callee_answered = True
+        if s.phase == "voicemail":
+            s.call_status = status
+            if status not in TERMINAL_STATUSES:
+                self._cleanup_late_callee_locked(s)
+            return
         if status in TERMINAL_STATUSES:
             s.call_status = status
+            if status in UNANSWERED_STATUSES and self._begin_voicemail_locked(s, status):
+                return
             self._end_locked(s, status)
         elif STATUS_RANK.get(status, -1) > STATUS_RANK.get(s.call_status, -1):
             s.call_status = status
 
     def _apply_pending(self, s):
         status = s.pending_status.pop(s.outbound_sid, None)
+        s.callee_answered |= s.outbound_sid in s.pending_answered
         s.pending_status.clear()
+        s.pending_answered.clear()
         if status:
             self._apply_status(s, status)
 
     def _mark_connected(self, s):
-        if s.phase != "ended" and s.caller_joined and s.callee_joined and s.conference_started:
+        if s.phase not in {"ended", "voicemail"} and s.caller_joined and s.callee_joined and s.conference_started:
             s.phase = "connected"
             s.connected = True
             self._cancel_deadline(s.parent_sid)
@@ -221,15 +251,18 @@ class Switchboard:
             await asyncio.sleep(self.settings.switchboard_setup_timeout)
             async with self._lock:
                 s = self.sessions.get(parent_sid)
-                if s and s.phase not in {"connected", "ended"}:
-                    self._end_locked(s, "setup_timeout")
+                if s and s.phase not in {"connected", "ended", "voicemail"}:
+                    if not self._begin_voicemail_locked(s, "setup_timeout"):
+                        self._end_locked(s, "setup_timeout")
         finally:
-            self._deadlines.pop(parent_sid, None)
+            # A setup timeout can replace itself with the voicemail deadline.
+            if self._deadlines.get(parent_sid) is asyncio.current_task():
+                self._deadlines.pop(parent_sid, None)
 
     async def _dial(self, s):
         # Task may not have started before a leave callback marks the room ended.
         async with self._lock:
-            if s.phase == "ended":
+            if s.phase in {"ended", "voicemail"}:
                 return
         try:
             sid = await self.gateway.create_participant(s.conference_sid, s.parent_sid)
@@ -253,22 +286,107 @@ class Switchboard:
                     if not s.outbound_sid:
                         s.outbound_sid = sid
                     elif s.outbound_sid != sid:
-                        self._spawn(self._safe_end_call(sid))
+                        if s.phase == "voicemail":
+                            s.extra_outbound_sid = sid
+                        else:
+                            self._spawn(self._safe_end_call(sid))
                 if s.phase == "ended":
                     if sid:
                         self._spawn(self._safe_end_call(sid))
-                else:
+                elif s.phase == "voicemail":
+                    self._cleanup_late_callee_locked(s)
+                elif not self._begin_voicemail_locked(s, "dial_failed"):
                     self._end_locked(s, "dial_failed")
             return
         async with self._lock:
             if s.outbound_sid and s.outbound_sid != sid:
-                self._spawn(self._safe_end_call(sid))
-                self._end_locked(s, "outbound_identity_mismatch")
+                if s.phase == "voicemail":
+                    # A single dial attempt has at most one returned extra SID.
+                    # Retain it until cleanup cannot affect the redirected caller.
+                    s.extra_outbound_sid = sid
+                    self._cleanup_late_callee_locked(s)
+                else:
+                    self._spawn(self._safe_end_call(sid))
+                    self._end_locked(s, "outbound_identity_mismatch")
             else:
                 s.outbound_sid = sid
                 self._apply_pending(s)
                 if s.phase == "ended":
                     self._spawn(self._safe_end_call(sid))
+                elif s.phase == "voicemail":
+                    self._cleanup_late_callee_locked(s)
+
+    def _begin_voicemail_locked(self, s, reason):
+        # Reconciliation or a verified callback can establish the SID after an
+        # earlier answer callback. Preserve that fact before deciding fallback.
+        s.callee_answered |= s.outbound_sid in s.pending_answered
+        if (not getattr(self.settings, "voicemail_enabled", False) or s.connected or s.callee_answered
+                or s.phase in {"voicemail", "ended"} or self._closing):
+            return False
+        s.phase = "voicemail"
+        s.voicemail_reason = reason
+        self._cancel_deadline(s.parent_sid)
+        self._deadlines[s.parent_sid] = asyncio.create_task(self._voicemail_deadline(s.parent_sid))
+        self._spawn(self._redirect_voicemail(s))
+        return True
+
+    async def _voicemail_deadline(self, parent_sid):
+        try:
+            await asyncio.sleep(getattr(self.settings, "voicemail_max_seconds", 120) + 30)
+            async with self._lock:
+                s = self.sessions.get(parent_sid)
+                if s and s.phase == "voicemail":
+                    self._end_locked(s, "voicemail_timeout")
+        finally:
+            if self._deadlines.get(parent_sid) is asyncio.current_task():
+                self._deadlines.pop(parent_sid, None)
+
+    async def _redirect_voicemail(self, s):
+        async with self._lock:
+            if s.phase != "voicemail" or s.voicemail_confirmed:
+                return
+        try:
+            await self.gateway.redirect_call(s.parent_sid,
+                f"{self.settings.public_base_url}/voicemail/{s.parent_sid}")
+        except Exception as exc:
+            log.warning("voicemail redirect failed parent=%s type=%s", s.parent_sid, type(exc).__name__)
+            async with self._lock:
+                # The HTTP response may fail after Twilio fetched the new TwiML.
+                # Its signed callback is stronger evidence than that failure.
+                if s.phase == "voicemail" and not s.voicemail_confirmed:
+                    self._end_locked(s, "voicemail_redirect_failed")
+
+    def _cleanup_late_callee_locked(self, s):
+        if s.voicemail_confirmed and s.voicemail_caller_left:
+            for sid in {s.outbound_sid, s.extra_outbound_sid} - {""}:
+                self._spawn(self._safe_end_call(sid))
+
+    def _cleanup_voicemail_room_locked(self, s):
+        if s.voicemail_confirmed and s.voicemail_caller_left and not s.voicemail_room_cleaned:
+            s.voicemail_room_cleaned = True
+            if s.conference_sid:
+                self._spawn(self._safe_end_conference(s.conference_sid))
+            self._cleanup_late_callee_locked(s)
+
+    async def voicemail_started(self, parent_sid):
+        """Confirm the new TwiML; old-room cleanup also waits for caller departure."""
+        async with self._lock:
+            s = self.sessions.get(parent_sid)
+            if not s or s.phase != "voicemail":
+                return False
+            if not s.voicemail_confirmed:
+                s.voicemail_confirmed = True
+                self._cleanup_voicemail_room_locked(s)
+            return True
+
+    async def voicemail_finished(self, parent_sid, reason="voicemail_finished"):
+        async with self._lock:
+            s = self.sessions.get(parent_sid)
+            if s and s.phase == "voicemail":
+                safe_reason = reason if reason in {
+                    "voicemail_finished", "voicemail_recorded", "voicemail_hangup",
+                    "voicemail_failed", "voicemail_absent"} else "voicemail_finished"
+                self._end_locked(s, safe_reason)
 
     def _end_locked(self, s, reason):
         if s.phase == "ended":
@@ -306,6 +424,8 @@ class Switchboard:
             work.append(self._safe_end_conference(s.conference_sid))
         if s.outbound_sid:
             work.append(self._safe_end_call(s.outbound_sid))
+        if s.extra_outbound_sid:
+            work.append(self._safe_end_call(s.extra_outbound_sid))
         await asyncio.gather(*work)
         if self.on_end:
             try:
@@ -316,7 +436,10 @@ class Switchboard:
     async def finished(self, parent_sid):
         async with self._lock:
             s = self.sessions.get(parent_sid)
-            if s:
+            if s and s.phase == "voicemail":
+                s.voicemail_caller_left = True
+                self._cleanup_voicemail_room_locked(s)
+            elif s:
                 self._end_locked(s, "caller_finished")
 
     async def wait_idle(self):

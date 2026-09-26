@@ -4,7 +4,7 @@
 
 **Start by implementing two Twilio call legs connected through Python. Get two people talking through that bridge, then replace one direction with the cloned voice pipeline.**
 
-This is the selected implementation recipe for the [final product](FINAL_BUILD.md). It describes code to add, not features already running. Build 3 includes the conference, passive capture, observational Deepgram transcription, an authenticated transcript viewer, ngrok, signed webhooks, and GitHub deployment. Its current caller-playback transcript is not the isolated owner input drawn below. Keep [Build 1](BUILD_1.md) as the small conference smoke test; its final-build successor uses the bridge below. Budget roughly 4–8 focused hours for the bridge/keypad prototype and another 8–16 for provider integration and failure tests, assuming working provider accounts and two test phones. These are engineering estimates, not measured build times.
+This is the selected implementation recipe for the [final product](FINAL_BUILD.md). It describes code to add, not features already running. Build 3 includes the conference, passive capture, observational Deepgram transcription, an public transcript viewer, ngrok, signed webhooks, and GitHub deployment. Its current caller-playback transcript is not the isolated owner input drawn below. Keep [Build 1](BUILD_1.md) as the small conference smoke test; its final-build successor uses the bridge below. Budget roughly 4–8 focused hours for the bridge/keypad prototype and another 8–16 for provider integration and failure tests, assuming working provider accounts and two test phones. These are engineering estimates, not measured build times.
 
 ## Use this architecture
 

@@ -21,18 +21,11 @@ def live_client(tmp_path, *, options=None):
     settings = replace(SETTINGS, media_capture_enabled=True,
                        media_storage_dir=str(tmp_path / "captures"),
                        transcription_enabled=True, deepgram_api_key="fixture-private-key",
-                       transcript_storage_dir=str(tmp_path / "transcripts"),
-                       dashboard_token="integration-viewer-access-code-32-characters")
+                       transcript_storage_dir=str(tmp_path / "transcripts"))
     gateway, connector = Gateway(), Connector(options)
     app = create_app(settings, gateway=gateway, transcription_connector=connector)
     with TestClient(app, base_url=settings.public_base_url) as client:
         yield client, settings, gateway, connector
-
-
-def viewer(client, settings):
-    response = client.post("/dashboard/login", json={"token": settings.dashboard_token},
-                           headers={"Origin": settings.public_base_url})
-    assert response.status_code == 200
 
 
 def wait_for(client, predicate):
@@ -75,11 +68,10 @@ def test_rejected_twilio_stream_never_opens_provider(tmp_path, rejection):
         assert gateway.ended_calls == []
 
 
-def test_signed_two_track_audio_reaches_private_live_view_and_final_exports(tmp_path):
+def test_signed_two_track_audio_reaches_public_live_view_and_final_exports(tmp_path):
     with live_client(tmp_path) as (client, settings, gateway, connector):
         _, token = stream_and_token(client, settings)
-        assert client.get("/api/transcripts").status_code == 401
-        viewer(client, settings)
+        assert client.get("/api/transcripts").status_code == 200
         with client.websocket_connect(f"/media/{PARENT}/", headers=socket_headers(settings)) as socket:
             send_start(socket, settings, token)
             send_audio(socket, track="inbound", sample=0x00)
@@ -126,7 +118,6 @@ def test_signed_two_track_audio_reaches_private_live_view_and_final_exports(tmp_
 def test_provider_failure_is_visible_while_capture_and_phone_call_continue(tmp_path):
     with live_client(tmp_path, options=[{"failure": True}]) as (client, settings, gateway, connector):
         _, token = stream_and_token(client, settings)
-        viewer(client, settings)
         with client.websocket_connect(f"/media/{PARENT}/", headers=socket_headers(settings)) as socket:
             send_start(socket, settings, token)
             wait_for(client, lambda: len(connector.sockets) == 2

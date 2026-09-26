@@ -1,4 +1,4 @@
-"""Build 3: a signed Twilio switchboard, capture, and private live transcripts."""
+"""Signed Twilio calling, unanswered-call voicemail, and public live transcripts."""
 
 import hashlib
 import hmac
@@ -20,6 +20,7 @@ from switchboard.service import SessionRejected, Switchboard
 from media_capture import CaptureManager
 from transcription import TranscriptionManager
 from dashboard import register_dashboard
+from voicemail import VoicemailStore
 
 logger = logging.getLogger("uvicorn.error")
 MAX_GITHUB_BODY_BYTES = 1024 * 1024
@@ -45,7 +46,13 @@ def write_deploy_trigger(path: str, delivery_id: str) -> None:
 def create_app(settings: Settings, gateway=None, transcription_connector=None) -> FastAPI:
     transcription = TranscriptionManager(settings, connector=transcription_connector)
     media_capture = CaptureManager(settings, observer=transcription)
-    switchboard = Switchboard(settings, gateway=gateway, on_end=media_capture.finish)
+    voicemails = VoicemailStore(settings)
+
+    async def call_ended(call_sid):
+        voicemails.finish(call_sid)
+        await media_capture.finish(call_sid)
+
+    switchboard = Switchboard(settings, gateway=gateway, on_end=call_ended)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -53,13 +60,15 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
         await switchboard.close()
         await media_capture.close()
         await transcription.close()
+        await voicemails.close()
 
     app = FastAPI(title="Passive Operator — Build 3", docs_url=None, redoc_url=None,
                   openapi_url=None, redirect_slashes=False, lifespan=lifespan)
     app.state.switchboard = switchboard
     app.state.media_capture = media_capture
     app.state.transcription = transcription
-    register_dashboard(app, settings, transcription)
+    app.state.voicemails = voicemails
+    register_dashboard(app, settings, transcription, voicemail_store=voicemails)
     validate_twilio = twilio_validator(settings)
 
     @app.get("/health")
@@ -68,7 +77,8 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
         result = {"status": "ok", "service": "passive-operator", "build": 3,
                   "switchboard_ready": settings.switchboard_ready,
                   "media_capture_enabled": settings.media_capture_enabled and settings.switchboard_ready,
-                  "transcription_enabled": settings.transcription_enabled and settings.switchboard_ready}
+                  "transcription_enabled": settings.transcription_enabled and settings.switchboard_ready,
+                  "voicemail_enabled": settings.voicemail_enabled and settings.switchboard_ready}
         if settings.deploy_commit:
             result["commit"] = settings.deploy_commit
         return result
@@ -85,7 +95,8 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
         return JSONResponse({"draining": switchboard.draining,
                              "active_sessions": switchboard.active_count,
                              "pending_work": switchboard.pending_count + media_capture.active_count
-                                             + media_capture.pending_count + transcription.active_count},
+                                             + media_capture.pending_count + transcription.active_count
+                                             + voicemails.active_count},
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/internal/deploy", dependencies=[Depends(validate_deploy_control)])
@@ -160,6 +171,9 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
                 return Response(str(response), media_type="application/xml")
             if session.phase == "ended":
                 response.hangup()
+                return Response(str(response), media_type="application/xml")
+            if session.phase == "voicemail":
+                response.redirect(settings.public_base_url + f"/voicemail/{call_sid}", method="POST")
                 return Response(str(response), media_type="application/xml")
             response.say("New College Data Science Team", language="en-US")
             if settings.media_capture_enabled:
@@ -260,10 +274,81 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
         require_sid(parent_call_sid)
         if require_sid(form.get("CallSid")) != parent_call_sid:
             raise HTTPException(400, "Call callback does not match the session")
+        session = switchboard.sessions.get(parent_call_sid)
+        if session and session.phase == "voicemail":
+            # A late Dial action can arrive while the REST redirect is in flight.
+            # Returning Hangup here would cut off the new voicemail flow.
+            await switchboard.finished(parent_call_sid)
+            response = VoiceResponse()
+            response.redirect(settings.public_base_url + f"/voicemail/{parent_call_sid}", method="POST")
+            return Response(str(response), media_type="application/xml")
         await switchboard.finished(parent_call_sid)
         response = VoiceResponse()
         response.hangup()
         return Response(str(response), media_type="application/xml")
+
+    @app.post("/voicemail/{parent_call_sid}")
+    async def voicemail_start(parent_call_sid: str, form=Depends(validate_twilio)):
+        require_sid(parent_call_sid)
+        if require_sid(form.get("CallSid")) != parent_call_sid:
+            raise HTTPException(400, "Voicemail callback does not match the call")
+        response = VoiceResponse()
+        if not await switchboard.voicemail_started(parent_call_sid):
+            response.hangup()
+            return Response(str(response), media_type="application/xml")
+        session = switchboard.sessions[parent_call_sid]
+        if not voicemails.start(parent_call_sid, session.voicemail_reason):
+            await switchboard.voicemail_finished(parent_call_sid, "voicemail_unavailable")
+            response.hangup()
+            return Response(str(response), media_type="application/xml")
+        notice = "recorded and transcribed" if settings.transcription_enabled else "recorded"
+        response.say(
+            "You've reached the New College Data Science Team. No one is available to answer. "
+            f"Your message will be {notice}. After the beep, please leave your name, "
+            "callback number, and message. Press pound when you are finished.", language="en-US")
+        response.record(
+            action=settings.public_base_url + f"/voicemail/finished/{parent_call_sid}",
+            method="POST", max_length=settings.voicemail_max_seconds, timeout=5,
+            finish_on_key="#", play_beep=True, trim="do-not-trim", transcribe=False,
+            recording_status_callback=settings.public_base_url + f"/voicemail/recording/{parent_call_sid}",
+            recording_status_callback_method="POST",
+            recording_status_callback_event="in-progress completed absent",
+        )
+        return Response(str(response), media_type="application/xml")
+
+    @app.post("/voicemail/finished/{parent_call_sid}")
+    async def voicemail_finished(parent_call_sid: str, form=Depends(validate_twilio)):
+        require_sid(parent_call_sid)
+        if require_sid(form.get("CallSid")) != parent_call_sid:
+            raise HTTPException(400, "Voicemail callback does not match the call")
+        # The Record action is not evidence that Twilio has a downloadable file.
+        # Only recordingStatusCallback can promote its receipt to completed.
+        voicemails.finish(parent_call_sid)
+        await switchboard.voicemail_finished(parent_call_sid)
+        response = VoiceResponse()
+        response.hangup()
+        return Response(str(response), media_type="application/xml")
+
+    @app.post("/voicemail/recording/{parent_call_sid}")
+    async def voicemail_recording(parent_call_sid: str, form=Depends(validate_twilio)):
+        require_sid(parent_call_sid)
+        if require_sid(form.get("CallSid")) != parent_call_sid:
+            raise HTTPException(400, "Recording callback does not match the call")
+        recording_sid = require_sid(form.get("RecordingSid"), "RE")
+        if form.get("RecordingSource", "RecordVerb") != "RecordVerb":
+            raise HTTPException(400, "Unexpected recording source")
+        status = str(form.get("RecordingStatus", ""))
+        raw_duration = str(form.get("RecordingDuration", ""))
+        if raw_duration and (not raw_duration.isascii() or not raw_duration.isdecimal() or len(raw_duration) > 4):
+            raise HTTPException(400, "Invalid recording duration")
+        duration = int(raw_duration) if raw_duration else None
+        await voicemails.restore(parent_call_sid)
+        if not voicemails.recording(parent_call_sid, recording_sid, status, duration):
+            raise HTTPException(400, "Unknown or mismatched voicemail recording")
+        if status in {"completed", "absent", "failed"}:
+            reason = {"completed": "voicemail_recorded", "absent": "voicemail_absent", "failed": "voicemail_failed"}[status]
+            await switchboard.voicemail_finished(parent_call_sid, reason)
+        return Response(status_code=204)
 
     @app.post("/status")
     async def status(form=Depends(validate_twilio)):
@@ -273,6 +358,12 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None) -
         if call_status not in {"queued", "initiated", "ringing", "in-progress", "completed",
                                "busy", "failed", "no-answer", "canceled"}:
             call_status = "unknown"
+        if call_status in {"completed", "busy", "failed", "no-answer", "canceled"}:
+            session = switchboard.sessions.get(form["CallSid"])
+            if session and session.phase == "voicemail":
+                await switchboard.voicemail_finished(form["CallSid"], "voicemail_hangup")
+            else:
+                await switchboard.finished(form["CallSid"])
         logger.info("call_status call_sid=%s status=%s", form["CallSid"], call_status)
         return Response(status_code=204)
 

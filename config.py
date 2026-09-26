@@ -33,7 +33,9 @@ class Settings:
     deepgram_api_key: str = field(default="", repr=False)
     deepgram_model: str = "nova-3"
     transcript_storage_dir: str = ""
-    dashboard_token: str = field(default="", repr=False)
+    voicemail_enabled: bool = False
+    voicemail_max_seconds: int = 120
+    voicemail_storage_dir: str = ""
 
     def __post_init__(self):
         if not self.account_sid.startswith("AC") or len(self.account_sid) != 34:
@@ -72,8 +74,6 @@ class Settings:
             raise ValueError("TRANSCRIPTION_ENABLED must be true or false.")
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", self.deepgram_model):
             raise ValueError("DEEPGRAM_MODEL must be a model identifier.")
-        if self.dashboard_token and not 32 <= len(self.dashboard_token) <= 256:
-            raise ValueError("DASHBOARD_TOKEN must contain 32 to 256 characters.")
         if self.transcription_enabled:
             if not self.media_capture_enabled:
                 raise ValueError("Enable MEDIA_CAPTURE_ENABLED before live transcription.")
@@ -81,8 +81,12 @@ class Settings:
                 raise ValueError("Set DEEPGRAM_API_KEY before enabling transcription.")
             if not Path(self.transcript_storage_dir).is_absolute():
                 raise ValueError("TRANSCRIPT_STORAGE_DIR must be an absolute private directory.")
-            if not self.dashboard_token:
-                raise ValueError("Set DASHBOARD_TOKEN before enabling transcription.")
+        if type(self.voicemail_enabled) is not bool:
+            raise ValueError("VOICEMAIL_ENABLED must be true or false.")
+        if type(self.voicemail_max_seconds) is not int or not 2 <= self.voicemail_max_seconds <= 600:
+            raise ValueError("VOICEMAIL_MAX_SECONDS must be between 2 and 600 seconds.")
+        if self.voicemail_enabled and not Path(self.voicemail_storage_dir).is_absolute():
+            raise ValueError("VOICEMAIL_STORAGE_DIR must be an absolute private directory.")
 
     @property
     def switchboard_ready(self):
@@ -97,6 +101,9 @@ class Settings:
         transcription_flag = os.getenv("TRANSCRIPTION_ENABLED", "false").strip().lower()
         if transcription_flag not in {"true", "false"}:
             raise ValueError("TRANSCRIPTION_ENABLED must be true or false.")
+        voicemail_flag = os.getenv("VOICEMAIL_ENABLED", "false").strip().lower()
+        if voicemail_flag not in {"true", "false"}:
+            raise ValueError("VOICEMAIL_ENABLED must be true or false.")
         return cls(
             account_sid=os.getenv("TWILIO_ACCOUNT_SID", "").strip(),
             auth_token=os.getenv("TWILIO_AUTH_TOKEN", "").strip(),
@@ -118,5 +125,7 @@ class Settings:
             deepgram_api_key=os.getenv("DEEPGRAM_API_KEY", "").strip(),
             deepgram_model=os.getenv("DEEPGRAM_MODEL", "nova-3").strip(),
             transcript_storage_dir=os.getenv("TRANSCRIPT_STORAGE_DIR", "").strip(),
-            dashboard_token=os.getenv("DASHBOARD_TOKEN", "").strip(),
+            voicemail_enabled=voicemail_flag == "true",
+            voicemail_max_seconds=int(os.getenv("VOICEMAIL_MAX_SECONDS", "120")),
+            voicemail_storage_dir=os.getenv("VOICEMAIL_STORAGE_DIR", "").strip(),
         )

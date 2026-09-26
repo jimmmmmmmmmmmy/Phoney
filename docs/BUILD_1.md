@@ -81,9 +81,11 @@ Return TwiML only where Twilio expects call instructions. Event receivers acknow
 
 Use `operator-{inbound CallSid}` as the conference name and stable labels `caller` and `callee`. The caller has `startConferenceOnEnter=false`; the callee has `startConferenceOnEnter=true`. Set `endConferenceOnExit=true` for both in Build 1, `beep=false`, and `maxParticipants=2`. Configure callback URL/events on the caller, who joins first. Twilio uses the first participant’s conference callback configuration. Labels must be unique within the room; leaving with `endConferenceOnExit=true` ends it for everyone. [Twilio Conference reference](https://www.twilio.com/docs/voice/twiml/conference).
 
-After the caller’s join event, create the outbound participant using `client.conferences(conference_sid).participants.create(...)`: `from_=TWILIO_NUMBER`, `to=CALLEE_NUMBER`, `label="callee"`, matching start/end flags, a 25-second ringing timeout, and the call-status URL. Subscribe to `initiated`, `ringing`, `answered`, and `completed`. Participant creation initiates the outbound call; no separate callee TwiML route is needed for this design. Twilio adds a small timeout buffer, so the configured timeout is not an exact stopwatch deadline. [Conference Participants API](https://www.twilio.com/docs/voice/api/conference-participant-resource).
+After the caller’s join event, create the outbound participant using `client.conferences(conference_sid).participants.create(...)`: `from_=TWILIO_NUMBER`, `to=CALLEE_NUMBER`, `label="callee"`, matching start/end flags, a 25-second ringing timeout (20 seconds with the later voicemail option enabled), and the call-status URL. Subscribe to `initiated`, `ringing`, `answered`, and `completed`. Participant creation initiates the outbound call; no separate callee TwiML route is needed for this design. Twilio adds a small timeout buffer, so the configured timeout is not an exact stopwatch deadline. [Conference Participants API](https://www.twilio.com/docs/voice/api/conference-participant-resource).
 
 An `answered` event alone is not proof that both people can talk. Mark the session connected only when both labeled participants have joined and the conference has started. A voicemail system can answer; the live test must establish that the teammate actually answered. Call-progress event subscriptions differ from the `CallStatus` values carried in those events. Handle `busy`, `no-answer`, `failed`, `canceled`, and `completed` as terminal outcomes. [Twilio Call resource](https://www.twilio.com/docs/voice/api/call-resource).
+
+This section records the original Build 1 behavior. With the later `VOICEMAIL_ENABLED=true` option, a caller whose teammate never connected is redirected to [voicemail](VOICEMAIL.md) instead of immediate hangup. Established human conversations keep their normal cleanup behavior.
 
 ## Duplicate events and cleanup
 
@@ -107,14 +109,14 @@ Automated checks use mock phone numbers and a mocked Twilio client; they do not 
 
 ## Later milestones and partner scope
 
-**Current baseline: Twilio calling/capture plus observational Deepgram transcription.** [Build 2](BUILD_2.md) supplies capture; [Build 3](BUILD_3.md) adds live transcripts and a protected viewer. Detection, Gemini dialogue, ElevenLabs voice generation, and takeover remain partner work described in [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md). The future rows below describe the wider product, not implemented features.
+**Current baseline: Twilio calling/capture plus observational Deepgram transcription.** [Build 2](BUILD_2.md) supplies capture; [Build 3](BUILD_3.md) adds live transcripts and a public viewer. Detection, Gemini dialogue, ElevenLabs voice generation, and takeover remain partner work described in [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md). The future rows below describe the wider product, not implemented features.
 
 The final product adds outbound calls and owner keypad shortcuts that delegate the conversation to an agent using the owner's cloned voice. See [Final build — put your AI on the call](FINAL_BUILD.md) for `#1`–`#4` prompt selection, context transfer, and return-to-human behavior. Build 1 remains the two-human switchboard; manual delegation will work independently of AI detection.
 
 | Build | Deliverable |
 | --- | --- |
 | 2 | Capture clearly identified call audio with Media Streams; decode the incoming audio format correctly and write playable WAV files. |
-| 3 | Live Deepgram transcripts, authenticated HTML viewing, and JSON/text exports. |
+| 3 | Live Deepgram transcripts, public HTML viewing, and JSON/text exports. |
 | Future | Manual takeover with a proven agent-audio bridge, readiness handshake, and cleanup behavior. |
 | Future | Gemini conversation/context handling and ElevenLabs cloned speech using the proven bridge. |
 | Future | Evaluated synthetic-speech detection; any automatic handoff needs a separate owner-enabled policy. |

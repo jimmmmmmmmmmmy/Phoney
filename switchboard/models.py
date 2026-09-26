@@ -15,7 +15,9 @@ class CallSession:
     phase: str = "waiting"
     conference_sid: str = ""
     outbound_sid: str = ""
+    extra_outbound_sid: str = ""
     connected: bool = False
+    callee_answered: bool = False
     reason: str = ""
     caller_joined: bool = False
     callee_joined: bool = False
@@ -27,3 +29,8 @@ class CallSession:
     call_status: str = ""
     seen_events: set[tuple[str, str, str]] = field(default_factory=set, repr=False)
     pending_status: dict[str, str] = field(default_factory=dict, repr=False)
+    pending_answered: set[str] = field(default_factory=set, repr=False)
+    voicemail_confirmed: bool = False
+    voicemail_caller_left: bool = False
+    voicemail_room_cleaned: bool = False
+    voicemail_reason: str = ""

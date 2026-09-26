@@ -39,6 +39,11 @@ class Settings:
     call_details_storage_dir: str = ""
     gemini_api_key: str = field(default="", repr=False)
     gemini_summary_model: str = "gemini-3.8-flash"
+    owner_number: str = field(default="", repr=False)
+    allowed_destinations: tuple[str, ...] = ()
+    operator_admin_token: str = field(default="", repr=False)
+    max_call_seconds: int = 1800
+    voice_agent_enabled: bool = False
 
     def __post_init__(self):
         if not self.account_sid.startswith("AC") or len(self.account_sid) != 34:
@@ -99,10 +104,36 @@ class Settings:
                 raise ValueError("CALL_DETAILS_STORAGE_DIR must differ from transcript and voicemail storage.")
         if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,99}", self.gemini_summary_model):
             raise ValueError("GEMINI_SUMMARY_MODEL must be a model identifier without a path.")
+        if self.owner_number and not re.fullmatch(r"\+[1-9][0-9]{7,14}", self.owner_number):
+            raise ValueError("OWNER_NUMBER must be an E.164 phone number including country code.")
+        if len(set(self.allowed_destinations)) != len(self.allowed_destinations):
+            raise ValueError("ALLOWED_DESTINATIONS lists the same number more than once.")
+        for destination in self.allowed_destinations:
+            if not re.fullmatch(r"\+[1-9][0-9]{7,14}", destination):
+                raise ValueError("ALLOWED_DESTINATIONS values must be E.164 phone numbers.")
+            # Loops are prevented at configuration time, not only per request.
+            if destination in {self.owner_number, self.twilio_number}:
+                raise ValueError("ALLOWED_DESTINATIONS cannot contain OWNER_NUMBER or TWILIO_NUMBER.")
+        if self.operator_admin_token and len(self.operator_admin_token) < 32:
+            raise ValueError("OPERATOR_ADMIN_TOKEN must contain at least 32 characters.")
+        if type(self.max_call_seconds) is not int or not 30 <= self.max_call_seconds <= 14400:
+            raise ValueError("MAX_CALL_SECONDS must be between 30 and 14400 seconds.")
+        if type(self.voice_agent_enabled) is not bool:
+            raise ValueError("VOICE_AGENT_ENABLED must be true or false.")
 
     @property
     def switchboard_ready(self):
         return bool(self.callee_number and self.twilio_number)
+
+    @property
+    def operator_ready(self):
+        """Whether the two-leg bridge has everything an outbound call needs.
+
+        Keep this in step with ``OperatorSessions.ready``: the same four values
+        decide whether a session can be reserved.
+        """
+        return bool(self.owner_number and self.twilio_number
+                    and self.operator_admin_token and self.allowed_destinations)
 
     @classmethod
     def from_env(cls):
@@ -116,6 +147,9 @@ class Settings:
         voicemail_flag = os.getenv("VOICEMAIL_ENABLED", "false").strip().lower()
         if voicemail_flag not in {"true", "false"}:
             raise ValueError("VOICEMAIL_ENABLED must be true or false.")
+        voice_flag = os.getenv("VOICE_AGENT_ENABLED", "false").strip().lower()
+        if voice_flag not in {"true", "false"}:
+            raise ValueError("VOICE_AGENT_ENABLED must be true or false.")
         return cls(
             account_sid=os.getenv("TWILIO_ACCOUNT_SID", "").strip(),
             auth_token=os.getenv("TWILIO_AUTH_TOKEN", "").strip(),
@@ -143,4 +177,11 @@ class Settings:
             call_details_storage_dir=os.getenv("CALL_DETAILS_STORAGE_DIR", "").strip(),
             gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
             gemini_summary_model=os.getenv("GEMINI_SUMMARY_MODEL", "gemini-3.8-flash").strip(),
+            owner_number=os.getenv("OWNER_NUMBER", "").strip(),
+            allowed_destinations=tuple(
+                value.strip() for value in os.getenv("ALLOWED_DESTINATIONS", "").split(",")
+                if value.strip()),
+            operator_admin_token=os.getenv("OPERATOR_ADMIN_TOKEN", "").strip(),
+            max_call_seconds=int(os.getenv("MAX_CALL_SECONDS", "1800")),
+            voice_agent_enabled=voice_flag == "true",
         )

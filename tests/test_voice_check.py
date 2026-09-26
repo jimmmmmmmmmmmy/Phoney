@@ -4,9 +4,14 @@ The relay's contract is one bounded synthesis request per finished phrase, so
 these checks assert the phrase list, the request count and the saved audio all
 describe the same answer. The CLI checks run the real script but assert on
 guards that fire before any configuration or network access.
+
+``--chat`` is checked the same way, with one extra rule: every turn must append
+to a single conversation, so a later turn is sent the earlier dialogue. Its
+records are read back from standard output, which is one JSON object per line.
 """
 
 import asyncio
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -26,7 +31,7 @@ GEMINI_KEY = "unit-test-gemini-key"
 ELEVEN_KEY = "unit-test-elevenlabs-key"
 VOICE = "EXAVITQu4vr4xnSDxMaL"
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
-PLAY_GUARD = "--play needs --say, or --ask without --text-only."
+PLAY_GUARD = "--play needs --say, or --ask or --chat without --text-only."
 
 
 def settings_for(tmp_path, **overrides) -> VoiceSettings:
@@ -193,7 +198,8 @@ def test_cli_allows_play_with_a_speaking_ask(tmp_path):
 @pytest.mark.parametrize("arguments,expected", [
     (["--play"], PLAY_GUARD),
     (["--ask", "hi", "--text-only", "--play"], PLAY_GUARD),
-    (["--say", "hi", "--text-only"], "--text-only only applies to --ask."),
+    (["--chat", "--text-only", "--play"], PLAY_GUARD),
+    (["--say", "hi", "--text-only"], "--text-only only applies to --ask or --chat."),
 ])
 def test_cli_rejects_a_conflicting_action_before_reading_configuration(tmp_path, arguments, expected):
     result = run_cli(tmp_path, *arguments)
@@ -212,3 +218,148 @@ def test_cli_no_action_prints_the_resolved_status(tmp_path):
     assert report["configured"] is True and report["missing"] == ["VOICE_OUTPUT_DIR"]
     assert report["twilio_ready"] is True
     assert GEMINI_KEY not in result.stdout and ELEVEN_KEY not in result.stdout
+
+
+def test_cli_allows_play_with_a_speaking_chat(tmp_path):
+    result = run_cli(tmp_path, "--chat", "--play")
+    assert result.returncode == 1
+    # It got past the guard and failed on the missing configuration instead.
+    assert PLAY_GUARD not in result.stderr
+    assert "not found" in result.stderr
+
+
+def test_cli_treats_chat_as_a_single_action(tmp_path):
+    """Two actions in one run stay an argument error, not a silent preference."""
+    result = run_cli(tmp_path, "--chat", "--ask", "hi")
+    assert result.returncode == 2
+    assert "not allowed with argument" in result.stderr
+
+
+def chat_records(capsys) -> list[dict]:
+    """Standard output is one JSON object per line, one line per turn."""
+    captured = capsys.readouterr()
+    return [json.loads(line) for line in captured.out.splitlines()]
+
+
+def test_chat_keeps_one_conversation_so_a_later_turn_sees_earlier_turns(tmp_path, capsys):
+    """Milestone L1: turn two is sent the whole dialogue, not just turn two."""
+    gemini = FakeGemini(frame(text_event("We open at nine. ")),
+                        frame(text_event("Anything else?", finish="STOP")))
+    speech_fake = FakeSpeech(b"\xff" * 160)
+    module = load_script("voice_check.py")
+
+    asyncio.run(module.chat(settings_for(tmp_path),
+                            stream=io.StringIO("When do you open?\nWho am I?\n"),
+                            transport=routed(gemini, speech_fake)))
+
+    assert len(gemini.requests) == 2
+    second = json.loads(gemini.bodies[1])["contents"]
+    # The question and the reply from turn one are both in the second request.
+    assert [turn["parts"][0]["text"] for turn in second
+            if turn["parts"][0]["text"].startswith("remote:")] == [
+        "remote: When do you open?", "remote: Who am I?"]
+    assert any(turn["role"] == "model" for turn in second)
+
+    records = chat_records(capsys)
+    assert [record["turn"] for record in records] == [1, 2]
+    # One handoff packet, then each turn adds its own question and the reply.
+    assert [record["recorded_turns"] for record in records] == [3, 5]
+    assert records[1]["reply"] == "We open at nine. Anything else?"
+
+
+def test_chat_speaks_one_request_per_phrase_and_saves_a_file_per_turn(tmp_path, capsys):
+    gemini = FakeGemini(frame(text_event("We open at nine. ")),
+                        frame(text_event("Anything else?", finish="STOP")))
+    speech_fake = FakeSpeech(b"\xff" * 160)
+    module = load_script("voice_check.py")
+
+    asyncio.run(module.chat(settings_for(tmp_path),
+                            stream=io.StringIO("When?\nAgain?\n"),
+                            transport=routed(gemini, speech_fake)))
+
+    # Two turns, two phrases each, and one bounded request per phrase.
+    assert [json.loads(body)["text"] for body in speech_fake.bodies] == [
+        "We open at nine.", "Anything else?"] * 2
+    records = chat_records(capsys)
+    assert [record["phrases_spoken"] for record in records] == [2, 2]
+    assert [record["audio_bytes"] for record in records] == [320, 320]
+    assert [record["voice_id"] for record in records] == [VOICE, VOICE]
+
+    for name in ("voice-check-chat-01.wav", "voice-check-chat-02.wav"):
+        written = tmp_path / "voice_output" / name
+        assert written.is_file()
+        with wave.open(str(written)) as audio:
+            assert (audio.getnchannels(), audio.getframerate(),
+                    audio.getsampwidth()) == (1, 8000, 2)
+            assert audio.getnframes() == 320
+
+
+def test_chat_prompt_and_spoken_reply_go_to_stderr(tmp_path, capsys):
+    gemini = FakeGemini(frame(text_event("Nine.", finish="STOP")))
+    module = load_script("voice_check.py")
+
+    asyncio.run(module.chat(settings_for(tmp_path), stream=io.StringIO("When?\n"),
+                            transport=routed(gemini, FakeSpeech(b"\xff"))))
+
+    captured = capsys.readouterr()
+    assert captured.err.startswith("you[1]> ")
+    assert "clone[1]> Nine." in captured.err
+    assert captured.err.rstrip().endswith("ended after 1 turn(s)")
+    # Standard output stays machine readable: one record, nothing else.
+    assert len([json.loads(line) for line in captured.out.splitlines()]) == 1
+
+
+@pytest.mark.parametrize("typed,turns", [
+    ("", 0),
+    ("One?\n", 1),
+    ("One?", 1),
+    ("One?\n/exit\nTwo?\n", 1),
+    ("One?\n/quit\nTwo?\n", 1),
+    ("\n   \nOne?\n", 1),
+])
+def test_chat_answers_every_question_and_stops_on_a_command(tmp_path, capsys,
+                                                            typed, turns):
+    gemini = FakeGemini(frame(text_event("Nine.", finish="STOP")))
+    module = load_script("voice_check.py")
+
+    asyncio.run(module.chat(settings_for(tmp_path), stream=io.StringIO(typed),
+                            transport=routed(gemini, FakeSpeech(b"\xff"))))
+
+    # A blank line and a command must never reach the provider as a question.
+    assert len(gemini.requests) == turns
+    records = chat_records(capsys)
+    assert [record["turn"] for record in records] == list(range(1, turns + 1))
+    assert all(record["question"] for record in records)
+
+
+def test_chat_text_only_stays_text_and_writes_nothing(tmp_path, capsys):
+    gemini = FakeGemini(frame(text_event("Nine.", finish="STOP")))
+    speech_fake = FakeSpeech(b"\xff")
+    module = load_script("voice_check.py")
+
+    asyncio.run(module.chat(settings_for(tmp_path), speak=False,
+                            stream=io.StringIO("When?\n"),
+                            transport=routed(gemini, speech_fake)))
+
+    assert speech_fake.requests == []
+    assert not (tmp_path / "voice_output").exists()
+    record = chat_records(capsys)[0]
+    assert record["phrases"] == ["Nine."] and "audio" not in record
+
+
+def test_chat_needs_a_voice_id_before_it_speaks(tmp_path):
+    module = load_script("voice_check.py")
+    settings = settings_for(tmp_path, elevenlabs_voice_id="")
+    with pytest.raises(ValueError, match="ELEVENLABS_VOICE_ID"):
+        asyncio.run(module.chat(settings, stream=io.StringIO("Hi\n"),
+                                transport=httpx.MockTransport(
+                                    lambda request: httpx.Response(200))))
+
+
+def test_chat_refuses_to_play_text_it_never_spoke(tmp_path):
+    module = load_script("voice_check.py")
+    with pytest.raises(ValueError, match="Playing needs spoken audio"):
+        asyncio.run(module.chat(settings_for(tmp_path), speak=False, play=True,
+                                stream=io.StringIO("Hi\n"),
+                                transport=httpx.MockTransport(
+                                    lambda request: httpx.Response(200))))

@@ -37,6 +37,17 @@ BASE = dict(account_sid="AC" + "1" * 32, auth_token="test-auth",
     {"voicemail_max_seconds": 601},
     {"voicemail_max_seconds": True},
     {"gemini_summary_model": "../another-host?key=value"},
+    {"owner_number": "12025550101"},
+    {"allowed_destinations": ("+12025550103", "12025550103")},
+    {"allowed_destinations": ("+12025550103", "+12025550103")},
+    {"twilio_number": "+15555550100", "allowed_destinations": ("+15555550100",)},
+    {"owner_number": "+15555550100", "twilio_number": "+15555550101",
+     "allowed_destinations": ("+15555550100",)},
+    {"operator_admin_token": "too-short"},
+    {"max_call_seconds": 29},
+    {"max_call_seconds": 14401},
+    {"max_call_seconds": True},
+    {"voice_agent_enabled": "true"},
 ])
 def test_invalid_switchboard_configuration_fails(fields):
     with pytest.raises(ValueError):
@@ -64,3 +75,19 @@ def test_transcription_requires_provider_key_and_storage_but_no_viewer_code(tmp_
                        ("media_capture_enabled", False)):
         with pytest.raises(ValueError):
             Settings(**BASE, **{**complete, key: value})
+
+
+def test_the_operator_bridge_needs_an_owner_number_a_token_and_an_allowlist():
+    bridge = dict(owner_number="+15555550100", twilio_number="+15555550101",
+                  operator_admin_token="operator-admin-token-" * 2,
+                  allowed_destinations=("+15555550102", "+15555550103"))
+    settings = Settings(**BASE, **bridge)
+    assert settings.operator_ready is True
+    assert settings.max_call_seconds == 1800 and settings.voice_agent_enabled is False
+    for field in (settings.owner_number, settings.operator_admin_token):
+        assert field not in repr(settings)
+    # Every value is optional: an empty bridge leaves the conference path alone.
+    assert Settings(**BASE).operator_ready is False
+    for key, value in (("owner_number", ""), ("operator_admin_token", ""),
+                       ("allowed_destinations", ()), ("twilio_number", "")):
+        assert Settings(**BASE, **{**bridge, key: value}).operator_ready is False

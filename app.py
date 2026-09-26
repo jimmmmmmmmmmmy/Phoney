@@ -25,6 +25,7 @@ from dashboard import register_dashboard
 from voicemail import VoicemailStore
 from call_details import CallDetailsStore
 from summaries import SummaryManager
+from operator_service import OperatorSessions, register_operator_routes
 
 logger = logging.getLogger("uvicorn.error")
 MAX_GITHUB_BODY_BYTES = 1024 * 1024
@@ -47,12 +48,14 @@ def write_deploy_trigger(path: str, delivery_id: str) -> None:
             os.unlink(temporary)
 
 
-def create_app(settings: Settings, gateway=None, transcription_connector=None, summary_provider=None) -> FastAPI:
+def create_app(settings: Settings, gateway=None, transcription_connector=None, summary_provider=None,
+               operator_dialer=None, operator_voice=None) -> FastAPI:
     transcription = TranscriptionManager(settings, connector=transcription_connector)
     media_capture = CaptureManager(settings, observer=transcription)
     voicemails = VoicemailStore(settings)
     recordings = RecordingLibrary(settings)
     call_details = CallDetailsStore(settings.call_details_storage_dir)
+    operator = OperatorSessions(settings)
 
     async def call_ended(call_sid):
         await asyncio.to_thread(call_details.finish, call_sid)
@@ -89,6 +92,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
         await media_capture.close()
         await transcription.close()
         await voicemails.close()
+        await operator.close()
 
     app = FastAPI(title="Passive Operator — Build 3", docs_url=None, redoc_url=None,
                   openapi_url=None, redirect_slashes=False, lifespan=lifespan)
@@ -101,6 +105,10 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     app.state.summaries = summaries
     register_dashboard(app, settings, transcription, voicemail_store=voicemails,
                        recording_library=recordings, call_details_store=call_details)
+    # ``main`` passes the voice layer's settings when the operator may speak;
+    # without them the keypad still parses and the bridge stays human relay.
+    register_operator_routes(app, settings, operator, dialer=operator_dialer,
+                             voice=operator_voice)
     validate_twilio = twilio_validator(settings)
 
     @app.get("/health")
@@ -110,7 +118,8 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
                   "switchboard_ready": settings.switchboard_ready,
                   "media_capture_enabled": settings.media_capture_enabled and settings.switchboard_ready,
                   "transcription_enabled": settings.transcription_enabled and settings.switchboard_ready,
-                  "voicemail_enabled": settings.voicemail_enabled and settings.switchboard_ready}
+                  "voicemail_enabled": settings.voicemail_enabled and settings.switchboard_ready,
+                  "operator_enabled": settings.operator_ready}
         if settings.deploy_commit:
             result["commit"] = settings.deploy_commit
         if summaries.enabled:
@@ -127,10 +136,11 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
 
     def deploy_state():
         return JSONResponse({"draining": switchboard.draining,
-                             "active_sessions": switchboard.active_count,
+                             "active_sessions": switchboard.active_count + operator.active_count,
                              "pending_work": switchboard.pending_count + media_capture.active_count
                                              + media_capture.pending_count + transcription.active_count
-                                             + voicemails.active_count + summaries.active_count},
+                                             + voicemails.active_count + summaries.active_count
+                                             + operator.pending_count},
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/internal/deploy", dependencies=[Depends(validate_deploy_control)])
@@ -147,6 +157,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
                 or not isinstance(payload["draining"], bool)):
             raise HTTPException(400, "Expected a draining boolean")
         await switchboard.set_draining(payload["draining"])
+        await operator.set_draining(payload["draining"])
         return deploy_state()
 
     @app.post("/github/webhook")

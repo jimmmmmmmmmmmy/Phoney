@@ -48,6 +48,12 @@ def test_one_native_player_is_accessible_and_never_autoplays_or_preloads_audio()
                 "session-badge", "session-detail", "audio-heading"} & set(parsed.ids)
     assert parsed.ids.index("transcript") < parsed.ids.index("transcript-title") < parsed.ids.index("summary-panel") < parsed.ids.index("messages")
     assert parsed.attributes["audio-download"]["aria-label"] == "Download WAV"
+    for control in ("audio-close", "audio-reopen"):
+        assert parsed.tags[control] == "button"
+        assert parsed.attributes[control]["type"] == "button"
+        assert parsed.attributes[control]["aria-controls"] == "audio-panel"
+    assert parsed.attributes["audio-close"]["aria-label"]
+    assert "hidden" in parsed.attributes["audio-reopen"]
     assert not {"recent-calls", "voicemail-section"} & set(parsed.ids)
 
 
@@ -224,6 +230,84 @@ openCall();
 assert.equal(state.detail,true);assert.equal(state.selected,SID);assert.equal($('calls-detail').hidden,false);
 assert.equal($('call-audio').src,`/api/recordings/${SID}/audio?track=combined`);
 assert.equal($('call-audio').paused,true);assert.equal($('call-audio').plays,0);
+''')
+
+
+def test_closing_player_pauses_and_stays_closed_through_polling_and_navigation(tmp_path):
+    run_browser_logic(tmp_path, r'''
+(async()=>{
+const call=session();call.segments[0].end_ms=3000;
+state.snapshot=snapshot([call,session(OTHER)],[recording(),recording(OTHER)]);render();openCall();
+const audio=$('call-audio');audio.play();audio.currentTime=1.5;audio.events.timeupdate();
+assert.equal(state.transcriptRows[0].row.classList.contains('playing-line'),true);
+const src=audio.src,loads=audio.loads,plays=audio.plays;
+$('audio-close').events.click();
+assert.equal($('audio-panel').hidden,true);assert.equal($('audio-reopen').hidden,false);
+assert.equal(audio.paused,true);assert.equal(audio.currentTime,1.5);assert.equal(audio.src,src);
+assert.equal(document.activeElement,$('audio-reopen'));assert.equal(state.selected,SID);
+assert.ok(state.transcriptRows.every(item=>!item.row.classList.contains('playing-line')));
+fetch=async()=>({ok:true,json:async()=>snapshot([{...call,segments:[{...call.segments[0],text:'updated transcript'}]},session(OTHER)],[recording(),recording(OTHER)])});
+await poll();
+for(const page of ['contacts','agents','team','calls']) {
+ showPage(page);assert.equal($('audio-panel').hidden,true);assert.equal(audio.paused,true);
+}
+backToCalls();showCollection('voicemail');showCollection('recent');
+state.paused=true;location.hash=`#calls/recent/${SID}`;handlers.get('popstate')();
+assert.equal(state.selected,SID);assert.equal(state.detail,true);assert.equal($('audio-panel').hidden,true);
+audio.events.seeked();audio.events.timeupdate();
+assert.ok(state.transcriptRows.every(item=>!item.row.classList.contains('playing-line')));
+assert.equal(audio.currentTime,1.5);assert.equal(audio.src,src);assert.equal(audio.loads,loads);assert.equal(audio.plays,plays);
+$('audio-reopen').events.click();
+assert.equal($('audio-panel').hidden,false);assert.equal($('audio-reopen').hidden,true);
+assert.equal(audio.paused,true);assert.equal(audio.currentTime,1.5);assert.equal(audio.src,src);
+assert.equal(audio.loads,loads);assert.equal(audio.plays,plays);assert.equal(document.activeElement,$('audio-close'));
+assert.ok(state.transcriptRows.every(item=>!item.row.classList.contains('playing-line')));
+audio.play();audio.events.timeupdate();
+assert.equal(state.transcriptRows[0].row.classList.contains('playing-line'),true);
+})().catch(error=>{console.error(error);process.exitCode=1;});
+''')
+
+
+def test_explicit_call_selection_reopens_closed_player_without_autoplay(tmp_path):
+    run_browser_logic(tmp_path, r'''
+state.snapshot=snapshot([session(),session(OTHER)],[recording(),recording(OTHER)]);render();openCall();
+const audio=$('call-audio');audio.play();audio.currentTime=17;
+const src=audio.src,loads=audio.loads,plays=audio.plays;
+showPage('team');$('audio-close').events.click();
+assert.equal(document.activeElement,$('page-title'));assert.equal(state.page,'team');
+// A delayed native play event cannot start audio after the panel was dismissed.
+audio.paused=false;audio.events.play();assert.equal(audio.paused,true);
+showPage('calls');backToCalls();state.paused=true;
+$('call-list').children.find(row=>row.dataset.callSid===SID).events.click();
+assert.equal($('audio-panel').hidden,false);assert.equal($('audio-reopen').hidden,true);
+assert.equal(state.detail,true);assert.equal(state.selected,SID);
+assert.equal(audio.paused,true);assert.equal(audio.currentTime,17);assert.equal(audio.src,src);
+assert.equal(audio.loads,loads);assert.equal(audio.plays,plays);
+$('audio-close').events.click();openCall(OTHER);
+assert.equal($('audio-panel').hidden,false);assert.equal($('audio-reopen').hidden,true);
+assert.equal(state.selected,OTHER);assert.equal(audio.currentTime,0);assert.equal(audio.paused,true);
+assert.equal(audio.src,`/api/recordings/${OTHER}/audio?track=combined`);assert.equal(audio.plays,plays);
+''')
+
+
+def test_player_status_and_errors_can_be_closed_before_recording_is_ready(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const call={...session(),ended_at:null,status:'live'};
+state.snapshot=snapshot([call]);render();openCall();
+assert.equal($('call-audio').hidden,true);assert.equal($('audio-status').hidden,false);
+$('audio-close').events.click();
+assert.equal($('audio-panel').hidden,true);assert.equal($('audio-reopen').hidden,false);
+state.snapshot=snapshot([session()],[recording()]);render();
+assert.equal($('audio-panel').hidden,true);assert.equal($('call-audio').paused,true);
+$('audio-reopen').events.click();
+$('call-audio').events.error();
+assert.equal($('audio-status').hidden,false);assert.ok($('audio-status').textContent.includes('could not be loaded'));
+$('audio-close').events.click();render();
+assert.equal($('audio-panel').hidden,true);assert.equal($('call-audio').paused,true);
+$('call-audio').events.pause();
+$('audio-reopen').events.click();
+assert.equal($('audio-panel').hidden,false);assert.equal($('call-audio').plays,0);
+assert.equal($('audio-status').hidden,false);assert.ok($('audio-status').textContent.includes('could not be loaded'));
 ''')
 
 

@@ -48,6 +48,10 @@ class GeminiError(RuntimeError):
     """A generation failed: blocked, truncated, empty, malformed, or over limit."""
 
 
+class _EmptyGeminiResponse(GeminiError):
+    """No spoken output and no explicit blocked/truncated finish reason."""
+
+
 def gemini_url(model: str, method: str = "streamGenerateContent") -> str:
     """Build one GenerateContent endpoint from a bare model ID.
 
@@ -164,16 +168,20 @@ async def reply_events(http: httpx.AsyncClient, api_key: str, system: str,
                         if part.get("text") and not part.get("thought", False):
                             spoke = True
                             yield {"kind": "text", "text": part["text"]}
-    if finish_reason != "STOP" or not spoke:
+    if not spoke and finish_reason in {None, "STOP"}:
+        raise _EmptyGeminiResponse("Gemini response incomplete, blocked, or empty")
+    if finish_reason != "STOP":
         raise GeminiError("Gemini response incomplete, blocked, or empty")
     yield {"kind": "complete", "content": {"role": "model", "parts": saved_parts}}
 
 
 async def reply_events_with_retry(http, api_key, system, contents, **kwargs):
-    """Retry one empty/incomplete generation only before any text was emitted.
+    """Retry one empty or transiently failed reply before any text was emitted.
 
     An observed provider response can be HTTP 200 + STOP with no content. Both
     attempts share one deadline. A partially spoken response is never replayed.
+    Explicit blocked/truncated output, malformed data, and permanent HTTP
+    failures do not retry. Caller cancellation always propagates immediately.
     """
     async with asyncio.timeout(kwargs.get("timeout", GENERATION_SECONDS)):
         for attempt in range(2):
@@ -183,10 +191,36 @@ async def reply_events_with_retry(http, api_key, system, contents, **kwargs):
                     emitted = emitted or event.get("kind") == "text"
                     yield event
                 return
-            except GeminiError as exc:
-                if (attempt or emitted or str(exc) != "Gemini response incomplete, blocked, or empty"):
+            except (GeminiError, httpx.TimeoutException, httpx.NetworkError,
+                    httpx.HTTPStatusError) as exc:
+                reason = _reply_retry_reason(exc)
+                if attempt or emitted or reason is None:
                     raise
-                yield {"kind": "retry", "reason": "empty-response", "attempt": 2}
+                yield {"kind": "retry", "reason": reason, "attempt": 2}
+
+
+def _reply_retry_reason(exc: Exception) -> str | None:
+    """Return a bounded, non-sensitive trace reason for a retryable failure."""
+    if isinstance(exc, _EmptyGeminiResponse):
+        return "empty-response"
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return f"http-{status}" if status in {408, 429, 500, 502, 503, 504} else None
+    for error_type, reason in (
+        (httpx.ReadTimeout, "read-timeout"),
+        (httpx.ConnectTimeout, "connect-timeout"),
+        (httpx.WriteTimeout, "write-timeout"),
+        (httpx.PoolTimeout, "pool-timeout"),
+        (httpx.TimeoutException, "transport-timeout"),
+        (httpx.ConnectError, "connect-error"),
+        (httpx.ReadError, "read-error"),
+        (httpx.WriteError, "write-error"),
+        (httpx.CloseError, "close-error"),
+        (httpx.NetworkError, "network-error"),
+    ):
+        if isinstance(exc, error_type):
+            return reason
+    return None
 
 
 def attributed(speaker: str, text: str) -> dict:

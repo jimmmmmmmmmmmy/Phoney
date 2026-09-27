@@ -7,13 +7,14 @@ import pytest
 
 from scripts.evaluate_voice_prompts import (SCENARIOS, DiagnosticTransport, checks_for, evaluate,
                                           evaluate_scenario)
-from voice_stack.prompts import voicemail_phase_instruction
+from voice_stack.prompts import VOICEMAIL_GREETING, voicemail_phase_instruction
 
 
 def test_offline_conversations_drive_the_real_stream_and_end_command_parser():
     report = asyncio.run(evaluate())
     assert report["mode"] == "offline-fixtures"
-    assert report["requests"] == 19
+    assert report["requests"] == 18
+    assert report["logical_replies"] == 19
     assert report["passed"] == report["total"]
     manual = [row for row in report["results"] if row["scenario"] == "manual_three_replies"]
     assert [row["end_call"] for row in manual] == [False, False, True]
@@ -62,6 +63,18 @@ def test_only_explicit_live_mode_can_use_passed_http_client():
     scenario = SCENARIOS[2]
     rows = asyncio.run(evaluate_scenario(scenario, OfflineOnly(), "not-a-secret", live=False))
     assert rows[0]["passed"]
+
+
+def test_live_evaluation_uses_runtime_greeting_without_a_gemini_request(monkeypatch):
+    async def unavailable(*args, **kwargs):
+        raise AssertionError("The voicemail greeting must not wait for Gemini")
+        yield
+    monkeypatch.setattr("scripts.evaluate_voice_prompts.reply_events", unavailable)
+    scenario = next(s for s in SCENARIOS if s.name == "voicemail_capture_readback_confirm")
+    scenario = replace(scenario, steps=scenario.steps[:1])
+    rows = asyncio.run(evaluate_scenario(scenario, None, "fixture", live=True))
+    assert rows[0]["passed"] and rows[0]["reply_source"] == "fixed-greeting"
+    assert rows[0]["spoken"] == VOICEMAIL_GREETING and not rows[0]["end_call"]
 
 
 def test_failed_fixture_reports_behavior_failure_instead_of_stopping_evaluation():

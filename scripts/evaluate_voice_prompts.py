@@ -26,7 +26,7 @@ from voice_stack.agent import (Conversation, DEFAULT_MODEL, GeminiError, ReplyCo
                                reply_events_with_retry as reply_events)
 from voice_stack.prompts import (AI_DETECTED_PROMPT, PROMPT_REVISION,
                                 VOICE_CLONE_PROMPT,
-                                VOICEMAIL_PROMPT, voicemail_phase_instruction,
+                                VOICEMAIL_PROMPT, VOICEMAIL_GREETING, voicemail_phase_instruction,
                                 three_reply_phase_instruction)
 
 
@@ -268,18 +268,25 @@ async def evaluate_scenario(scenario: Scenario, http: httpx.AsyncClient, api_key
         started = time.monotonic()
         first_ms = None
         retries = 0
+        fixed_greeting = scenario.voicemail and step.phase == "greeting"
         client = http if live else httpx.AsyncClient(transport=fixture_transport(step.fixture))
         try:
-            async for event in reply_events(client, api_key, system, conversation.contents,
-                                            model=model, max_output_tokens=2048):
-                if event["kind"] == "text":
-                    if first_ms is None:
-                        first_ms = round((time.monotonic() - started) * 1000)
-                    output.append(commands.feed(event["text"]))
-                elif event["kind"] == "complete":
-                    complete = event["content"]
-                elif event["kind"] == "retry":
-                    retries += 1
+            if fixed_greeting:
+                # Match the phone runtime: ElevenLabs speaks the fixed greeting;
+                # Gemini is first needed after the caller leaves a message.
+                output.append(VOICEMAIL_GREETING)
+                first_ms = 0
+            else:
+                async for event in reply_events(client, api_key, system, conversation.contents,
+                                                model=model, max_output_tokens=2048):
+                    if event["kind"] == "text":
+                        if first_ms is None:
+                            first_ms = round((time.monotonic() - started) * 1000)
+                        output.append(commands.feed(event["text"]))
+                    elif event["kind"] == "complete":
+                        complete = event["content"]
+                    elif event["kind"] == "retry":
+                        retries += 1
             commands.finish()
             spoken = "".join(output).strip()
             checks = checks_for(step, spoken, commands.end_call, scenario)
@@ -287,6 +294,7 @@ async def evaluate_scenario(scenario: Scenario, http: httpx.AsyncClient, api_key
                    "phase": step.phase or "conversation", "caller": step.caller,
                    "spoken": spoken, "end_call": commands.end_call,
                    "first_text_ms": first_ms,
+                   "reply_source": "fixed-greeting" if fixed_greeting else "gemini",
                    "provider_retries": retries,
                    "complete_ms": round((time.monotonic() - started) * 1000),
                    "checks": checks, "passed": all(checks.values())}
@@ -304,7 +312,7 @@ async def evaluate_scenario(scenario: Scenario, http: httpx.AsyncClient, api_key
         finally:
             if not live:
                 await client.aclose()
-        if diagnostics is not None:
+        if diagnostics is not None and not fixed_greeting:
             row["provider_metadata"] = dict(diagnostics.latest)
         rows.append(row)
     return rows
@@ -315,7 +323,8 @@ async def evaluate(*, live=False, api_key="fixture-key", names=(), model=DEFAULT
     selected = [s for s in SCENARIOS if not names or s.name in names]
     if not selected or set(names) - {s.name for s in SCENARIOS}:
         raise ValueError("Unknown or empty scenario selection")
-    requests = sum(len(s.steps) for s in selected)
+    requests = sum(not (s.voicemail and step.phase == "greeting")
+                   for s in selected for step in s.steps)
     if type(max_requests) is not int or not 1 <= max_requests <= 24 or requests > max_requests:
         raise ValueError("Evaluation exceeds its bounded request allowance (maximum 24)")
     rows = []
@@ -330,7 +339,7 @@ async def evaluate(*, live=False, api_key="fixture-key", names=(), model=DEFAULT
             "context_format": "fresh-transcript-handoff-per-reply",
             "prompt_revision": PROMPT_REVISION,
             "requests": transport.requests if transport else requests,
-            "logical_replies": requests,
+            "logical_replies": len(rows),
             "passed": sum(row["passed"] for row in rows), "total": len(rows), "results": rows}
 
 

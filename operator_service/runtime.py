@@ -18,7 +18,8 @@ from voice_stack.agent import (Conversation, ReplyCommandBuffer, SentenceBuffer,
                                reply_events_with_retry as reply_events)
 from voice_stack.audio import FRAME_BYTES, iter_frames
 from voice_stack.tts import TTSError, speech, speech_bytes
-from voice_stack.prompts import VOICE_CLONE_PROMPT, three_reply_phase_instruction, voicemail_phase_instruction
+from voice_stack.prompts import (VOICE_CLONE_PROMPT, VOICEMAIL_GREETING,
+                                 three_reply_phase_instruction, voicemail_phase_instruction)
 from .sessions import AGENT, ANNOUNCING, HUMAN, OWNER, PREPARING, REMOTE, OperatorRejected
 
 PHRASE_QUEUE_SIZE = 4
@@ -30,6 +31,51 @@ PLAYBACK_ACK_SECONDS = 5.0
 FRAME_STALL_SECONDS = 2.0
 ANNOUNCEMENT = "An AI assistant is joining this call."
 OWNER_NOTICE = "AI Detected, deploying voice agent"
+
+
+async def voicemail_greeting_audio(controller, snapshot):
+    """Share bounded synthesis across ringing and playback; never synthesize twice.
+
+    The greeting has no caller-specific data. It is cached by the selected voice,
+    model, and exact text. A canceled waiter cannot cancel another call's work;
+    when the last waiter leaves, unfinished synthesis is canceled as well.
+    """
+    voice = controller.voice
+    key = (snapshot.voice_id, voice.elevenlabs_model, VOICEMAIL_GREETING)
+    cache = controller.announcement_cache
+    if key in cache:
+        return cache[key]
+    tasks, waiters = controller._voicemail_greeting_tasks, controller._voicemail_greeting_waiters
+    task = tasks.get(key)
+    if task is None:
+        async def prepare():
+            async with asyncio.timeout(PREPARATION_SECONDS):
+                async with httpx.AsyncClient(transport=controller.provider_transport) as http:
+                    audio = await speech(http, voice.elevenlabs_api_key, snapshot.voice_id,
+                        VOICEMAIL_GREETING, model=voice.elevenlabs_model, output_format="ulaw_8000",
+                        timeout=min(voice.request_timeout, PREPARATION_SECONDS))
+            if not audio or len(audio) > MAX_AUDIO_BYTES:
+                raise ValueError("Invalid voicemail greeting audio")
+            if len(cache) >= 16:
+                cache.pop(next(iter(cache)))
+            cache[key] = audio
+            return audio
+        task = controller.store.spawn(prepare())
+        tasks[key] = task
+    waiters[key] = waiters.get(key, 0) + 1
+    try:
+        return await asyncio.shield(task)
+    finally:
+        remaining = waiters[key] - 1
+        if remaining:
+            waiters[key] = remaining
+        else:
+            waiters.pop(key, None)
+            if tasks.get(key) is task:
+                tasks.pop(key, None)
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 async def maybe_await(value):
@@ -226,7 +272,9 @@ class DialogueRun:
                 raise ValueError("Empty agent reply")
             return None, None, None
         self.stage = "first-audio"
-        audio = self._speech(http, first)
+        audio = (_bytes(await voicemail_greeting_audio(self.controller, self.snapshot))
+                 if self.voicemail and self.voicemail_phase == "greeting"
+                 else self._speech(http, first))
         self.open_audio = audio
         chunk = await anext(audio)
         if not chunk:
@@ -285,6 +333,14 @@ class DialogueRun:
         return audio
 
     async def _produce(self, http, conversation):
+        if self.voicemail and self.voicemail_phase == "greeting":
+            # A known invitation does not need to wait for Gemini. Keep the
+            # ordinary playback/ack/transcript path so later Gemini turns see
+            # only the greeting the caller actually heard.
+            self.trace("voicemail-fixed-greeting")
+            await self.phrases.put(VOICEMAIL_GREETING)
+            await self.phrases.put(None)
+            return
         buffer = SentenceBuffer()
         commands = ReplyCommandBuffer()
         chars = 0
@@ -294,7 +350,7 @@ class DialogueRun:
                 model=self.voice.gemini_model, max_output_tokens=self.voice.max_reply_tokens,
                 timeout=self.voice.request_timeout):
             if event["kind"] == "retry":
-                self.trace("gemini-empty-response-retry")
+                self.trace("gemini-response-retry", reason=event.get("reason", "unknown"))
             if event["kind"] == "text":
                 if first_token:
                     self.trace("gemini-first-text")

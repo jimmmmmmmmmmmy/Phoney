@@ -41,7 +41,7 @@ from .audio import CallRouter
 from .controls import (DIGITS, HASH, PROFILE, RELEASE, REPORTED, Command, Keypad)
 from .sessions import (AGENT, ANNOUNCING, PREPARING, CALL_SID, CONNECTED, HUMAN, MODES, OWNER, OWNER_PROMPT, REMOTE, ROLES,
                        OperatorRejected, OperatorSession, OperatorSessions)
-from .runtime import DialogueRun, maybe_await
+from .runtime import DialogueRun, PREPARATION_SECONDS, maybe_await, voicemail_greeting_audio
 from .voicemail_agent import VoicemailAgent
 
 log = logging.getLogger("uvicorn.error")
@@ -234,6 +234,9 @@ class OperatorController:
         self._output_clocks = {}
         self._agent_frames_sent = {}
         self.announcement_cache = {}
+        self._voicemail_greeting_tasks = {}
+        self._voicemail_greeting_waiters = {}
+        self._voicemail_warmers = {}
         self._disconnect_checks: dict[tuple[str, str], asyncio.Task] = {}
         self.voice_id = voice_id or (voice.elevenlabs_voice_id if voice is not None else "")
         self.keypad_factory = keypad_factory
@@ -391,6 +394,7 @@ class OperatorController:
             return True
         session.voicemail_fallback = True
         session.voicemail_phase = "recording"
+        self._cancel_voicemail_warmup(session_id)
         self._takeover_requests[session_id] = self._takeover_requests.get(session_id, 0) + 1
         self._accepted_takeovers.pop(session_id, None)
         vm = self._voicemail_agents.pop(session_id, None)
@@ -581,7 +585,37 @@ class OperatorController:
         session, reused = await self.store.reserve_inbound(call_sid, caller)
         if not reused:
             self.store.spawn(self._dial_owner(session.id))
+            if getattr(self.settings, 'voicemail_agent_enabled', False) and self.voice_ready:
+                task = self.store.spawn(self._warm_voicemail_greeting(session.id))
+                self._voicemail_warmers[session.id] = task
+                def finished(done):
+                    if self._voicemail_warmers.get(session.id) is done:
+                        self._voicemail_warmers.pop(session.id, None)
+                task.add_done_callback(finished)
         return session
+
+    async def _warm_voicemail_greeting(self, session_id):
+        """Prepare only fixed audio while ringing; never activate the agent."""
+        try:
+            async with asyncio.timeout(PREPARATION_SECONDS):
+                snapshot = await self._internal_snapshot('voicemail')
+                session = self.store.find(session_id)
+                if session is None or not session.active or (session.phase == CONNECTED and not session.voicemail):
+                    return
+                await voicemail_greeting_audio(self, snapshot)
+                self.trace(session_id, 'voicemail-greeting-ready')
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Warm-up failure must not disrupt human ringing. The actual
+            # voicemail attempt still gets its normal bounded failure path.
+            self.trace(session_id, 'voicemail-greeting-warm-failed', error=type(exc).__name__)
+
+    def _cancel_voicemail_warmup(self, session_id):
+        task = self._voicemail_warmers.pop(session_id, None)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        return task
 
     def inbound_twiml(self, session):
         leg = session.legs[REMOTE]
@@ -661,6 +695,7 @@ class OperatorController:
             # the connection phase; agent takeover still requires owner #1–#9.
             if all(router.attached(participant) for participant in ROLES):
                 if await self.store.mark_connected(session_id):
+                    self._cancel_voicemail_warmup(session_id)
                     router.stop_cue()
                     log.info("operator_connected session=%s", session_id)
                 self._maybe_auto_takeover(session_id)
@@ -1116,6 +1151,7 @@ class OperatorController:
         if vm is not None:
             vm.close()
         self._voicemail_resume_reply.pop(session_id, None)
+        self._cancel_voicemail_warmup(session_id)
         session = self.store.find(session_id)
         if session is not None:
             self._retired_owner_calls.discard(session.legs[OWNER].call_sid)
@@ -1140,12 +1176,15 @@ class OperatorController:
 
     async def _on_session_end(self, session_id: str):
         player = self.players.get(session_id)
+        warmer = self._voicemail_warmers.get(session_id)
         self._stop_session_tasks(session_id)
         router = self.routers.pop(session_id, None)
         if router is not None:
             router.close()
         if player is not None and player is not asyncio.current_task():
             await asyncio.gather(player, return_exceptions=True)
+        if warmer is not None and warmer is not asyncio.current_task():
+            await asyncio.gather(warmer, return_exceptions=True)
         client = self._provider_clients.pop(session_id, None)
         if client is not None:
             await client.aclose()

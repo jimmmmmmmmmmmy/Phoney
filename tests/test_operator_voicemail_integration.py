@@ -12,6 +12,7 @@ from operator_service.voicemail_agent import VoicemailAgent
 from voicemail import VoicemailStore
 from voice_stack.audio import FRAME_BYTES
 from voice_stack.settings import VoiceSettings
+from voice_stack.prompts import VOICEMAIL_GREETING
 from test_operator_keypad import SETTINGS, Dialer, Socket, OWNER_SID, REMOTE_SID, REMOTE_STREAM, until
 
 
@@ -115,19 +116,22 @@ def test_unanswered_call_greets_reads_message_confirms_then_hangs_up(tmp_path, m
         s = await h.incoming()
         await h.controller.on_timeout(s, "owner-no-answer")
         await h.ready()
-        assert h.provider.phases == ["greeting"]
+        assert h.provider.phases == []
+        assert h.delivered[0][0][1] == VOICEMAIL_GREETING
+        assert h.delivered[0][1]['delivery'] == 'played'
         assert OWNER_SID in h.dialer.ended and REMOTE_SID not in h.dialer.ended
         assert not h.router.attached(OWNER) and s.voicemail
         await h.controller.transcript(s.id, REMOTE, "This is Alex. Tomorrow's meeting is at ten.", segment_id="m1")
-        await until(lambda: h.provider.phases == ["greeting", "readback"])
+        await until(lambda: h.provider.phases == ["readback"])
         await h.ready()
         req = [body for url, body in h.provider.requests if "generativelanguage" in url][-1]
         assert "Tomorrow's meeting is at ten" in json.dumps(req['contents'])
+        assert VOICEMAIL_GREETING in json.dumps(req['contents'])
         assert s.active and h.delivered[-1][1]['delivery'] == 'played'
         await h.controller.transcript(s.id, REMOTE, "Yes, that's correct.", segment_id="m2")
         await until(lambda: not s.active)
         await h.store.wait_idle()
-        assert h.provider.phases == ["greeting", "readback", "confirm"]
+        assert h.provider.phases == ["readback", "confirm"]
         assert REMOTE_SID in h.dialer.ended
         assert h.delivered[-1][1]['delivery'] == 'played'
         assert all("[/END CALL]" not in body.get('text', '') for _, body in h.provider.requests)
@@ -144,7 +148,7 @@ def test_late_owner_socket_cannot_release_or_end_voicemail(tmp_path, monkeypatch
         await h.ready()
         await h.controller.stream_stopped(s.id, OWNER, "rejected-session-ended")
         assert s.active and s.mode == AGENT and s.voicemail
-        assert h.provider.phases == ["greeting"]
+        assert h.provider.phases == []
         await h.close()
     asyncio.run(run())
 
@@ -165,6 +169,10 @@ def test_provider_failure_switches_once_to_native_recording(tmp_path, monkeypatc
         h = Harness(tmp_path, FailedProvider())
         s = await h.incoming()
         await h.controller.on_timeout(s, "owner-no-answer")
+        if provider == "gemini":
+            await h.ready()
+            assert not h.dialer.replacements
+            await h.controller.transcript(s.id, REMOTE, "Please call Alex back.", segment_id="m1")
         await until(lambda: h.dialer.replacements)
         assert s.active and s.voicemail_fallback
         assert REMOTE_SID not in h.dialer.ended
@@ -219,7 +227,7 @@ def test_no_input_farewell_and_hangup_are_driven_by_runtime_silence(tmp_path, mo
         s = await h.incoming()
         await h.controller.on_timeout(s, "owner-no-answer")
         await until(lambda: not s.active)
-        assert h.provider.phases == ["greeting", "no_message"]
+        assert h.provider.phases == ["no_message"]
         assert h.delivered[-1][1]['delivery'] == 'played'
         await h.close()
     asyncio.run(run())
@@ -241,7 +249,7 @@ def test_remote_reconnect_resumes_listening_without_duplicate_greeting(tmp_path,
         await h.controller.stream_started(s.id, REMOTE, REMOTE_STREAM)
         assert s.mode == AGENT and s.active
         await h.controller.transcript(s.id, REMOTE, "Please ask Alex to call me.", segment_id="after-recovery")
-        await until(lambda: h.provider.phases == ["greeting", "readback"])
+        await until(lambda: h.provider.phases == ["readback"])
         await h.ready()
         await h.close()
     asyncio.run(run())
@@ -269,7 +277,7 @@ def test_late_owner_rest_result_is_canceled_without_hanging_up_caller(tmp_path, 
         await task
         await until(lambda: OWNER_SID in dialer.ended)
         assert s.active and REMOTE_SID not in dialer.ended
-        assert h.provider.phases == ["greeting"]
+        assert h.provider.phases == []
         await h.close()
     asyncio.run(run())
 
@@ -298,7 +306,7 @@ def test_transport_loss_during_initial_voice_lookup_does_not_end_voicemail(tmp_p
         s.legs[REMOTE].attached = True
         await h.controller.stream_started(s.id, REMOTE, REMOTE_STREAM)
         await h.ready()
-        assert h.provider.phases == ["greeting"]
+        assert h.provider.phases == []
         await h.close()
     asyncio.run(run())
 

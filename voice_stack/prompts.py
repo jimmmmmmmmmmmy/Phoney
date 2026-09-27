@@ -85,6 +85,13 @@ VOICEMAIL_PROMPT = (
     "already heard the message or will definitely call back."
 )
 
+# This known opening is synthesized by ElevenLabs during ringing. Gemini is
+# needed for the caller-specific readback and confirmation, not the invitation.
+VOICEMAIL_GREETING = (
+    "Hi, I'm the AI voicemail assistant. The owner can't answer right now. "
+    "Please leave your name and message, and I'll read it back to check I got it right."
+)
+
 _VOICEMAIL_PHASES = {
     "greeting": (
         "The owner did not answer. This is the first voicemail reply. Briefly identify "

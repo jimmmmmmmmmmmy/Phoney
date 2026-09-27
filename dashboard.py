@@ -181,6 +181,13 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
             raise HTTPException(404, "Team artwork is unavailable", headers=SAFE_HEADERS)
         return FileResponse(artwork, media_type="image/png", headers=SAFE_HEADERS)
 
+    @app.api_route("/assets/shellhacks-2026.webp", methods=["GET", "HEAD"])
+    def optimized_team_artwork():
+        artwork = PUBLIC_DIRECTORY / "branding" / "shellhacks-2026.webp"
+        if not artwork.is_file():
+            raise HTTPException(404, "Team artwork is unavailable", headers=SAFE_HEADERS)
+        return FileResponse(artwork, media_type="image/webp", headers=SAFE_HEADERS)
+
     @app.api_route("/assets/{filename}", methods=["GET", "HEAD"])
     def workspace_asset(filename: str):
         media_type = WORKSPACE_ASSETS.get(filename)

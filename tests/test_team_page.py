@@ -162,17 +162,19 @@ def test_logo_is_local_svg_without_executable_or_external_resources(client):
     assert not re.search(r"(?:url\(|@import)[^;}]*https?://", response.text, re.I)
 
 
-def test_team_background_serves_exact_png_bytes_with_get_and_head(client):
-    original = (ROOT / "public" / "branding" / "shellhacks-2026.png").read_bytes()
-    response = client.get("/assets/shellhacks-2026.png")
+@pytest.mark.parametrize("extension,media_type", [("png", "image/png"), ("webp", "image/webp")])
+def test_team_background_serves_exact_image_bytes_with_get_and_head(client, extension, media_type):
+    filename = f"shellhacks-2026.{extension}"
+    original = (ROOT / "public" / "branding" / filename).read_bytes()
+    response = client.get(f"/assets/{filename}")
     assert response.status_code == 200
-    assert original.startswith(b"\x89PNG\r\n\x1a\n") and response.content == original
-    assert response.headers["content-type"] == "image/png"
+    assert response.content == original
+    assert response.headers["content-type"] == media_type
     assert int(response.headers["content-length"]) == len(original)
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["referrer-policy"] == "no-referrer"
     assert "set-cookie" not in response.headers
-    head = client.head("/assets/shellhacks-2026.png")
+    head = client.head(f"/assets/{filename}")
     assert head.status_code == 200 and head.content == b""
     assert head.headers["content-type"] == response.headers["content-type"]
     assert head.headers["content-length"] == response.headers["content-length"]

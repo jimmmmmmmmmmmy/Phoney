@@ -1,6 +1,6 @@
 # Caller AI alerts
 
-The Call details heading shows one amber **AI Detected** flag when the caller has strong synthetic-speech evidence. There is no 50%/75% whole-call split. Unflagged, inconclusive, unavailable, and pending results show no badge. The dashboard does not display a numeric AI score or a separate analysis card. This acoustic flag does not establish identity or intent.
+The Call details heading shows one bright-red **AI Detected** flag when the caller has strong synthetic-speech evidence. There is no 50%/75% whole-call split. Unflagged, inconclusive, unavailable, and pending results show no badge. The dashboard does not display a numeric AI score or a separate analysis card. This acoustic flag does not establish identity or intent.
 
 ## Audio and classification
 

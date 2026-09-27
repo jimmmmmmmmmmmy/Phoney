@@ -417,3 +417,70 @@ openCall();assert.equal(flagged($('messages').children[0]),true);
 state.snapshot=withDetection(timedDetection(),[timedCall([segment()],{stream_sid:OTHER_STREAM})]);render();
 assert.equal(flagged($('messages').children[0]),false);
 """)
+
+
+@pytest.mark.parametrize("matched_contact", [False, True])
+def test_call_list_ai_marker_follows_caller_identity_using_each_rows_detection(tmp_path, matched_contact):
+    run_browser_logic(tmp_path, DETECTION + f"const matchedContact={'true' if matched_contact else 'false'};\n" + r"""
+const phone='+16562520233';
+window.DashboardCRM={render(){},findContactByPhone(value){return matchedContact && value===phone
+ ? {id:'local-contact',name:'Avery Chen',phone} : null;}};
+const rowFor=sid=>$('call-list').children.find(row=>row.dataset.callSid===sid);
+for(const [version,alert] of [[3,'ai_detected'],[1,'ai_caller'],[2,'potential_ai']]) {
+ state.snapshot=withDetection(detection({analysis:analysis({version,alert})}),[session(),session(OTHER)]);
+ state.snapshot.call_details={calls:[{call_sid:SID,caller_number:phone},{call_sid:OTHER,caller_number:'+19415550101'}]};
+ render();
+ const title=rowFor(SID).children[0],icon=title.children[0];
+ assert.equal(title.textContent,matchedContact?'Avery Chen':phone);
+ assert.equal(icon.className.split(/\s+/).includes('call-ai-marker'),true);
+ assert.equal(icon.attributes.role,'img');assert.equal(icon.attributes['aria-label'],'AI Detected');
+ assert.equal(icon.children[0].tag,'svg');assert.equal(icon.children[0].attributes['aria-hidden'],'true');
+ assert.deepEqual(icon.children[0].children.map(child=>[child.tag,child.attributes]),
+  segmentAiMarker().children[0].children.map(child=>[child.tag,child.attributes]));
+ assert.equal(title.children.length,matchedContact?2:1);
+ if(matchedContact){assert.equal(title.children[1].className,'call-phone');assert.equal(title.children[1].textContent,phone);}
+ assert.equal(rowFor(OTHER).children[0].children.length,0);
+ // Selecting an unrelated normal call must not remove the first row's icon
+ // or apply that icon to the selected call.
+ openCall(OTHER);assert.equal($('caller-ai-badge').hidden,true);
+ assert.equal(rowFor(SID).children[0].children[0].attributes['aria-label'],'AI Detected');
+ assert.equal(rowFor(OTHER).children[0].children.length,0);
+}
+""")
+
+
+def test_call_list_marker_tracks_detection_only_polling_without_audio_or_focus_changes(tmp_path):
+    run_browser_logic(tmp_path, DETECTION + r"""
+const calls=[session(),session(OTHER)],rowFor=sid=>$('call-list').children.find(row=>row.dataset.callSid===sid);
+state.snapshot=withDetection(null,calls);render();openCall();
+const audio=$('call-audio');audio.play();audio.currentTime=17;
+const src=audio.src,loads=audio.loads,pauses=audio.pauses;
+showCollection('recent');rowFor(OTHER).focus();
+assert.equal(rowFor(SID).children[0].children.length,0);
+state.snapshot=withDetection(detection({analysis:analysis({version:3,alert:'ai_detected'})}),calls);render();
+assert.equal(rowFor(SID).children[0].children[0].attributes['aria-label'],'AI Detected');
+assert.equal(rowFor(OTHER).children[0].children.length,0);
+assert.equal(document.activeElement,rowFor(OTHER));
+const stableRow=rowFor(SID);render();assert.equal(rowFor(SID),stableRow);
+for(const result of [detection({analysis:analysis({version:3,alert:'none'})}),
+ detection({analysis:analysis({version:3,alert:'inconclusive'})}),detection({analysis:null}),null]) {
+ state.snapshot=withDetection(result,calls);render();
+ assert.equal(rowFor(SID).children[0].children.length,0);
+ assert.equal(document.activeElement,rowFor(OTHER));
+ assert.equal(audio.src,src);assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
+ assert.equal(audio.currentTime,17);assert.equal(audio.paused,false);
+}
+""")
+
+
+def test_recording_only_call_gets_list_ai_marker_without_opening_transcript(tmp_path):
+    run_browser_logic(tmp_path, DETECTION + r"""
+state.snapshot=withDetection(detection({analysis:analysis({version:3,alert:'ai_detected'})}),[]);
+render();
+assert.equal(state.selected,null);assert.equal(state.detail,false);
+const rows=$('call-list').children;
+assert.equal(rows.length,1);assert.equal(rows[0].dataset.callSid,SID);
+assert.equal(rows[0].children[0].children[0].attributes['aria-label'],'AI Detected');
+assert.equal($('call-audio').src,'');assert.equal($('call-audio').paused,true);
+assert.equal($('caller-ai-badge').hidden,true);
+""")

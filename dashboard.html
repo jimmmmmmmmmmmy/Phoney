@@ -23,7 +23,7 @@
     .exports{display:flex;gap:5px;flex:none}.export{font-size:10px;border:1px solid var(--line);border-radius:6px;padding:5px 7px;color:var(--muted);text-decoration:none;font-weight:650}.export:hover{color:var(--teal);background:#f4f8f8}.export[aria-disabled="true"]{pointer-events:none;opacity:.4}
     .summary-panel{margin-top:0}.summary-text{font-size:13px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere;max-width:860px}.summary-text[data-empty="true"]{color:var(--muted)}.track-error{margin-top:7px;font-size:11px;color:var(--red);overflow-wrap:anywhere}
     .caller-ai-badge{display:inline-flex;align-items:center;flex:none;max-width:100%;padding:3px 7px;border-radius:5px;background:#fff1f2;color:#d51b27;font-size:11px;line-height:1.5;font-weight:650}
-    .segment-ai-marker{display:inline-flex;align-items:center;flex:none;color:#d51b27}.segment-ai-marker svg{width:14px;height:14px}
+    .segment-ai-marker,.call-ai-marker{display:inline-flex;align-items:center;flex:none;color:#d51b27}.segment-ai-marker svg,.call-ai-marker svg{width:14px;height:14px}.call-ai-marker{margin-left:6px;vertical-align:-2px}
     .transcript-toolbar{flex:none;display:flex;align-items:center;padding:0 0 10px;color:var(--muted);font-size:10px}.live-label{letter-spacing:.9px;text-transform:uppercase;font-weight:650}.transcript{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 28px 24px;scroll-behavior:smooth;scrollbar-width:thin;scrollbar-color:#cbd4dc transparent}
     .messages{display:flex;flex-direction:column;gap:7px}.message{display:grid;grid-template-columns:39px minmax(0,1fr);gap:10px;border-radius:6px;padding:4px 8px;margin:0 -8px;border-left:3px solid transparent}.timestamp{font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#8a97a4;padding-top:2px;font-variant-numeric:tabular-nums}.message-meta{display:flex;align-items:center;gap:8px;margin-bottom:2px}.speaker{font-size:10px;color:var(--teal);font-weight:750}.message[data-track="outbound"] .speaker{color:#596a91}.confidence{font-size:9px;color:#94a0ad}.message-text{font-size:14px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;max-width:860px}.interim .message-text{color:#8995a2}.interim .speaker{color:#81968c}.interim-label{font-size:9px;background:#f0f4f1;color:#84918a;padding:2px 5px;border-radius:4px}.message.playing-line{background:#e3f3e9;border-left-color:var(--teal)}.message[data-track="outbound"].playing-line{background:#ecf0fa;border-left-color:#677bad}
     .message.ai-detected{background:#ffe4e6;border-radius:8px}
@@ -502,19 +502,21 @@
           : session.voicemail ? voicemailLabel(session.voicemail) : isActive(session) ? "Live call" : "No summary yet.");
     }
     function renderRows(sessions, listId, keyName) {
-      const rows = sessions.map(session => ({session, contact: window.DashboardCRM?.findContactByPhone?.(callerNumber(session)) || null}));
-      const key = JSON.stringify([state.selected, rows.map(({session, contact}) => [session.call_sid, callerNumber(session),
-        contact && contact.id, contact && contact.name, summaryPreview(session), callStartedAt(session), callDuration(session)])]);
+      const rows = sessions.map(session => ({session, contact: window.DashboardCRM?.findContactByPhone?.(callerNumber(session)) || null,
+        aiDetected: Boolean(callAnalysis(session))}));
+      const key = JSON.stringify([state.selected, rows.map(({session, contact, aiDetected}) => [session.call_sid, callerNumber(session),
+        contact && contact.id, contact && contact.name, aiDetected, summaryPreview(session), callStartedAt(session), callDuration(session)])]);
       if (key === state[keyName]) return;
       state[keyName] = key;
       const focusedCall = document.activeElement && document.activeElement.dataset.callSid;
       const fragment = document.createDocumentFragment();
-      rows.forEach(({session, contact}) => {
+      rows.forEach(({session, contact, aiDetected}) => {
         const button = node("button", "call-option");
         button.type = "button";
         button.dataset.callSid = session.call_sid;
         if (session.call_sid === state.selected) button.setAttribute("aria-current", "true");
         const caller = node("span", "call-title", contact ? contact.name : callerNumber(session));
+        if (aiDetected) caller.append(aiMarker("call-ai-marker", "AI Detected"));
         if (contact) caller.append(node("span", "call-phone", callerNumber(session)));
         const time = node("span", "call-time");
         const duration = callDuration(session);
@@ -633,10 +635,10 @@
       $("session-storage-warning").textContent = [message, voicemailMessage, transcriptionMessage].filter(Boolean).join(" ");
       $("session-storage-warning").hidden = !message && !voicemailMessage && !transcriptionMessage;
     }
-    function callerAnalysis(session) {
+    function callAnalysis(session) {
       const detection = session && session.detection;
       const value = detection && detection.analysis;
-      const valid = visibleDetail() && session && session.call_sid === state.selected
+      const valid = session
         && detection && typeof detection === "object" && !Array.isArray(detection)
         && detection.call_sid === session.call_sid && detection.provider === "modulate"
         && ["analyzing", "complete", "unknown"].includes(detection.status)
@@ -645,6 +647,9 @@
         && typeof value.complete === "boolean" && ["live", "recording", "combined"].includes(value.source)
         && (value.version === 3 ? value.alert === "ai_detected" : ["ai_caller", "potential_ai"].includes(value.alert));
       return valid ? value : null;
+    }
+    function callerAnalysis(session) {
+      return visibleDetail() && session && session.call_sid === state.selected ? callAnalysis(session) : null;
     }
     function renderDetection(session) {
       const badge = $("caller-ai-badge");
@@ -672,8 +677,10 @@
       badge.setAttribute("aria-label", description);
     }
     function segmentAiMarker() {
-      const marker = node("span", "segment-ai-marker");
-      const description = "AI detected in audio overlapping this transcript segment.";
+      return aiMarker("segment-ai-marker", "AI detected in audio overlapping this transcript segment.");
+    }
+    function aiMarker(className, description) {
+      const marker = node("span", className);
       marker.setAttribute("role", "img");
       marker.setAttribute("aria-label", description);
       marker.setAttribute("title", description);

@@ -49,8 +49,12 @@ class VoicemailStore:
     """Bounded in-memory receipts and a serial, coalescing disk writer."""
 
     def __init__(self, settings):
-        self.enabled = settings.voicemail_enabled
+        self.enabled = settings.voicemail_enabled or getattr(settings, "voicemail_agent_enabled", False)
         self.path = settings.voicemail_storage_dir
+        if not self.path and getattr(settings, "voicemail_agent_enabled", False):
+            # The operator already requires durable transcript storage. Keep its
+            # receipt directory beside it when the legacy option is unset.
+            self.path = str(Path(settings.transcript_storage_dir).parent / "voicemails")
         self.max_seconds = settings.voicemail_max_seconds
         self.records = {}
         self.storage_error = ""
@@ -73,7 +77,8 @@ class VoicemailStore:
         keys = {"schema_version", "call_sid", "mode", "reason", "started_at", "ended_at",
                 "recording_status", "recording_sid", "duration_seconds", "storage_error"}
         if (not isinstance(item, dict) or set(item) != keys or item.get("schema_version") != 1
-                or item.get("mode") != "voicemail_stub"
+                or not isinstance(item.get("mode"), str)
+                or item["mode"] not in {"voicemail_stub", "voicemail_ai", "voicemail_fallback"}
                 or not isinstance(item.get("call_sid"), str)
                 or not SID.fullmatch(item["call_sid"])
                 or not isinstance(item.get("recording_status"), str)
@@ -88,7 +93,7 @@ class VoicemailStore:
                                             or len(item["ended_at"]) > 100):
             return None
         if item["duration_seconds"] is not None and (
-                type(item["duration_seconds"]) is not int or not 0 <= item["duration_seconds"] <= 605):
+                type(item["duration_seconds"]) is not int or not 0 <= item["duration_seconds"] <= (86400 if item["mode"] == "voicemail_ai" else 605)):
             return None
         if item["storage_error"] not in {"", "save-failed"}:
             return None
@@ -238,9 +243,10 @@ class VoicemailStore:
                 with self._lock:
                     self._writing.discard(sid)
 
-    def start(self, call_sid, reason):
+    def start(self, call_sid, reason, *, mode="voicemail_stub", started_at=None):
         with self._lock:
-            if not self.enabled or not SID.fullmatch(call_sid):
+            if (not self.enabled or not SID.fullmatch(call_sid) or not isinstance(mode, str)
+                    or mode not in {"voicemail_stub", "voicemail_ai", "voicemail_fallback"}):
                 return False
             if call_sid in self.records:
                 return True
@@ -254,13 +260,43 @@ class VoicemailStore:
                     return False
                 oldest = min(finished, key=lambda r: r["started_at"])
                 self.records.pop(oldest["call_sid"])
-            record = {"schema_version": 1, "call_sid": call_sid, "mode": "voicemail_stub",
-                      "reason": reason[:100], "started_at": now(), "ended_at": None,
+            record = {"schema_version": 1, "call_sid": call_sid, "mode": mode,
+                      "reason": reason[:100], "started_at": started_at or now(), "ended_at": None,
                       "recording_status": "awaiting", "recording_sid": "",
                       "duration_seconds": None, "storage_error": ""}
             self.records[call_sid] = record
             self._queue(record)
             return True
+
+    def fallback(self, call_sid, reason):
+        """Change only the receipt: native Twilio Record owns this message now."""
+        with self._lock:
+            record = self.records.get(call_sid)
+            if not record or record["mode"] != "voicemail_ai":
+                return False
+            record.update(mode="voicemail_fallback", reason=reason[:100],
+                          recording_status="awaiting", recording_sid="", duration_seconds=None)
+            self._queue(record)
+            return True
+
+    def finish_ai(self, call_sid, *, available, duration=None):
+        """Local WAV completion is separate from Twilio cloud recording status."""
+        with self._lock:
+            record = self.records.get(call_sid)
+            if not record or record["mode"] != "voicemail_ai":
+                return
+            record["ended_at"] = record["ended_at"] or now()
+            record["recording_status"] = "completed" if available else "failed"
+            record["duration_seconds"] = (int(duration) if type(duration) in (int, float)
+                and 0 <= duration <= 86400 else None)
+            self._queue(record)
+
+    def fail_fallback(self, call_sid):
+        with self._lock:
+            record = self.records.get(call_sid)
+            if record and record["mode"] == "voicemail_fallback":
+                record.update(ended_at=record["ended_at"] or now(), recording_status="failed")
+                self._queue(record)
 
     def finish(self, call_sid):
         with self._lock:

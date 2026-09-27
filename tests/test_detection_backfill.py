@@ -704,3 +704,128 @@ def test_default_batch_parser_reports_malformed_frame_as_invalid_response(tmp_pa
         assert saved['analysis']['complete'] is False
         assert 'private' not in json.dumps(saved)
     asyncio.run(run())
+
+
+def exhausted_recording(config, *, seconds=5):
+    capture(config, seconds=seconds)
+    path, job = seed_legacy_job(config)
+    for chunk in job['chunks']:
+        chunk.update(status='failed', attempts=3, error='provider_timeout')
+    path.write_text(json.dumps(job))
+    return path
+
+
+def test_explicit_retry_is_durable_bounded_and_rejects_stale_double_clicks(tmp_path):
+    async def run():
+        config = settings(tmp_path); path = exhausted_recording(config)
+        provider = Provider(); provider.fail = True
+        manager = BackfillManager(config, DetectionStore(config.detection_storage_dir), provider=provider)
+        for attempt in (4, 5):
+            status = manager.status(CALL)
+            assert status['state'] == 'failed' and status['retryable']
+            assert status['attempts'] == attempt - 1
+            token = status['retry_token']
+            results = await asyncio.gather(manager.retry(CALL, token), manager.retry(CALL, token))
+            assert sum(item['accepted'] for item in results) == 1
+            assert manager.status(CALL)['state'] == 'queued'
+            assert not (await manager.retry(CALL, token))['accepted']
+            # Restart after the retry was queued: no memory-only work item.
+            manager = BackfillManager(config, DetectionStore(config.detection_storage_dir), provider=provider)
+            await manager.run_once()
+            assert json.loads(path.read_text())['chunks'][0]['attempts'] == attempt
+            await manager.run_once()
+            assert len(provider.calls) == attempt - 3
+        status = manager.status(CALL)
+        assert status['state'] == 'failed' and not status['retryable']
+        assert status['attempts'] == status['max_attempts'] == 5
+        assert not (await manager.retry(CALL, status['retry_token']))['accepted']
+        assert 'private' not in json.dumps(status)
+    asyncio.run(run())
+
+
+def test_explicit_retry_preserves_successful_paid_ranges(tmp_path):
+    async def run():
+        config = settings(tmp_path); path = exhausted_recording(config, seconds=65)
+        job = json.loads(path.read_text())
+        chunk = job['chunks'][0]
+        chunk.update(status='complete', attempts=1, error='', windows=[{
+            'stream_id': STREAM, 'start_ms': chunk['start']//8,
+            'end_ms': chunk['end']//8, 'verdict': 'synthetic', 'confidence': .95}])
+        path.write_text(json.dumps(job))
+        provider = Provider(); store = DetectionStore(config.detection_storage_dir)
+        manager = BackfillManager(config, store, provider=provider)
+        state = manager.status(CALL)
+        assert (await manager.retry(CALL, state['retry_token']))['accepted']
+        await manager.run_once()
+        assert len(provider.calls) == 1
+        assert provider.calls[0][0] == job['chunks'][1]['start']//8
+        assert manager.status(CALL)['state'] == 'complete'
+        assert not manager.status(CALL)['retryable']
+        assert store.get(CALL)['analysis']['complete'] is True
+    asyncio.run(run())
+
+
+def test_retry_rejects_active_candidate_changed_or_missing_recordings(tmp_path):
+    async def run():
+        config = settings(tmp_path); exhausted_recording(config)
+        store = DetectionStore(config.detection_storage_dir)
+        manager = BackfillManager(config, store, provider=Provider())
+        state = manager.status(CALL)
+        live = BackfillManager(config, store, active_call_ids=lambda:{CALL})
+        assert live.status(CALL)['state'] == 'live'
+        assert not (await live.retry(CALL,state['retry_token']))['accepted']
+        candidate = BackfillManager(config, store, can_run=lambda:False)
+        assert not candidate.status(CALL)['retryable']
+        assert not (await candidate.retry(CALL,state['retry_token']))['accepted']
+        manifest = Path(config.media_storage_dir)/CALL/'manifest.json'
+        manifest.write_text(manifest.read_text()+' ')
+        assert not (await manager.retry(CALL,state['retry_token']))['accepted']
+        assert manager.status(CALL)['state'] == 'unavailable'
+        manifest.unlink()
+        assert not (await manager.retry(CALL,state['retry_token']))['accepted']
+        assert manager.status(CALL)['state'] == 'unavailable'
+    asyncio.run(run())
+
+
+def test_retry_obeys_cross_process_lock_and_does_not_upload(tmp_path):
+    async def run():
+        config=settings(tmp_path); exhausted_recording(config)
+        provider=Provider(); store=DetectionStore(config.detection_storage_dir)
+        manager=BackfillManager(config,store,provider=provider)
+        other=BackfillManager(config,store,provider=provider)
+        state=manager.status(CALL)
+        root,lock=other._lock()
+        try:
+            result=await manager.retry(CALL,state['retry_token'])
+            assert not result['accepted'] and result['reason']=='busy'
+        finally:
+            os.close(lock);os.close(root)
+        assert provider.calls==[]
+        assert manager.status(CALL)['attempts']==3
+    asyncio.run(run())
+
+
+def test_recovery_status_survives_restart_without_provider_calls(tmp_path):
+    async def run():
+        config=settings(tmp_path); capture(config)
+        provider=Provider();provider.fail=True
+        manager=BackfillManager(config,DetectionStore(config.detection_storage_dir),provider=provider)
+        assert manager.status(CALL)['state']=='queued'
+        await manager.run_once()
+        state=BackfillManager(config,DetectionStore(config.detection_storage_dir)).status(CALL)
+        assert state['state']=='retrying' and state['attempts']==1 and state['retryable']
+        assert len(provider.calls)==1
+    asyncio.run(run())
+
+
+def test_live_provider_failure_is_visible_without_recorded_retry(tmp_path):
+    config=settings(tmp_path)
+    store=DetectionStore(config.detection_storage_dir)
+    assert store.save(CALL, {'provider':'modulate','status':'unknown','label':'unknown',
+        'confidence':None,'reason':'provider_timeout','streams':1,'observations':0,
+        'accepted_frames':0,'dropped_frames':0,'submitted_audio_ms':0,'coverage_limited':True,
+        'analysis':build_analysis([],source='live',complete=False)})
+    manager=BackfillManager(config,store,active_call_ids=lambda:{CALL})
+    status=manager.status(CALL)
+    assert status['state']=='retrying' and status['reason']=='provider_timeout'
+    assert not status['retryable'] and status['retry_token'] is None

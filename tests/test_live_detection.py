@@ -308,21 +308,23 @@ def test_call_budget_is_shared_by_reconnected_streams_and_clips_final_frame():
         sockets.append(socket)
         return socket
     async def scenario():
-        manager = LiveDetectionManager(settings(modulate_detection_max_audio_seconds=5),
+        manager = LiveDetectionManager(settings(modulate_detection_max_audio_seconds=5, max_call_seconds=5),
                     connector=connector, on_update=lambda sid, payload: updates.append(payload))
         manager.start("CA-budget", "MZ-first")
-        manager.offer("CA-budget", "inbound", 100, b"\0" * 28000)  # 3.5 seconds
+        manager.offer("CA-budget", "inbound", 100, b"\0" * 28000)
         manager.finish("CA-budget")
         await manager.wait_idle()
         manager.start("CA-budget", "MZ-second")
-        manager.offer("CA-budget", "inbound", 500, b"\0" * 28000)  # only 1.5 seconds remain
+        manager.offer("CA-budget", "inbound", 500, b"\0" * 28000)
         await manager.wait_idle()
+        manager.finish("CA-budget")
         manager.start("CA-budget", "MZ-third")
+        manager.finish("CA-budget")
         return manager
     manager = asyncio.run(scenario())
     assert len(sockets) == 2
     assert sum(len(data) for socket in sockets for data in socket.sent if isinstance(data, bytes)) == 5 * 16000
-    assert updates[-1]["status"] == "unknown"  # Unmapped reconnect epochs remain conservative.
+    assert updates[-1]["status"] == "unknown"
     assert updates[-1]["analysis"]["alert"] == "inconclusive"
     assert updates[-1]["coverage_limited"] is True
     assert updates[-1]["submitted_audio_ms"] == 5000
@@ -462,3 +464,170 @@ def test_transport_failure_retains_partial_windows_but_invalid_response_discards
     assert invalid["status"] == "unknown"
     assert invalid["analysis"]["alert"] == "inconclusive"
     assert invalid["analysis"]["windows"] == []
+
+
+def test_live_detection_continues_past_120_seconds_and_keeps_global_offsets():
+    updates, sockets = [], []
+    class LateSynthetic(SizedProviderSocket):
+        async def messages(self):
+            await self.ended.wait()
+            duration = sum(len(item) for item in self.sent if isinstance(item, bytes)) // 16
+            yield json.dumps({"type": "frame", "frame": {
+                "start_time_ms": 0, "end_time_ms": duration,
+                "verdict": "synthetic" if len(sockets) > 1 else "non-synthetic", "confidence": .96}})
+            yield json.dumps({"type": "done", "duration_ms": duration, "frame_count": 1})
+    def connector(url):
+        socket = LateSynthetic(); sockets.append(socket); return socket
+    async def scenario():
+        manager = LiveDetectionManager(settings(modulate_detection_max_audio_seconds=120),
+                    connector=connector, on_update=lambda sid, payload: updates.append(payload))
+        manager.start("CA-long", "MZ-long")
+        manager.offer("CA-long", "inbound", 100, b"\0" * (120 * 8000))
+        await manager.wait_idle()
+        assert manager.active_call_ids == {"CA-long"}
+        manager.offer("CA-long", "inbound", 120100, b"\0" * (4 * 8000))
+        manager.finish("CA-long")
+        await manager.wait_idle()
+        return manager
+    manager = asyncio.run(scenario())
+    result = updates[-1]
+    assert len(sockets) == 2
+    assert result['analysis']['alert'] == 'ai_detected'
+    assert result['analysis']['complete'] is True
+    assert result['analysis']['synthetic_intervals'] == [
+        {'stream_id': 'MZ-long', 'start_ms': 120100, 'end_ms': 124100}]
+    assert result['submitted_audio_ms'] == 124000
+    assert result['coverage_limited'] is False
+    assert manager.active_call_ids == set()
+
+
+def test_provider_rotation_is_not_limited_by_twilio_reconnect_budget():
+    sockets = []
+    def connector(url):
+        socket = SizedProviderSocket(); sockets.append(socket); return socket
+    async def scenario():
+        manager = LiveDetectionManager(settings(modulate_detection_max_audio_seconds=4), connector=connector)
+        manager.start("CA-long", "MZ-long")
+        for index in range(12):
+            manager.offer("CA-long", "inbound", index * 4000, b"\0" * 32000)
+            await manager.wait_idle()
+        manager.finish("CA-long")
+        return manager
+    manager = asyncio.run(scenario())
+    assert len(sockets) == 12 and manager._epoch_counts['CA-long'] == 1
+    assert manager.decisions['CA-long'].submitted_audio_ms == 48000
+
+
+def test_slow_finalization_cannot_spawn_unbounded_provider_connections():
+    class Held(SizedProviderSocket):
+        async def messages(self):
+            await asyncio.Event().wait()
+            if False: yield ''
+    async def scenario():
+        manager = LiveDetectionManager(settings(modulate_detection_max_audio_seconds=4),
+                    connector=lambda url: Held(), shutdown_seconds=.01)
+        manager.start('CA-long', 'MZ-long')
+        for index in range(20):
+            manager.offer('CA-long', 'inbound', index * 4000, b"\0" * 32000)
+        assert manager.active_count == manager.MAX_PENDING_PER_CALL
+        assert manager._budget_samples['CA-long'] == 64000
+        await manager.close()
+        assert manager.active_count == 0
+    asyncio.run(scenario())
+
+
+def test_provider_failure_recovers_on_fresh_audio_after_backoff(monkeypatch):
+    from partner_detection import live
+    clock = [100.0]
+    monkeypatch.setattr(live.time, 'monotonic', lambda: clock[0])
+    class Failed(SizedProviderSocket):
+        async def messages(self):
+            await self.ended.wait()
+            yield json.dumps({'type': 'error'})
+    sockets = [Failed(), SizedProviderSocket()]
+    updates = []
+    async def scenario():
+        manager = LiveDetectionManager(settings(modulate_detection_max_audio_seconds=4),
+                    connector=lambda url: sockets.pop(0), on_update=lambda sid,payload: updates.append(payload))
+        manager.start('CA-recover', 'MZ-recover')
+        manager.offer('CA-recover', 'inbound', 0, b"\0" * 32000)
+        await manager.wait_idle()
+        manager.offer('CA-recover', 'inbound', 4000, b"\0" * 160)
+        assert len(sockets) == 1
+        clock[0] += 6
+        manager.offer('CA-recover', 'inbound', 10000, b"\0" * 32000)
+        await manager.wait_idle()
+        manager.finish('CA-recover')
+        assert len(sockets) == 0
+        assert updates[-1]['analysis']['windows'][0]['start_ms'] == 10000
+        assert updates[-1]['coverage_limited'] is True
+    asyncio.run(scenario())
+
+
+def test_invalid_later_window_does_not_delete_valid_earlier_same_stream_evidence():
+    class Invalid(SizedProviderSocket):
+        async def messages(self):
+            await self.ended.wait()
+            yield json.dumps({'type':'unexpected'})
+    sockets = [SizedProviderSocket(), Invalid()]
+    updates=[]
+    async def scenario():
+        manager = LiveDetectionManager(settings(modulate_detection_max_audio_seconds=4),
+                    connector=lambda url: sockets.pop(0), on_update=lambda sid,payload: updates.append(payload))
+        manager.start('CA-long','MZ-long')
+        manager.offer('CA-long','inbound',0,b"\0"*32000)
+        await manager.wait_idle()
+        manager.offer('CA-long','inbound',4000,b"\0"*32000)
+        manager.finish('CA-long')
+        await manager.wait_idle()
+    asyncio.run(scenario())
+    assert len(updates[-1]['analysis']['windows']) == 1
+    assert updates[-1]['analysis']['windows'][0]['start_ms'] == 0
+
+
+def test_frame_crossing_provider_window_is_split_once_with_exact_offsets():
+    sockets, updates = [], []
+    def connector(url):
+        socket = SizedProviderSocket(); sockets.append(socket); return socket
+    async def scenario():
+        manager = LiveDetectionManager(settings(modulate_detection_max_audio_seconds=4),
+                    connector=connector, on_update=lambda sid,payload: updates.append(payload))
+        manager.start('CA-split', 'MZ-split')
+        manager.offer('CA-split', 'inbound', 100, b'\0' * 50000)
+        manager.finish('CA-split')
+        await manager.wait_idle()
+    asyncio.run(scenario())
+    assert len(sockets) == 2
+    assert [sum(len(x) for x in socket.sent if isinstance(x, bytes)) for socket in sockets] == [64000,36000]
+    assert [(w['start_ms'],w['end_ms']) for w in updates[-1]['analysis']['windows']] == [(100,4100),(4100,6350)]
+    assert updates[-1]['analysis']['complete'] and not updates[-1]['coverage_limited']
+
+
+def test_rejected_reconnect_revokes_old_source_and_cannot_reopen_with_old_clock():
+    sockets,updates=[],[]
+    def connector(url):
+        socket=SizedProviderSocket();sockets.append(socket);return socket
+    async def scenario():
+        manager=LiveDetectionManager(settings(),connector=connector,
+                    on_update=lambda sid,payload:updates.append(payload))
+        manager.MAX_STREAMS_PER_CALL=1
+        manager.start('CA-rejected','MZ-first')
+        manager.offer('CA-rejected','inbound',0,b'\0'*160)
+        manager.start('CA-rejected','MZ-rejected')
+        manager.offer('CA-rejected','inbound',0,b'\0'*160)
+        assert manager.active_count==1
+        assert 'CA-rejected' not in manager._sources
+        assert updates[-1]['reason']=='too_many_streams'
+        await manager.wait_idle()
+        # Completion of the original session must not restore input ownership.
+        manager.offer('CA-rejected','inbound',20,b'\0'*160)
+        await manager.wait_idle()
+        assert manager.active_count==0
+        assert manager.active_call_ids==set()
+        assert manager._stream_counts['CA-rejected']==1
+        assert updates[-1]['coverage_limited'] is True
+        return manager
+    manager=asyncio.run(scenario())
+    assert len(sockets)==1
+    assert sum(len(x) for x in sockets[0].sent if isinstance(x,bytes))==320
+    assert manager._budget_samples['CA-rejected']==160

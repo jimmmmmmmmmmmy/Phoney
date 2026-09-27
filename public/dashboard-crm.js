@@ -16,7 +16,7 @@
   ];
   let localContacts = [], demoOverrides = [], storageWarning = "", realCalls = [], lastSessions = [], revision = 0, renderedKey = "";
   let listFilter = "all", searchText = "", root, dialog, form, opener, successMessage = "", savedContactId = "", listUI = null, renderedRoute = "";
-  let editingContactId = null, savingContact = false, draftContactId = null, workspaceApplied = false;
+  let editingContactId = null, editingContact = null, savingContact = false, draftContactId = null, workspaceApplied = false;
   const expandedCalls = new Set();
   const callerHistories = new Map();
   let callerMetrics = new Map(), callerMetricsComplete = false;
@@ -122,7 +122,7 @@
   function storedContact(value, defaults = {}) {
     return {...defaults, id: value.id, firstName: value.firstName.trim(), lastName: value.lastName.trim(), phone: value.phone,
       email: value.email || "", address: value.address || "", website: value.website || "", company: value.company || "",
-      createdAt: value.createdAt, status: value.status || defaults.status || "New",
+      createdAt: value.createdAt, revision: value.revision ?? 0, status: value.status || defaults.status || "New",
       labels: [...new Set((value.labels || defaults.labels || []).map(label => label.trim()))], demo: Boolean(defaults.demo)};
   }
   function applyWorkspace(state) {
@@ -144,6 +144,11 @@
           setSessions(lastSessions);
           revision += 1;
           notifyContactsChanged();
+          const latest = contacts().find(contact => contact.id === editingContactId);
+          if (dialog?.open && editingContact && !savingContact && latest
+              && latest.revision !== editingContact.revision) {
+            formError("This contact changed in another browser. Your draft is unchanged. Close and reopen the editor to review the latest details before saving.");
+          }
         }
       }
     }
@@ -484,6 +489,7 @@
     optionalFields.replaceChildren();
     editFields.replaceChildren();
     editingContactId = contact?.id || null;
+    editingContact = contact ? {...contact, labels: [...(contact.labels || [])]} : null;
     dialogTitle.textContent = contact ? "Edit contact" : "Create contact";
     submitButton.textContent = contact ? "Save changes" : "Create contact";
     dialogDescription.textContent = contact ? "Update contact details and labels." : "Keep contact details and conversations together in this workspace.";
@@ -519,7 +525,7 @@
     event.preventDefault();
     if (savingContact) return;
     const data = new FormData(form), get = name => String(data.get(name) || "").trim();
-    const editing = editingContactId !== null, original = editing ? contacts().find(contact => contact.id === editingContactId) : null;
+    const editing = editingContactId !== null, original = editingContact;
     if (editing && !original) { formError("This contact is no longer available. Close this dialog and reopen the contacts list."); return; }
     const firstName = get("firstName"), lastName = get("lastName"), phone = normalizePhone(get("phone"));
     for (const [name, value, label] of [["firstName", firstName, "first name"], ["lastName", lastName, "last name"]]) {
@@ -549,7 +555,7 @@
     }
     if (contacts().some(contact => contact.id !== original?.id && contact.phone === phone)) { formError("A contact with this phone number already exists.", form.elements.namedItem("phone")); return; }
     if (!editing && localContacts.length >= MAX_CONTACTS) { formError("This workspace has reached its limit of 500 contacts. Your contact has not been saved."); return; }
-    const contact = {id: original?.id || draftContactId || `local-${crypto.randomUUID()}`, firstName, lastName, phone, email, address, website, company, createdAt, status: contactStatus, labels, demo: Boolean(original?.demo)};
+    const contact = {id: original?.id || draftContactId || `local-${crypto.randomUUID()}`, firstName, lastName, phone, email, address, website, company, createdAt, status: contactStatus, labels, demo: Boolean(original?.demo), revision: original?.revision ?? 0};
     savingContact = true;
     submitButton.disabled = true;
     submitButton.textContent = "Saving…";
@@ -563,7 +569,8 @@
       savedContactId = saved.id;
       revision += 1;
     } catch (failure) {
-      formError(`Could not confirm your contact was saved. ${failure.message || "Check your connection and try again."}`);
+      formError(failure.status === 409 ? failure.message
+        : `Could not confirm your contact was saved. ${failure.message || "Check your connection and try again."}`);
       return;
     } finally {
       savingContact = false;

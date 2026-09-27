@@ -83,7 +83,7 @@ def test_demo_can_read_and_save_agent_without_owner_session(tmp_path):
     provider = Provider()
     client, registry = client_for(tmp_path, provider=provider, demo=True)
     registry.add_voice(voice())
-    response = client.put(f"/api/agents/{AGENT}", json=config(), headers=HEADERS)
+    response = client.put(f"/api/agents/{AGENT}", json=config(expectedRevision=0), headers=HEADERS)
     assert response.status_code == 200
     data = client.get("/api/agents/config").json()
     assert data["demoMode"] is data["authenticated"] is True
@@ -165,7 +165,7 @@ def test_disabled_feature_has_no_mutations_or_provider_calls(tmp_path):
 def test_owner_can_save_unassigned_config_without_voice_credentials(tmp_path):
     client, registry = client_for(tmp_path)
     assert unlock(client, registry).status_code == 200
-    response = client.put(f"/api/agents/{AGENT}", json=config(slot=None, voiceProfileId=None), headers=HEADERS)
+    response = client.put(f"/api/agents/{AGENT}", json=config(slot=None, voiceProfileId=None, expectedRevision=0), headers=HEADERS)
     assert response.status_code == 200 and response.json()["revision"] == 1
     assert client.post("/api/agents/voices/refresh", json={}, headers=HEADERS).status_code == 503
     data = client.get("/api/agents/config").json()
@@ -178,7 +178,7 @@ def test_catalog_then_publish_returns_immutable_revision(tmp_path):
     client, registry = client_for(tmp_path, provider=provider)
     unlock(client, registry)
     assert client.post("/api/agents/voices/refresh", json={}, headers=HEADERS).status_code == 200
-    response = client.put(f"/api/agents/{AGENT}", json=config(slot=9), headers=HEADERS)
+    response = client.put(f"/api/agents/{AGENT}", json=config(slot=9, expectedRevision=0), headers=HEADERS)
     assert response.status_code == 200
     assert response.json()["slot"] == 9 and response.json()["voiceId"] == voice()["voiceId"]
     assert registry.resolve_slot("9").prompt == config()["prompt"]
@@ -244,3 +244,20 @@ def test_unauthed_upload_rejected_before_reading_body(tmp_path):
     response = client.post("/api/agents/voices/clone", content=b"", headers={**HEADERS,
         "Content-Type": "multipart/form-data; boundary=x", "Content-Length": str(MAX_UPLOAD + 1)})
     assert response.status_code == 403
+
+
+def test_published_agent_browser_edits_require_the_opened_revision(tmp_path):
+    client, registry = client_for(tmp_path, demo=True)
+    registry.add_voice(voice())
+    path = f"/api/agents/{AGENT}"
+    first = client.put(path, json=config(expectedRevision=0), headers=HEADERS)
+    assert first.status_code == 200 and first.json()["revision"] == 1
+    current = client.put(path, json=config(expectedRevision=1, prompt="Latest settings"), headers=HEADERS)
+    assert current.status_code == 200 and current.json()["revision"] == 2
+    for body in (config(), config(expectedRevision=0), config(expectedRevision=1)):
+        rejected = client.put(path, json=body, headers=HEADERS)
+        assert rejected.status_code == 409
+        assert "changed in another browser" in rejected.json()["detail"]
+    assert registry.resolve_slot("1").prompt == "Latest settings"
+    reviewed = client.put(path, json=config(expectedRevision=2, prompt="Reviewed edit"), headers=HEADERS)
+    assert reviewed.status_code == 200 and reviewed.json()["revision"] == 3

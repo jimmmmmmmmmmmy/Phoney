@@ -22,9 +22,10 @@ from .modulate import BATCH_URL, MAX_MESSAGE_BYTES, MAX_OBSERVATIONS, ModulateEr
 from .storage import SID, DIR_FLAGS, READ_FLAGS, _root
 
 MAX_SECONDS = 1800
-MAX_SCAN = 1000
 MAX_JOB_BYTES = 1024 * 1024
 RETRY_DELAYS = (30, 120)
+MAX_AUTOMATIC_ATTEMPTS = 3
+MAX_TOTAL_ATTEMPTS = 5  # Two explicit dashboard retries after the automatic budget.
 POLL_SECONDS = 10
 SUCCESS_REASONS = {"confident_synthetic", "confident_non_synthetic", "insufficient_evidence",
                    "below_confidence_threshold", "conflicting_evidence", "no_usable_content",
@@ -104,16 +105,21 @@ def _capture(settings, sid, *, audio=False):
 
 
 def inspect_recordings(settings, call_sid=None):
-    """Metadata only, bounded traversal; invalid/unfinalized files are never eligible."""
+    """Metadata only; direct SID access also works beyond the hot archive cache."""
     if call_sid is not None and (not isinstance(call_sid, str) or not SID.fullmatch(call_sid)):
         raise ValueError('invalid-call')
+    if call_sid is not None:
+        try:
+            return [_capture(settings, call_sid)]
+        except (OSError, ValueError, TypeError, KeyError, EOFError, wave.Error):
+            return []
     try:
         root = _root(Path(settings.media_storage_dir))
     except (OSError, ValueError):
         return []
     try:
         with os.scandir(root) as entries:
-            names = [entry.name for _, entry in zip(range(MAX_SCAN), entries)
+            names = [entry.name for entry in entries
                      if SID.fullmatch(entry.name) and entry.is_dir(follow_symlinks=False)
                      and (call_sid is None or call_sid == entry.name)]
     finally:
@@ -208,7 +214,7 @@ def _job_read(root, sid, fingerprint):
                 or type(chunk['start']) is not int or type(chunk['end']) is not int
                 or not 0 <= chunk['start'] < chunk['end'] <= MAX_SECONDS * 8000
                 or not 32000 <= chunk['end'] - chunk['start'] <= (480000 if job['version'] == 1 else MAX_SECONDS * 8000)
-                or type(chunk['attempts']) is not int or not 0 <= chunk['attempts'] <= 3
+                or type(chunk['attempts']) is not int or not 0 <= chunk['attempts'] <= MAX_TOTAL_ATTEMPTS
                 or chunk['status'] not in {'missing', 'pending', 'failed', 'complete'}
                 or chunk['error'] not in {'', 'provider_transport_failed', 'provider_timeout', 'invalid_provider_response'}
                 or type(chunk['retry_at']) not in (int, float) or not math.isfinite(chunk['retry_at'])
@@ -285,6 +291,97 @@ class BackfillManager:
                     and (sid is None or sid not in self.active_call_ids()))
         except Exception:
             return False
+
+    def status(self, sid):
+        """Read durable analysis/retry state without submitting audio or changing it."""
+        result = {"call_sid": sid, "state": "unavailable", "retryable": False,
+                  "retry_token": None, "attempts": 0, "max_attempts": MAX_TOTAL_ATTEMPTS}
+        if not isinstance(sid, str) or not SID.fullmatch(sid):
+            return result
+        if not self.enabled:
+            return {**result, "state": "disabled"}
+        if sid in self.active_call_ids():
+            live = self.store.get(sid) or {}
+            if (live.get('reason') in {'provider_timeout', 'provider_transport_failed',
+                    'provider_reported_error', 'provider_incomplete', 'invalid_provider_response',
+                    'audio_collection_timeout', 'capacity_exceeded', 'internal_error', 'incomplete_audio'}
+                    and live.get('analysis', {}).get('source') == 'live'):
+                return {**result, "state": "retrying", "reason": live['reason']}
+            return {**result, "state": "live"}
+        try:
+            capture = _capture(self.settings, sid)
+            if capture['reason']:
+                return {**result, "state": "inconclusive", "reason": capture['reason']}
+            try:
+                root = _root(Path(self.settings.detection_storage_dir) / 'backfill')
+            except FileNotFoundError:
+                return {**result, "state": "queued"}
+            try:
+                job = _job_read(root, sid, capture['fingerprint'])
+            finally:
+                os.close(root)
+            if job is None:
+                previous = self.store.get(sid)
+                if (previous and previous.get('analysis', {}).get('recording_fingerprint') == capture['fingerprint']
+                        and not previous['analysis'].get('complete')):
+                    return {**result, "state": "unavailable", "reason": "attempt_history_unavailable"}
+                return {**result, "state": "queued"}
+            _validate_job_capture(job, capture)
+            incomplete = [c for c in job['chunks'] if c['status'] != 'complete']
+            attempts = max((c['attempts'] for c in job['chunks']), default=0)
+            result['attempts'] = attempts
+            if not incomplete:
+                return {**result, "state": "complete"}
+            if any(c['status'] == 'pending' and c['retry_at'] > time.time() for c in incomplete):
+                return {**result, "state": "analyzing"}
+            if any(c['status'] == 'missing' for c in incomplete):
+                return {**result, "state": "queued"}
+            automatic = any(c['attempts'] < MAX_AUTOMATIC_ATTEMPTS for c in incomplete)
+            retryable = any(c['attempts'] < MAX_TOTAL_ATTEMPTS for c in incomplete)
+            token = hashlib.sha256(json.dumps(job, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            return {**result, "state": "retrying" if automatic else "failed",
+                    "retryable": retryable and self._allowed(sid), "retry_token": token,
+                    "reason": next((c['error'] for c in incomplete if c['error']), "interrupted")}
+        except (OSError, ValueError, TypeError, KeyError, EOFError, wave.Error):
+            return {**result, "reason": "recording_or_analysis_unavailable"}
+
+    async def retry(self, sid, token):
+        """Queue one explicit retry, preserving every paid attempt and successful chunk.
+
+        The exact job token and process lock make double clicks/stale dashboards
+        idempotent. There are at most five total submissions per recorded range.
+        No call-control callback is invoked from recorded analysis.
+        """
+        if (not self.enabled or not isinstance(sid, str) or not SID.fullmatch(sid)
+                or not isinstance(token, str) or not re.fullmatch(r'[0-9a-f]{64}', token)):
+            return {"accepted": False, "reason": "invalid_request"}
+        if not self._allowed(sid) or self.active_count:
+            return {"accepted": False, "reason": "busy"}
+        def queue():
+            root = lock = None
+            try:
+                root, lock = self._lock()
+                state = self.status(sid)
+                if not state['retryable'] or state['retry_token'] != token or not self._allowed(sid):
+                    return {"accepted": False, "reason": "conflict", "status": state}
+                capture = _capture(self.settings, sid)
+                job = _job_read(root, sid, capture['fingerprint'])
+                _validate_job_capture(job, capture)
+                for chunk in job['chunks']:
+                    if chunk['status'] != 'complete' and chunk['attempts'] < MAX_TOTAL_ATTEMPTS:
+                        chunk.update(status='missing', retry_at=0, error='')
+                _job_save(root, sid, job)
+                return {"accepted": True, "status": self.status(sid)}
+            except (BlockingIOError, FileNotFoundError):
+                return {"accepted": False, "reason": "busy"}
+            except (OSError, ValueError, TypeError, KeyError, EOFError, wave.Error):
+                return {"accepted": False, "reason": "unavailable"}
+            finally:
+                if lock is not None:
+                    os.close(lock)
+                if root is not None:
+                    os.close(root)
+        return await self._io(queue)
 
     async def _io(self, method, *args):
         task = asyncio.create_task(asyncio.to_thread(method, *args))
@@ -424,7 +521,9 @@ class BackfillManager:
                     await self._save_result(capture, job)
                     continue
                 for chunk in job['chunks']:
-                    if chunk['status'] == 'complete' or chunk['attempts'] >= 3 or chunk['retry_at'] > time.time():
+                    if (chunk['status'] == 'complete' or chunk['attempts'] >= MAX_TOTAL_ATTEMPTS
+                            or (chunk['attempts'] >= MAX_AUTOMATIC_ATTEMPTS and chunk['status'] != 'missing')
+                            or chunk['retry_at'] > time.time()):
                         continue
                     if not self._allowed(sid):
                         return
@@ -458,7 +557,7 @@ class BackfillManager:
                                  'invalid_provider_response' if isinstance(exc, (ValueError, TypeError, KeyError, ModulateError)) else
                                  'provider_transport_failed')
                         chunk.update(status='failed', error=error, retry_at=(time.time() + RETRY_DELAYS[chunk['attempts'] - 1]
-                                                               if chunk['attempts'] < 3 else 0))
+                                                               if chunk['attempts'] < MAX_AUTOMATIC_ATTEMPTS else 0))
                     await self._io(_job_save, root, sid, job)
                     await self._save_result(capture, job)
                     return True

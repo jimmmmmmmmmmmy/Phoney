@@ -36,6 +36,7 @@
     .workspace-page{flex:1;min-height:0;overflow:auto;padding:0 28px 28px}.placeholder-panel{max-width:780px;border-top:1px solid var(--line);padding:24px 0}.placeholder-heading{display:flex;align-items:center;gap:12px;margin-bottom:10px}.placeholder-heading h2{font-size:16px;font-weight:650}.planned{font-size:10px;color:var(--muted);background:#f0f3f6;border-radius:4px;padding:3px 7px}.placeholder-panel p{max-width:560px;font-size:13px;line-height:1.7;color:var(--muted)}.shortcut-list{margin:23px 0 16px;max-width:560px}.shortcut-list div{display:grid;grid-template-columns:42px 1fr;gap:14px;padding:14px 0;border-top:1px solid var(--line);align-items:center}.shortcut-list dd{margin:0;font-size:13px}.shortcut-list kbd{display:inline-block;padding:3px 7px;border:1px solid #dce2e9;border-radius:5px;background:#f9fafc;font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
     @media(max-width:1100px){:root{--nav-width:184px}.brand-name{font-size:11px}.topbar{padding:0 20px}.page-heading{padding:20px 20px 10px}.workspace-page{padding:0 20px 20px}.collection-scroller{padding:15px 20px 20px}.calls-tabs{margin:0 20px}.table-heading,.call-option{grid-template-columns:160px 130px minmax(0,1fr) 12px;gap:12px}.transcript{padding:0 20px 22px}.call-breadcrumbs{padding:0 20px 8px}.banner,.live-notice{margin-left:20px;margin-right:20px}}
     @media(max-width:900px){:root{--nav-width:160px}.app-nav{padding:19px 9px}.brand{gap:8px;padding:0 5px}.brand-mark{width:29px;height:29px;font-size:10px}.brand-sub{display:none}.nav-link{padding:10px;gap:9px}.table-heading,.call-option{grid-template-columns:140px 120px minmax(0,1fr) 12px}}
+    .analysis-recovery{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px;font-size:11px;color:var(--muted)}.analysis-recovery[data-tone="bad"]{color:var(--red)}.analysis-recovery button{font-size:11px}
     @media(max-width:700px){body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr) auto}.app-nav{grid-column:1;grid-row:2;padding:6px 14px;border-right:0;border-bottom:1px solid var(--line);background:#fff;overflow:visible}.brand{display:none}.nav-links{flex-direction:row;gap:5px}.nav-link{justify-content:center;min-height:38px;padding:8px 13px;font-size:12px;width:auto;flex:1}.nav-link svg{width:16px;height:16px}.topbar{grid-column:1;grid-row:1;height:60px;padding:0 16px}.search-box{width:100%}main{grid-column:1;grid-row:3}.page-heading{padding:16px 16px 8px;gap:12px}.page-heading h1{font-size:21px}.calls-tabs{margin:0 16px;gap:24px}.collection-scroller{padding:10px 16px 18px}.table-heading{display:none}.call-option{grid-template-columns:minmax(0,1fr) auto 12px;gap:4px 10px;padding:15px 5px}.call-title{grid-column:1;grid-row:1;font-size:12px}.call-summary-preview{grid-column:1/3;grid-row:2;font-size:11px}.call-time{grid-column:2;grid-row:1;font-size:10px}.call-phone,.call-duration{font-size:10px}.call-arrow{grid-column:3;grid-row:1/3}.call-breadcrumbs{padding:0 16px 8px;font-size:11px}.transcript{padding:0 16px 20px}.card-heading{padding:10px 0}.message{grid-template-columns:34px minmax(0,1fr);gap:8px}.message-text{font-size:13px}.workspace-page{padding:0 16px 20px}.banner,.live-notice{margin-left:16px;margin-right:16px}.audio-panel{grid-column:1;grid-row:4}}
     @media(max-width:700px){.audio-panel{padding:16px 50px calc(10px + env(safe-area-inset-bottom)) 12px}.audio-close{top:2px;right:4px}.audio-inner{gap:8px}.audio-status{font-size:11px}.audio-return{font-size:10px}}
     .team-brand{display:block;width:160px;max-width:calc(100% - 16px);padding:0;margin:0 8px;line-height:0;border-radius:4px}.team-brand img,.team-brand-mobile img{display:block;width:100%;height:auto}.team-brand-mobile{display:none}.topbar .search-box{min-width:0;flex:0 1 460px}.nav-team{margin-top:auto;flex:none;text-decoration:none;font-size:12px}.nav-team em{font-weight:inherit}.nav-team svg{width:19px;height:19px}
@@ -69,7 +70,7 @@
     <div id="connection" class="sr-only" role="status" aria-label="Connecting"></div>
   </header>
   <main>
-    <div id="page-heading" class="page-heading"><div class="page-heading-copy"><div class="page-heading-title"><h1 id="page-title" tabindex="-1">Calls</h1><span id="caller-ai-badge" class="caller-ai-badge" role="status" aria-atomic="true" hidden></span></div><p id="page-caption" class="page-caption" hidden></p></div><div id="call-exports" class="exports" hidden aria-label="Export selected call"><a id="export-txt" class="export" aria-disabled="true" tabindex="-1">TXT <span aria-hidden="true">↓</span></a><a id="export-json" class="export" aria-disabled="true" tabindex="-1">JSON <span aria-hidden="true">↓</span></a></div></div>
+    <div id="page-heading" class="page-heading"><div class="page-heading-copy"><div class="page-heading-title"><h1 id="page-title" tabindex="-1">Calls</h1><span id="caller-ai-badge" class="caller-ai-badge" role="status" aria-atomic="true" hidden></span></div><p id="page-caption" class="page-caption" hidden></p><div id="analysis-recovery" class="analysis-recovery" hidden><span id="analysis-status" role="status"></span><button id="analysis-retry" class="text-button" type="button" hidden>Retry analysis</button></div></div><div id="call-exports" class="exports" hidden aria-label="Export selected call"><a id="export-txt" class="export" aria-disabled="true" tabindex="-1">TXT <span aria-hidden="true">↓</span></a><a id="export-json" class="export" aria-disabled="true" tabindex="-1">JSON <span aria-hidden="true">↓</span></a></div></div>
     <div id="live-call-notice" class="live-notice" hidden><span id="live-call-text" role="status"></span><button id="live-call-open" class="text-button" type="button">Open live call →</button></div>
     <section id="dashboard-view" aria-labelledby="desk-heading">
       <h2 id="desk-heading" class="sr-only">Call desk</h2>
@@ -142,8 +143,8 @@
       controller: null, polling: false, paused: false, renderKey: "", listKey: "",
       voicemailKey: "", refreshRequested: false, audioCall: null, audioTrack: "combined",
       audioUrl: "", audioPhase: "idle", audioSession: null, audioDismissed: false, highlightEnabled: false,
-      transcriptRows: [], renderedCall: null, detectionKey: "", snapshotCaller: "", selectedLoading: false,
-      historyCache: new Map(), historyByCaller: new Map()};
+      transcriptRows: [], renderedCall: null, detectionKey: "", snapshotCaller: "", snapshotCollection: "recent", selectedLoading: false,
+      historyCache: new Map(), historyByCaller: new Map(), analysisRetries: new Map()};
     const callSidPattern = /^CA[0-9a-fA-F]{32}$/;
     const audioTracks = {combined: "Call audio"};
     const endedStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
@@ -174,6 +175,10 @@
     function renderCollections() {
       renderCallList(collectionSessions("recent"));
       renderVoicemails(collectionSessions("voicemail"));
+      const counts = state.snapshot?.history?.counts;
+      if (counts && state.snapshotCaller === state.callerFilter) {
+        for (const name of ["recent", "voicemail"]) if (Number.isInteger(counts[name])) $(name + "-count").textContent = String(counts[name]);
+      }
       renderHistoryControls();
     }
     function visibleDetail() { return state.page === "calls" && state.detail; }
@@ -238,6 +243,7 @@
       $("page-caption").hidden = true;
       $("call-exports").hidden = !visibleDetail();
       renderDetection(state.selectedSession);
+      renderAnalysisRecovery(state.selectedSession);
       updateDetectionHighlights(state.selectedSession);
       const caller = state.detail && state.selectedSession ? callerNumber(state.selectedSession) : state.callerFilter;
       const normalizedCaller = normalizeCaller(caller);
@@ -434,7 +440,8 @@
       let message = "";
       if (state.audioUrl) {
         if (state.audioPhase === "error") message = "Audio could not be loaded. Try downloading the WAV.";
-        else if (recording.status === "partial") message = "This recording is incomplete.";
+        else if (fallbackVoicemailUrl(session)) message = "Recorded message · Transcript above covers the conversation before basic recording began.";
+        else if (recording && recording.status === "partial") message = "This recording is incomplete.";
       } else if (session) {
         if (state.snapshot && state.snapshot.recordings && state.snapshot.recordings.enabled === false) {
           message = "Audio recording is disabled on this server.";
@@ -450,6 +457,13 @@
       $("audio-status").hidden = !message;
       $("audio-status").dataset.tone = state.audioPhase === "error" ? "bad" : "neutral";
     }
+    function fallbackVoicemailUrl(session) {
+      const voicemail = session && session.voicemail;
+      return voicemail && voicemail.call_sid === session.call_sid && callSidPattern.test(session.call_sid)
+        && voicemail.mode === "voicemail_fallback" && voicemail.recording_status === "completed"
+        && /^RE[0-9a-fA-F]{32}$/.test(voicemail.recording_sid || "")
+          ? `/api/voicemails/${session.call_sid}/audio` : "";
+    }
     function renderAudio(session) {
       const recording = session && session.recording;
       const call = session ? session.call_sid : null;
@@ -461,7 +475,7 @@
         state.audioTrack = "combined";
       }
       state.audioSession = session || null;
-      const url = recordingUrl(recording, "combined");
+      const url = fallbackVoicemailUrl(session) || recordingUrl(recording, "combined");
       $("audio-panel").hidden = !session || state.audioDismissed;
       $("audio-reopen").hidden = !session || !state.audioDismissed;
       const audio = $("call-audio");
@@ -476,7 +490,7 @@
         state.audioPhase = "idle";
       }
       audio.hidden = !url;
-      audio.setAttribute("aria-label", "Play selected call recording");
+      audio.setAttribute("aria-label", fallbackVoicemailUrl(session) ? "Play recorded voicemail message" : "Play selected call recording");
       const download = $("audio-download");
       download.hidden = !url;
       download.setAttribute("aria-disabled", String(!url));
@@ -585,7 +599,7 @@
     function updatePlaybackHighlight(clear = false) {
       const audio = $("call-audio");
       const time = audio.currentTime * 1000;
-      const enabled = !clear && !state.audioDismissed && state.highlightEnabled && state.audioUrl && !audio.ended
+      const enabled = !clear && !fallbackVoicemailUrl(state.audioSession) && !state.audioDismissed && state.highlightEnabled && state.audioUrl && !audio.ended
         && state.audioCall === state.selected && state.renderedCall === state.audioCall && Number.isFinite(time);
       const recording = state.audioSession && state.audioSession.recording;
       let first = null;
@@ -690,6 +704,51 @@
       badge.setAttribute("title", description);
       badge.setAttribute("aria-label", description);
     }
+    function renderAnalysisRecovery(session) {
+      const status = state.snapshot && state.snapshot.detection_status;
+      const sid = session && session.call_sid;
+      const action = state.analysisRetries.get(sid);
+      const current = status && status.call_sid === sid ? status : null;
+      const labels = {queued: "Audio analysis queued", analyzing: "Analyzing audio…",
+        retrying: "Retrying audio analysis…", failed: "Audio analysis failed", unavailable: "Audio analysis unavailable"};
+      const message = action && action.error || (action && action.pending ? "Queuing analysis…" : current && labels[current.state]) || "";
+      $("analysis-recovery").hidden = !visibleDetail() || !message;
+      $("analysis-recovery").dataset.tone = action && action.error || current && current.state === "failed" ? "bad" : "neutral";
+      $("analysis-status").textContent = message;
+      $("analysis-retry").hidden = !current || current.retryable !== true || !current.retry_token;
+      $("analysis-retry").disabled = Boolean(action && action.pending);
+    }
+    async function retryAnalysis() {
+      const status = state.snapshot && state.snapshot.detection_status;
+      const sid = state.selected;
+      if (!status || status.call_sid !== sid || !status.retryable || !status.retry_token
+          || state.analysisRetries.get(sid)?.pending) return;
+      const action = {pending: true, error: ""};
+      state.analysisRetries.set(sid, action);
+      renderAnalysisRecovery(state.selectedSession);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const response = await fetch(`/api/detection/${encodeURIComponent(sid)}/retry`, {
+          method: "POST", credentials: "same-origin", cache: "no-store", signal: controller.signal,
+          headers: {"Content-Type": "application/json", "X-Workspace-Request": "1"},
+          body: JSON.stringify({retry_token: status.retry_token})});
+        const result = await response.json();
+        if (state.snapshot?.detection_status?.call_sid === sid && result.status?.call_sid === sid) {
+          state.snapshot.detection_status = result.status;
+        }
+        if (!response.ok || !result.accepted) throw new Error(response.status === 409
+          ? "Analysis changed or is busy. Refreshing status…" : "Analysis could not be queued. Try again.");
+      } catch (error) {
+        action.error = error.name === "AbortError" ? "Request timed out. Refreshing status…"
+          : error.message || "Analysis could not be queued. Try again.";
+      } finally {
+        clearTimeout(timeout);
+        action.pending = false;
+        renderAnalysisRecovery(state.selectedSession);
+        refresh();
+      }
+    }
     function segmentAiMarker() {
       return aiMarker("segment-ai-marker", "AI detected in audio overlapping this transcript segment.");
     }
@@ -766,8 +825,13 @@
       $("voicemail-badge").dataset.tone = voicemail && ["absent", "failed"].includes(voicemail.recording_status)
         ? "bad" : voicemail && voicemail.recording_status === "completed" ? "good" : "neutral";
       $("voicemail-detail").hidden = !voicemail;
+      const voicemailDescription = voicemail && voicemail.mode === "voicemail_ai"
+        ? ({awaiting: "Voicemail assistant is connecting.", recording: "Voicemail assistant is taking a message.",
+          processing: "Saving voicemail audio…", completed: "Voicemail audio saved.",
+          absent: "No voicemail audio is available.", failed: "Voicemail audio could not be saved."})[voicemail.recording_status]
+        : voicemail && voicemailDescriptions[voicemail.recording_status];
       $("voicemail-detail").textContent = voicemail
-        ? [voicemailDescriptions[voicemail.recording_status] || "Recording status is unavailable.",
+        ? [voicemailDescription || "Recording status is unavailable.",
           voicemailDuration(voicemail) ? "Duration: " + voicemailDuration(voicemail) + "." : ""].filter(Boolean).join(" ") : "";
       for (const format of ["txt", "json"]) {
         const link = $("export-" + format);
@@ -930,10 +994,11 @@
       }
       return sessions;
     }
-    function historyState(caller = state.callerFilter) {
-      if (!state.historyByCaller.has(caller)) state.historyByCaller.set(caller,
+    function historyState(caller = state.callerFilter, collection = state.collection) {
+      const key = caller + "|" + collection;
+      if (!state.historyByCaller.has(key)) state.historyByCaller.set(key,
         {next_cursor: null, has_more: false, started: false, loading: false, error: ""});
-      return state.historyByCaller.get(caller);
+      return state.historyByCaller.get(key);
     }
     function mergeCall(previous, current) {
       if (!previous) return current;
@@ -958,10 +1023,11 @@
       $("history-status").textContent = history.error || (history.loading ? "Loading call history…"
         : incomplete ? "Some saved calls could not be loaded. History may be incomplete." : "");
     }
-    async function fetchHistory({caller = "", cursor = ""} = {}) {
+    async function fetchHistory({caller = "", cursor = "", collection = ""} = {}) {
       const query = new URLSearchParams();
       if (caller) query.set("caller", caller);
       if (cursor) query.set("cursor", cursor);
+      if (collection) query.set("collection", collection);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 15000);
       try {
@@ -981,7 +1047,7 @@
       } finally {clearTimeout(timer);}
     }
     async function loadOlderCalls() {
-      const caller = state.callerFilter, history = historyState(caller);
+      const caller = state.callerFilter, collection = state.collection, history = historyState(caller, collection);
       if (history.loading || !history.has_more || !history.next_cursor) return;
       history.loading = true; history.error = ""; renderHistoryControls();
       const cursor = history.next_cursor;
@@ -989,14 +1055,14 @@
       const startingSessions = snapshotSessions(state.snapshot || {});
       const seen = new Set(state.sessions.map(session => session.call_sid));
       try {
-        const page = await fetchHistory({caller, cursor});
+        const page = await fetchHistory({caller, cursor, collection});
         if (page.history.has_more && page.history.next_cursor === cursor) throw new Error("Call history could not advance. Reload to try again.");
         rememberHistory(startingSessions);
         rememberHistory(snapshotSessions(state.snapshot || {}));
         rememberHistory(page.sessions);
         Object.assign(history, page.history, {started: true});
         render();
-        if (state.page === "calls" && !state.detail && state.callerFilter === caller) {
+        if (state.page === "calls" && !state.detail && state.callerFilter === caller && state.collection === collection) {
           $("collection-scroller").scrollTop = scrollTop;
           const added = page.sessions.filter(session => !isActive(session) && !seen.has(session.call_sid)).length;
           $("announcement").textContent = `${added} older ${added === 1 ? "call" : "calls"} loaded.`;
@@ -1013,7 +1079,7 @@
       if (!snapshot) return;
       const current = snapshotSessions(snapshot);
       const history = historyState();
-      if (snapshot.history && state.snapshotCaller === state.callerFilter && !history.started && !history.loading) {
+      if (snapshot.history && state.snapshotCaller === state.callerFilter && state.snapshotCollection === state.collection && !history.started && !history.loading) {
         Object.assign(history, snapshot.history);
       }
       const combined = new Map(state.historyCache);
@@ -1066,10 +1132,11 @@
       state.controller = controller;
       const timeout = setTimeout(() => controller.abort(), 10000);
       try {
-        const caller = state.callerFilter;
+        const caller = state.callerFilter, collection = state.page === "calls" ? state.collection : "";
         const query = new URLSearchParams();
         if (state.selected) query.set("call_sid", state.selected);
         if (caller) query.set("caller", caller);
+        if (collection) query.set("collection", collection);
         const response = await fetch("/api/transcripts" + (query.size ? "?" + query.toString() : ""), {credentials: "same-origin", cache: "no-store",
           headers: {Accept: "application/json", "ngrok-skip-browser-warning": "1"}, signal: controller.signal});
         if (state.paused || controller.signal.aborted) return;
@@ -1077,7 +1144,10 @@
         const snapshot = await response.json();
         if (state.paused || controller.signal.aborted) return;
         if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.sessions)) throw new Error("Invalid snapshot");
-        state.snapshot = snapshot; state.snapshotCaller = caller; state.selectedLoading = false;
+        state.snapshot = snapshot; state.snapshotCaller = caller; state.snapshotCollection = collection; state.selectedLoading = false;
+        const recovered = snapshot.detection_status;
+        if (recovered && ["complete", "queued", "analyzing", "retrying"].includes(recovered.state)
+            && !state.analysisRetries.get(recovered.call_sid)?.pending) state.analysisRetries.delete(recovered.call_sid);
         render();
         connection("Connected", "good");
         banner(snapshot.enabled ? "" : "Live transcription is disabled on the server.");
@@ -1096,6 +1166,7 @@
       }
     }
     window.DashboardCalls = {openCall: chooseCall, fetchHistory};
+    $("analysis-retry").addEventListener("click", retryAnalysis);
     $("history-load-more").addEventListener("click", loadOlderCalls);
     for (const page of ["calls", "contacts", "agents"]) {
       const nav = $("nav-" + page);

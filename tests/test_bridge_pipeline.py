@@ -252,3 +252,59 @@ def test_agent_provenance_changes_summary_identity_without_exporting_provider_hi
     assert b"private-provider-state" not in _request_body(other)
     other["segments"][0]["track"] = "inbound"
     assert transcript_fingerprint(other) is None
+
+
+def test_ai_voicemail_receipt_finishes_from_real_local_recording(tmp_path):
+    from voicemail import VoicemailStore
+    from media_capture.playback import RecordingLibrary
+    async def run():
+        config = settings(tmp_path / 'transcripts')
+        receipts = VoicemailStore(SimpleNamespace(voicemail_enabled=False, voicemail_agent_enabled=True,
+            voicemail_storage_dir=str(tmp_path/'voicemails'), voicemail_max_seconds=120))
+        transcript = TranscriptionManager(config, Connector())
+        capture = CaptureManager(config)
+        recordings = RecordingLibrary(config)
+        pipeline = BridgePipeline(config,capture,transcript,Detection(),CallDetailsStore(''),receipts,recordings)
+        call = session()
+        call.voicemail = True
+        receipts.start(CALL,'owner-no-answer',mode='voicemail_ai',started_at=call.created_at)
+        await pipeline.start(call)
+        pipeline.audio(call,'remote',b'\x01'*160,0)
+        pipeline.output(call,b'\x02'*160,0,'agent')
+        await pipeline.end(call)
+        await receipts.close()
+        receipt = VoicemailStore(SimpleNamespace(voicemail_enabled=True,
+            voicemail_storage_dir=receipts.path,voicemail_max_seconds=120)).get(CALL)
+        assert receipt['mode']=='voicemail_ai' and receipt['recording_status']=='completed'
+        assert receipt['recording_sid']=='' and receipt['ended_at']
+        assert recordings.get(CALL)['url'].endswith('/audio?track=combined')
+        await pipeline.close()
+        await capture.close()
+        await transcript.close()
+    asyncio.run(run())
+
+
+def test_failed_voicemail_transcription_uses_recording_fallback_once(tmp_path):
+    class FallbackController(Controller):
+        async def fallback_voicemail(self,*args):
+            self.releases.append(args)
+    async def run():
+        config=settings(tmp_path)
+        transcript=TranscriptionManager(config,Connector())
+        capture=CaptureManager(config)
+        pipeline=BridgePipeline(config,capture,transcript,Detection(),CallDetailsStore(''))
+        pipeline.controller=FallbackController()
+        transcript.on_failure=pipeline.transcription_failed
+        call=session()
+        call.voicemail=True
+        await pipeline.start(call)
+        pipeline.audio(call,'remote',b'\x01'*160,0)
+        live=transcript.sessions[CALL]
+        transcript._fail(live,live.tracks['inbound'],'provider-unavailable')
+        transcript._fail(live,live.tracks['outbound'],'provider-unavailable')
+        await until(lambda:pipeline.controller.releases)
+        assert pipeline.controller.releases==[(call.id,'transcription-unavailable')]
+        await pipeline.close()
+        await capture.close()
+        await transcript.close()
+    asyncio.run(run())

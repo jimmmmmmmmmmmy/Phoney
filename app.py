@@ -123,7 +123,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     live_detection = LiveDetectionManager(settings, connector=detection_connector,
         can_run=provider_worker_active, on_update=persist_detection)
     media_capture = CaptureManager(settings, observer=(transcription, live_detection))
-    bridge_pipeline = BridgePipeline(settings, media_capture, transcription, live_detection, call_details)
+    bridge_pipeline = BridgePipeline(settings, media_capture, transcription, live_detection, call_details, voicemails, recordings)
     transcription.on_segment = bridge_pipeline.transcript_event
     transcription.on_failure = bridge_pipeline.transcription_failed
     summaries = SummaryManager(settings, transcription, call_details,
@@ -204,7 +204,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
         context_getter=bridge_pipeline.context, on_call_start=bridge_pipeline.start,
         on_call_end=bridge_pipeline.end, on_audio=bridge_pipeline.audio,
         on_output_audio=bridge_pipeline.output, on_agent_turn=bridge_pipeline.agent_turn,
-        require_owner=require_owner)
+        require_owner=require_owner, voicemail_store=voicemails)
     bridge_pipeline.controller = controller
     validate_twilio = twilio_validator(settings)
 
@@ -225,6 +225,8 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
             result["inbound_operator_enabled"] = settings.operator_inbound_enabled
             result["automatic_takeover_enabled"] = bool(settings.automatic_takeover_enabled and operator_voice)
             result["voicemail_agent_enabled"] = bool(settings.voicemail_agent_enabled and operator_voice)
+            if result["voicemail_agent_enabled"]:
+                result["voicemail_agent_ring_seconds"] = settings.voicemail_agent_ring_seconds
         if summaries.enabled:
             result["summaries_enabled"] = True
         if live_detection.enabled:

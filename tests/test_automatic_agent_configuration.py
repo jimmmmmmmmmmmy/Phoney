@@ -20,7 +20,7 @@ def configured(tmp_path):
 def test_manual_configuration_keeps_both_automatic_features_off_by_default(tmp_path):
     settings = configured(tmp_path)
     assert not settings.automatic_takeover_enabled and not settings.voicemail_agent_enabled
-    assert settings.voicemail_agent_ring_seconds == 15
+    assert settings.voicemail_agent_ring_seconds == 10
     assert replace(settings, automatic_takeover_enabled=True).automatic_takeover_enabled
     assert replace(settings, voicemail_agent_enabled=True).voicemail_agent_enabled
 

@@ -31,7 +31,7 @@ MODULATE_BACKFILL_ENABLED=true
 
 The serial recording worker checks finalized caller WAVs, including historical calls. A new recording is uploaded as one continuous caller-only WAV, regardless of how much live audio was analyzed. Only declared initial capture padding is trimmed. The existing 30-minute capture limit bounds uploads below 29 MB, within the provider's 100 MB file limit. Modulate returns a timeline of short classifications across that complete file. Its 4–60 second recommendation is not a maximum upload duration.
 
-The completed batch result replaces the provisional live classification; the two timelines are never mixed or double-counted. An unchanged recording with successful cached results is not submitted again after restart or merely because the aggregation policy changes. Jobs and attempts are stored privately beside the detection results. A process lock prevents the server and CLI from running the same jobs concurrently. Failures retry at most three times with backoff.
+The completed batch result replaces the provisional live classification; the two timelines are never mixed or double-counted. An unchanged recording with successful cached results is not submitted again after restart or merely because the aggregation policy changes. Jobs and attempts are stored privately beside the detection results. A process lock prevents the server and CLI from running the same jobs concurrently. Failures get at most three automatic attempts with backoff; the dashboard can authorize two additional attempts without resetting that durable budget.
 
 Version 1 jobs are archived before migration. Existing batch jobs whose ranges span the whole recording keep their paid results and retry budgets. Jobs that only reused live predictions or filled missing live coverage receive one full recording pass. Previously complete batch evidence is recalculated locally using the current policy, without another upload. Corrupt or mismatched cache files never silently authorize a new paid pass.
 
@@ -57,3 +57,10 @@ Provider references: [Modulate aggregation guidance](https://docs.modulate.ai/ge
 ## Verification
 
 Tests cover minimum synthetic evidence independent of whole-call share, qualified/weak/silent overlap, legacy policy validation, live progress, final full-recording analysis, cache migration, restart recovery, selected-call evidence, cache and WAV boundary validation, caller-only uploads, retries, candidate isolation, deployment draining, binary header flags, stream-aligned transcript annotations, and detection updates that preserve playback. Provider fakes establish application behavior; they do not establish detection accuracy.
+
+
+## Continuous live coverage and recovery
+
+Live provider sessions rotate at `MODULATE_DETECTION_MAX_AUDIO_SECONDS` (120 seconds by default), continuing until the call ends or reaches the existing `MEDIA_MAX_SECONDS`/`MAX_CALL_SECONDS` limit. The next session gets only fresh caller audio, keeping the original stream ID and call-relative timestamps. Provider finalization has a separate deadline and cannot block telephony. At most two provider sockets per call are pending; stalled providers create an explicit coverage gap and recover with 5/15/30-second backoff. Positive live observations after the first two minutes still reach the automatic-takeover callback.
+
+Recording analysis exposes durable queued, analyzing, retrying, failed, complete, and unavailable states. A same-origin dashboard retry requires the current job token, a finalized unchanged caller recording, and an ended call. Successful ranges retain their evidence; retry budgets survive restarts and URL changes. A range gets at most three automatic attempts and two additional explicit retries. Retrying recorded analysis never activates or terminates a call.

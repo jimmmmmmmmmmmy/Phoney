@@ -9,6 +9,7 @@ import pytest
 from operator_service.routes import OperatorController
 from operator_service.sessions import AGENT, OWNER, REMOTE, OperatorSessions
 from operator_service.voicemail_agent import VoicemailAgent
+from voicemail import VoicemailStore
 from voice_stack.audio import FRAME_BYTES
 from voice_stack.settings import VoiceSettings
 from test_operator_keypad import SETTINGS, Dialer, Socket, OWNER_SID, REMOTE_SID, REMOTE_STREAM, until
@@ -52,19 +53,30 @@ class Provider:
         return httpx.MockTransport(handle)
 
 
+class RecordingDialer(Dialer):
+    def __init__(self):
+        super().__init__()
+        self.replacements = []
+    async def replace_twiml(self, call_sid, twiml):
+        self.replacements.append((call_sid, twiml))
+
+
 class Harness:
     def __init__(self, tmp_path, provider=None, dialer=None):
         self.settings = SimpleNamespace(**(vars(SETTINGS) | {
             "operator_inbound_enabled": True, "voicemail_agent_enabled": True,
-            "voicemail_agent_ring_seconds": 15, "automatic_takeover_enabled": False}))
+            "voicemail_agent_ring_seconds": 10, "automatic_takeover_enabled": False,
+            "voicemail_enabled": False, "voicemail_storage_dir": str(tmp_path / "voicemails")}))
         self.provider = provider or Provider()
         self.store = OperatorSessions(self.settings)
-        self.dialer = dialer or Dialer()
+        self.dialer = dialer or RecordingDialer()
+        self.voicemails = VoicemailStore(self.settings)
         self.delivered = []
         voice = VoiceSettings(enabled=True, gemini_api_key="test", elevenlabs_api_key="test",
                               output_dir=str(tmp_path))
         self.controller = OperatorController(self.settings, self.store, self.dialer,
             voice=voice, registry=Registry(), provider_transport=self.provider.transport(),
+            voicemail_store=self.voicemails,
             on_agent_turn=lambda *a, **kw: self.delivered.append((a, kw)))
     async def incoming(self, *, bind_owner=True):
         self.session, _ = await self.store.reserve_inbound(REMOTE_SID, "+12025550199")
@@ -84,6 +96,7 @@ class Harness:
         await until(lambda: self.session.mode == AGENT and not self.controller.playing(self.session.id))
     async def close(self):
         await self.store.close()
+        await self.voicemails.close()
 
 
 def quick_timers(monkeypatch, **changes):
@@ -136,16 +149,65 @@ def test_late_owner_socket_cannot_release_or_end_voicemail(tmp_path, monkeypatch
     asyncio.run(run())
 
 
-def test_provider_failure_ends_voicemail_instead_of_returning_to_absent_human(tmp_path, monkeypatch):
+@pytest.mark.parametrize("provider", ["gemini", "elevenlabs"])
+def test_provider_failure_switches_once_to_native_recording(tmp_path, monkeypatch, provider):
     quick_timers(monkeypatch)
+    class FailedProvider(Provider):
+        def transport(self):
+            good = super().transport()
+            async def handle(request):
+                target = "generativelanguage" if provider == "gemini" else "elevenlabs"
+                if target in request.url.host:
+                    return httpx.Response(503, text="unavailable")
+                return await good.handle_async_request(request)
+            return httpx.MockTransport(handle)
     async def run():
-        h = Harness(tmp_path, Provider(status=503))
+        h = Harness(tmp_path, FailedProvider())
         s = await h.incoming()
         await h.controller.on_timeout(s, "owner-no-answer")
-        await until(lambda: not s.active)
+        await until(lambda: h.dialer.replacements)
+        assert s.active and s.voicemail_fallback
+        assert REMOTE_SID not in h.dialer.ended
+        sid, xml = h.dialer.replacements[0]
+        assert sid == REMOTE_SID and '<Record ' in xml and '<Say ' in xml
+        assert 'transcribe="false"' in xml and '<Connect>' not in xml
+        assert h.voicemails.get(REMOTE_SID)['mode'] == 'voicemail_fallback'
+        assert h.voicemails.get(REMOTE_SID)['recording_status'] == 'awaiting'
+        await h.controller.fallback_voicemail(s.id, "repeat-error")
+        await h.controller.transcript(s.id, REMOTE, "Late STT must not revive the agent")
+        await h.controller.stream_stopped(s.id, REMOTE, "socket-disconnected")
+        assert len(h.dialer.replacements) == 1 and s.active
+        assert s.id not in h.controller._voicemail_agents
+        await h.close()
+    asyncio.run(run())
+
+
+def test_no_ready_voice_uses_native_recording_without_any_ai_provider(tmp_path, monkeypatch):
+    async def run():
+        h = Harness(tmp_path)
+        h.controller.voice = None
+        s = await h.incoming()
+        await h.controller.on_timeout(s, "owner-no-answer")
+        assert s.active and s.voicemail_fallback
+        assert len(h.dialer.replacements) == 1 and h.provider.requests == []
+        await h.close()
+    asyncio.run(run())
+
+
+def test_twilio_recording_failure_is_visible_and_ends_only_after_fallback_attempt(tmp_path):
+    class FailedDialer(RecordingDialer):
+        async def replace_twiml(self, *args):
+            await super().replace_twiml(*args)
+            raise RuntimeError("twilio-offline")
+    async def run():
+        h = Harness(tmp_path, dialer=FailedDialer())
+        h.controller.voice = None
+        s = await h.incoming()
+        await h.controller.on_timeout(s, "owner-no-answer")
         await h.store.wait_idle()
-        assert s.ended_reason.startswith("voicemail-")
-        assert REMOTE_SID in h.dialer.ended
+        assert len(h.dialer.replacements) == 1 and not s.active
+        assert h.voicemails.get(REMOTE_SID)['recording_status'] == 'failed'
+        assert s.ended_reason == 'voicemail-recording-unavailable'
         await h.close()
     asyncio.run(run())
 
@@ -237,5 +299,34 @@ def test_transport_loss_during_initial_voice_lookup_does_not_end_voicemail(tmp_p
         await h.controller.stream_started(s.id, REMOTE, REMOTE_STREAM)
         await h.ready()
         assert h.provider.phases == ["greeting"]
+        await h.close()
+    asyncio.run(run())
+
+
+def test_native_recording_stream_stop_recovers_missed_terminal_callbacks(tmp_path, monkeypatch):
+    quick_timers(monkeypatch)
+    monkeypatch.setattr('operator_service.routes.DISCONNECT_STATUS_DELAYS', (.001, .01))
+    class StatusDialer(RecordingDialer):
+        def __init__(self):
+            super().__init__()
+            self.statuses = ['in-progress', 'completed']
+            self.reads = []
+        async def read_status(self, call_sid):
+            self.reads.append(call_sid)
+            return {'status': self.statuses.pop(0), 'duration_seconds': 10}
+    async def run():
+        dialer = StatusDialer()
+        h = Harness(tmp_path, provider=Provider(status=503), dialer=dialer)
+        session = await h.incoming()
+        await h.controller.on_timeout(session, 'owner-no-answer')
+        await until(lambda: dialer.replacements)
+        assert session.voicemail_fallback and session.active
+        h.router.channels[REMOTE].detach()
+        session.legs[REMOTE].attached = False
+        await h.controller.stream_stopped(session.id, REMOTE, 'socket-disconnected')
+        await until(lambda: not session.active)
+        assert dialer.reads == [REMOTE_SID, REMOTE_SID]
+        assert h.store.active_count == 0
+        assert len(dialer.replacements) == 1
         await h.close()
     asyncio.run(run())

@@ -285,11 +285,14 @@ class AgentRegistry:
             db.execute("INSERT INTO agent_setup VALUES('voice-clone-default',?)", (ident,))
             return saved
 
-    def publish(self, agent_id, value):
+    def publish(self, agent_id, value, *, require_revision=False):
         if not isinstance(agent_id, str) or not AGENT_ID.fullmatch(agent_id):
             raise RegistryError("Enter a valid agent identifier.")
-        if not isinstance(value, dict) or set(value) != {"name", "prompt", "voiceProfileId", "slot"}:
+        if not isinstance(value, dict) or set(value) - {"expectedRevision"} != {"name", "prompt", "voiceProfileId", "slot"}:
             raise RegistryError("Enter name, prompt, voiceProfileId, and slot.")
+        expected_revision = value.get("expectedRevision")
+        if expected_revision is not None and (type(expected_revision) is not int or not 0 <= expected_revision <= 2**53 - 1):
+            raise RegistryError("Enter a valid agent revision.")
         name = text(value["name"], "agent name", 80)
         prompt = text(value["prompt"], "agent prompt", 8000, empty=True, multiline=True)
         slot = value["slot"]
@@ -300,6 +303,12 @@ class AgentRegistry:
                                           or not VOICE_ID.fullmatch(voice_profile[6:])):
             raise RegistryError("Choose a voice from this workspace.")
         with self._transaction() as db:
+            current = db.execute("SELECT revision FROM current_agents WHERE id=?", (agent_id,)).fetchone()
+            current_revision = current[0] if current else 0
+            # Local administration can intentionally publish, but browser edits must
+            # match the revision the operator actually opened in the form.
+            if (require_revision or expected_revision is not None) and expected_revision != current_revision:
+                raise RegistryError("This agent changed in another browser. Your draft is unchanged. Close and reopen the editor to review the latest settings before saving.", 409)
             voice_id = ""
             if voice_profile:
                 row = db.execute("SELECT payload FROM voices WHERE id=?", (voice_profile,)).fetchone()

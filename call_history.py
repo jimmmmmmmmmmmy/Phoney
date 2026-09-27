@@ -36,7 +36,7 @@ def duration(row):
         return 0
 
 
-def decode_cursor(cursor, caller):
+def decode_cursor(cursor, caller, collection=None):
     if not cursor:
         return None
     try:
@@ -44,7 +44,8 @@ def decode_cursor(cursor, caller):
             raise ValueError
         data = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
         key = data["before"]
-        if (set(data) != {"v", "caller", "before"} or data["v"] != 1 or data["caller"] != caller
+        if (set(data) != {"v", "caller", "collection", "before"} or data["v"] != 2
+                or data["caller"] != caller or data["collection"] != collection
                 or not isinstance(key, list) or len(key) != 2
                 or not all(isinstance(value, str) for value in key)
                 or len(key[0]) > 40 or not SID.fullmatch(key[1])):
@@ -54,8 +55,8 @@ def decode_cursor(cursor, caller):
         raise ValueError("Invalid call history cursor") from None
 
 
-def encode_cursor(key, caller):
-    data = json.dumps({"v": 1, "caller": caller, "before": key}, separators=(",", ":")).encode()
+def encode_cursor(key, caller, collection=None):
+    data = json.dumps({"v": 2, "caller": caller, "collection": collection, "before": key}, separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
 
 
@@ -81,10 +82,12 @@ def details_for(store, call_sid, document=None):
 
 
 def page(manager, details_store, recording_library, snapshot, voicemails, *, cursor=None,
-         caller=None, call_sid=None):
+         caller=None, call_sid=None, collection=None):
     """Run file/index access on a worker thread. Full transcripts stay page-bounded."""
     caller = normalize_caller_number(caller) if caller else ""
-    before = decode_cursor(cursor, caller)
+    if collection not in {None, "recent", "voicemail"}:
+        raise ValueError("Invalid call history collection")
+    before = decode_cursor(cursor, caller, collection)
     hot = snapshot["sessions"]
     archive = manager.archive_snapshot() if hasattr(manager, "archive_snapshot") else {"sessions": []}
     details = ({"enabled": False, "storage_error": "", "calls": []} if details_store is None else
@@ -111,7 +114,12 @@ def page(manager, details_store, recording_library, snapshot, voicemails, *, cur
                                               and value is not None}}
     matched = sorted((row for row in rows.values()
                       if not caller or row.get("caller_number") == caller), key=sort_key, reverse=True)
-    candidates = [row for row in matched if before is None or sort_key(row) < before]
+    voicemail_ids = {item["call_sid"] for item in voicemails.get("voicemails", [])}
+    counts = {"voicemail": sum(row["call_sid"] in voicemail_ids for row in matched)}
+    counts["recent"] = len(matched) - counts["voicemail"]
+    collected = [row for row in matched if collection is None or
+                 (row["call_sid"] in voicemail_ids) == (collection == "voicemail")]
+    candidates = [row for row in collected if before is None or sort_key(row) < before]
     selected_rows = candidates[:PAGE_SIZE]
     ids = [row["call_sid"] for row in selected_rows]
     more = len(candidates) > PAGE_SIZE
@@ -125,10 +133,10 @@ def page(manager, details_store, recording_library, snapshot, voicemails, *, cur
         metrics["total"] += 1
         metrics["duration_seconds"] = round(metrics["duration_seconds"] + duration(row), 3)
     snapshot["history"] = {
-        "next_cursor": encode_cursor(sort_key(selected_rows[-1]), caller) if more else None,
-        "has_more": more, "total": len(matched),
-        "duration_seconds": round(sum(duration(row) for row in matched), 3),
-        "last_contact_at": matched[0].get("started_at") if matched else None,
+        "next_cursor": encode_cursor(sort_key(selected_rows[-1]), caller, collection) if more else None,
+        "has_more": more, "total": len(collected), "counts": counts, "collection": collection,
+        "duration_seconds": round(sum(duration(row) for row in collected), 3),
+        "last_contact_at": collected[0].get("started_at") if collected else None,
         "caller_metrics": caller_metrics,
         "complete": not any(item.get("storage_error") for item in (archive, details, recordings, voicemails)),
     }

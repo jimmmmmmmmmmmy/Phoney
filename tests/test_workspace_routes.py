@@ -77,20 +77,21 @@ def test_contact_agent_and_edits_survive_restart_and_reach_another_browser(tmp_p
     with client_for(WorkspaceStore(directory)) as first, client_for(WorkspaceStore(directory)) as second:
         response = put_contact(first)
         assert response.status_code == 200
-        assert response.json() == contact()
-        assert put_agent(first).json() == agent()
+        assert response.json() == {**contact(), "revision": 1}
+        assert put_agent(first).json() == {**agent(), "revision": 1}
         # A store that existed before the write must observe other browser edits.
         assert second.get("/api/workspace").json() == {
-            "version": 1, "contacts": [contact()], "demoOverrides": [], "agents": [agent()]}
-        changed = contact(firstName="Updated", labels=["Legal"])
-        assert put_contact(second, changed).json() == changed
+            "version": 1, "contacts": [{**contact(), "revision": 1}], "demoOverrides": [], "agents": [{**agent(), "revision": 1}]}
+        changed = contact(firstName="Updated", labels=["Legal"], revision=1)
+        changed = put_contact(second, changed).json()
+        assert changed["revision"] == 2
         assert first.get("/api/workspace").json()["contacts"] == [changed]
     with client_for(WorkspaceStore(directory), base_url="https://new-tunnel.example") as restarted:
         assert restarted.get("/api/workspace").json()["contacts"] == [changed]
-        updated_agent = agent(prompt="Confirm the appointment time.")
+        updated_agent = agent(prompt="Confirm the appointment time.", revision=1)
         response = restarted.put("/api/workspace/agents/" + AGENT, json=updated_agent,
                                  headers={"Origin": "https://new-tunnel.example", "X-Workspace-Request": "1"})
-        assert response.status_code == 200 and response.json() == updated_agent
+        assert response.status_code == 200 and response.json() == {**updated_agent, "revision": 2}
 
 
 @pytest.mark.parametrize("origin", [BASE, "https://operator.example"])
@@ -199,7 +200,7 @@ def test_demo_contact_edits_are_shared_overrides(tmp_path):
         assert put_contact(client, updated).status_code == 200
         snapshot = client.get("/api/workspace").json()
         assert snapshot["contacts"] == []
-        assert snapshot["demoOverrides"] == [updated]
+        assert snapshot["demoOverrides"] == [{**updated, "revision": 1}]
 
 
 @pytest.mark.parametrize("chunked", [False, True])
@@ -252,8 +253,8 @@ def test_stale_import_never_overwrites_shared_edits_or_duplicate_phone(tmp_path)
                    "agents": [agent(), agent(id=OTHER_AGENT, prompt=current_agent["prompt"])]}
         response = client.post("/api/workspace/import", json=payload, headers=HEADERS)
         assert response.status_code == 200
-        assert response.json()["contacts"] == [current]
-        assert response.json()["agents"] == [current_agent]
+        assert response.json()["contacts"] == [{**current, "revision": 1}]
+        assert response.json()["agents"] == [{**current_agent, "revision": 1}]
         assert client.get("/api/workspace").json() == response.json()
 
 
@@ -287,7 +288,19 @@ def test_legacy_browser_metadata_and_undated_agents_import_cleanly(tmp_path):
             "contacts": [legacy_contact], "demoOverrides": [legacy_demo], "agents": legacy_agents})
         assert response.status_code == 200
         snapshot = response.json()
-        assert snapshot["contacts"] == [contact()]
+        assert snapshot["contacts"] == [{**contact(), "revision": 1}]
         assert snapshot["demoOverrides"][0]["demo"] is True
         assert "note" not in snapshot["demoOverrides"][0]
         assert len(snapshot["agents"]) == 1 and snapshot["agents"][0]["createdAt"] == ""
+
+
+def test_browser_cannot_overwrite_newer_contact_or_draft(tmp_path):
+    with client_for(WorkspaceStore(str(tmp_path / "shared"))) as client:
+        for kind, value, field in (("contacts", contact(), "firstName"), ("agents", agent(), "prompt")):
+            path = "/api/workspace/" + kind + "/" + value["id"]
+            first = client.put(path, json=value, headers=HEADERS).json()
+            second = client.put(path, json={**first, field: "Latest"}, headers=HEADERS).json()
+            rejected = client.put(path, json={**first, field: "Stale"}, headers=HEADERS)
+            assert_error(rejected, 409)
+            assert "changed in another browser" in rejected.json()["detail"]
+            assert client.get("/api/workspace").json()[kind] == [second]

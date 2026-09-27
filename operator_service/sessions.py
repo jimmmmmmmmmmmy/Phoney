@@ -172,6 +172,7 @@ class OperatorSession:
     agent_kind: str = "manual"
     voicemail: bool = False
     voicemail_phase: str = ""
+    voicemail_fallback: bool = False
     agent_snapshot: object = field(default=None, repr=False)
     legs: dict[str, SessionLeg] = field(default_factory=dict, repr=False)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -192,7 +193,7 @@ class OperatorSession:
                 "profile": self.profile, "reply_epoch": self.reply_epoch,
                 "canonical_call_sid": self.canonical_call_sid, "agent_name": self.agent_name,
                 "agent_kind": self.agent_kind, "voicemail": self.voicemail,
-                "voicemail_phase": self.voicemail_phase,
+                "voicemail_phase": self.voicemail_phase, "voicemail_fallback": self.voicemail_fallback,
                 "created_at": self.created_at, "elapsed_ms": int((now - self.created) * 1000),
                 "setup_deadline_ms": (int((self.deadline - self.created) * 1000)
                                       if self.deadline is not None else None),
@@ -286,7 +287,7 @@ class OperatorSessions:
             session = self.sessions.get(session_id)
             if (key == "owner_ring" and session and session.direction == "inbound"
                     and getattr(self.settings, "voicemail_agent_enabled", False)):
-                timeout = float(getattr(self.settings, "voicemail_agent_ring_seconds", 15))
+                timeout = float(getattr(self.settings, "voicemail_agent_ring_seconds", 10))
         task = asyncio.create_task(self._deadline(session_id, key, float(timeout), reason))
         self._timers[(session_id, key)] = task
         return float(timeout)

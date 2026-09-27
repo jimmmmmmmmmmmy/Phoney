@@ -578,3 +578,20 @@ assert.equal(ids.length,2);assert.equal(ids[0],ids[1]);
 navigate('#contacts/'+ids[0]);
 assert.match(text(contactRoot),/42s/);assert.match(text(contactRoot),/Call conversation/);
 """)
+
+
+def test_remote_refresh_preserves_open_contact_draft_and_frozen_revision():
+    run_crm(r"""
+navigate('#contacts/'+CONTACT.id);editContact();
+$('crm-firstName').value='My draft';$('crm-firstName').focus();
+storeContacts([{...CONTACT,revision:2,firstName:'Remote edit'}]);changeStorage();
+assert.equal($('crm-firstName').value,'My draft');assert.equal(document.activeElement,$('crm-firstName'));
+assert.match(text($('crm-create-contact')),/changed in another browser/);
+let submitted;
+window.DashboardWorkspace.saveContact=async value=>{submitted=value;const failure=new Error('This contact changed in another browser. Your draft is unchanged.');failure.status=409;throw failure;};
+await submit();assert.equal(submitted.revision,1);assert.equal(submitted.firstName,'My draft');
+assert.equal($('crm-create-contact').open,true);assert.equal($('crm-firstName').value,'My draft');
+$('crm-create-contact').close();editContact();
+assert.equal($('crm-firstName').value,'Remote edit');
+await submit();assert.equal(submitted.revision,2);
+""", before="storeContacts([{...CONTACT,revision:1}]);")

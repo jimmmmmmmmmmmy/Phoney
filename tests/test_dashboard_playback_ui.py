@@ -352,7 +352,7 @@ fetch=async(url,options)=>{
  }};
 };
 await poll();
-assert.equal(requests.length,1);assert.equal(requests[0].url,'/api/transcripts');
+assert.equal(requests.length,1);assert.equal(requests[0].url,'/api/transcripts?collection=recent');
 assert.equal(requests[0].options.credentials,'same-origin');
 assert.equal(requests[0].options.headers.Accept,'application/json');
 assert.equal(requests[0].options.headers['ngrok-skip-browser-warning'],'1');
@@ -362,7 +362,7 @@ assert.equal(state.selected,null);openCall();
 const audio=$('call-audio');audio.play();audio.currentTime=17;
 const loads=audio.loads,pauses=audio.pauses;
 await poll();
-assert.equal(requests[1].url,`/api/transcripts?call_sid=${SID}`);
+assert.equal(requests[1].url,`/api/transcripts?call_sid=${SID}&collection=recent`);
 assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.currentTime,17);
 assert.equal($('connection').attributes['aria-label'],'Connected');
 })().catch(error=>{console.error(error);process.exitCode=1;});

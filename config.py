@@ -51,7 +51,7 @@ class Settings:
     operator_inbound_enabled: bool = False
     automatic_takeover_enabled: bool = False
     voicemail_agent_enabled: bool = False
-    voicemail_agent_ring_seconds: int = 15
+    voicemail_agent_ring_seconds: int = 10
     modulate_detection_enabled: bool = False
     modulate_backfill_enabled: bool = False
     modulate_api_key: str = field(default="", repr=False)
@@ -295,7 +295,7 @@ class Settings:
             operator_inbound_enabled=inbound_flag == "true",
             automatic_takeover_enabled=auto_flag == "true",
             voicemail_agent_enabled=voicemail_agent_flag == "true",
-            voicemail_agent_ring_seconds=int(os.getenv("VOICEMAIL_AGENT_RING_SECONDS", "15")),
+            voicemail_agent_ring_seconds=int(os.getenv("VOICEMAIL_AGENT_RING_SECONDS", "10")),
             modulate_detection_enabled=detection_flag == "true",
             modulate_backfill_enabled=backfill_flag == "true",
             modulate_api_key=os.getenv("MODULATE_API_KEY", "").strip(),

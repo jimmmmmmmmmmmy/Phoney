@@ -26,7 +26,7 @@ LOCAL_ID = re.compile(r"local-[A-Za-z0-9-]{8,80}\Z")
 AGENT_ID = re.compile(r"agent-[A-Za-z0-9-]{8,80}\Z")
 PHONE = re.compile(r"\+[1-9][0-9]{7,14}\Z")
 CONTACT_FIELDS = {"id", "firstName", "lastName", "phone", "email", "address", "website",
-                  "company", "createdAt", "status", "labels", "demo", "note"}
+                  "company", "createdAt", "status", "labels", "demo", "note", "revision"}
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 # POSIX locks can be released by closing another descriptor for the same inode.
 # Keep filesystem validation and SQLite transactions together across local instances.
@@ -66,6 +66,28 @@ def _date(value, *, allow_empty=False):
     except ValueError:
         raise WorkspaceError("Enter a valid createdAt date.") from None
     return text
+
+
+def _revision(value, *, default=0):
+    revision = value.get("revision", default)
+    if type(revision) is not int or not 0 <= revision <= 2**53 - 1:
+        raise WorkspaceError("Enter a valid record revision.")
+    return revision
+
+
+def _saved_revision(raw):
+    try:
+        if not isinstance(raw, str) or len(raw) > 50000:
+            raise ValueError
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ValueError
+        revision = _revision(value, default=1)
+        if not 1 <= revision < 2**53 - 1:
+            raise ValueError
+        return revision
+    except (WorkspaceError, ValueError, TypeError, RecursionError):
+        raise WorkspaceUnavailable("Workspace record revision is invalid. Changes were not saved.") from None
 
 
 def _contact(value, record_id=None):
@@ -108,11 +130,12 @@ def _contact(value, record_id=None):
         raise WorkspaceError("Use at most 10 contact labels.")
     result["labels"] = list(dict.fromkeys(_text(label, "label", 40, required=True) for label in labels))
     result["demo"] = ident in DEMO_PHONES
+    result["revision"] = _revision(value, default=1)
     return result
 
 
 def _agent(value, record_id=None, *, importing=False):
-    if not isinstance(value, dict) or set(value) - {"id", "name", "prompt", "createdAt"}:
+    if not isinstance(value, dict) or set(value) - {"id", "name", "prompt", "createdAt", "revision"}:
         raise WorkspaceError("Enter a valid agent draft.")
     result = {"name": _text(value.get("name"), "name", 80, required=True),
               "prompt": _text(value.get("prompt", ""), "prompt", 8000, multiline=True),
@@ -125,7 +148,7 @@ def _agent(value, record_id=None, *, importing=False):
     if (not isinstance(ident, str) or not AGENT_ID.fullmatch(ident)
             or (record_id is not None and ident != record_id)):
         raise WorkspaceError("Enter a valid matching agent ID.")
-    return {"id": ident, **result}, fingerprint
+    return {"id": ident, **result, "revision": _revision(value, default=1)}, fingerprint
 
 
 def _directory(path):
@@ -267,12 +290,16 @@ class WorkspaceStore:
                    for demo_id, demo_phone in DEMO_PHONES.items())
 
     @staticmethod
-    def _save_contact(connection, record):
+    def _save_contact(connection, record, *, expected_revision=None):
         ident = record["id"]
         if WorkspaceStore._phone_exists(connection, record["phone"], ident):
             raise WorkspaceConflict("A contact with this phone number already exists.")
         kind = "demo" if ident in DEMO_PHONES else "local"
-        exists = connection.execute("SELECT 1 FROM contacts WHERE id=?", (ident,)).fetchone()
+        exists = connection.execute("SELECT payload FROM contacts WHERE id=?", (ident,)).fetchone()
+        current_revision = _saved_revision(exists[0]) if exists else 0
+        if expected_revision is not None and expected_revision != current_revision:
+            raise WorkspaceConflict("This contact changed in another browser. Your draft is unchanged. Close and reopen the editor to review the latest details before saving.")
+        record["revision"] = current_revision + 1
         if not exists and connection.execute("SELECT count(*) FROM contacts WHERE kind=?", (kind,)).fetchone()[0] >= (
                 len(DEMO_PHONES) if kind == "demo" else MAX_CONTACTS):
             raise WorkspaceConflict("The workspace contact limit has been reached.")
@@ -283,14 +310,18 @@ class WorkspaceStore:
     def put_contact(self, record_id, value):
         record = _contact(value, record_id)
         with self._transaction() as connection:
-            self._save_contact(connection, record)
+            self._save_contact(connection, record, expected_revision=_revision(value))
         return record
 
     @staticmethod
-    def _save_agent(connection, record, fingerprint):
+    def _save_agent(connection, record, fingerprint, *, expected_revision=None):
         if connection.execute("SELECT 1 FROM agents WHERE fingerprint=? AND id!=?", (fingerprint, record["id"])).fetchone():
             raise WorkspaceConflict("An identical agent draft already exists.")
-        exists = connection.execute("SELECT 1 FROM agents WHERE id=?", (record["id"],)).fetchone()
+        exists = connection.execute("SELECT payload FROM agents WHERE id=?", (record["id"],)).fetchone()
+        current_revision = _saved_revision(exists[0]) if exists else 0
+        if expected_revision is not None and expected_revision != current_revision:
+            raise WorkspaceConflict("This agent changed in another browser. Your draft is unchanged. Close and reopen the editor to review the latest details before saving.")
+        record["revision"] = current_revision + 1
         if not exists and connection.execute("SELECT count(*) FROM agents").fetchone()[0] >= MAX_AGENTS:
             raise WorkspaceConflict("The workspace agent limit has been reached.")
         connection.execute("INSERT INTO agents(id,fingerprint,payload) VALUES(?,?,?) "
@@ -300,7 +331,7 @@ class WorkspaceStore:
     def put_agent(self, record_id, value):
         record, fingerprint = _agent(value, record_id)
         with self._transaction() as connection:
-            self._save_agent(connection, record, fingerprint)
+            self._save_agent(connection, record, fingerprint, expected_revision=_revision(value))
         return record
 
     def import_records(self, value):

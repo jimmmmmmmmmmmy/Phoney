@@ -2,9 +2,9 @@
   "use strict";
 
   const state = {drafts: [], workspaceError: "", config: null, configError: "", configLoading: true,
-    saving: false, editingId: null, notice: ""};
+    saving: false, editingId: null, editingRevision: 0, reviewRequired: false, notice: ""};
   let mount, dialog, form, title, nameInput, promptInput, voiceInput, slotInput, errorMessage;
-  let saveButton, closeButton, cancelButton, previousFocus, initialized = false, configPromise, dialogGeneration = 0;
+  let saveButton, closeButton, cancelButton, previousFocus, initialized = false, configPromise, dialogGeneration = 0, configEpoch = 0, renderedSignature = "";
   const $ = id => document.getElementById(id);
 
   function node(tag, className, text) {
@@ -59,11 +59,22 @@
   function loadConfig() {
     if (configPromise) return configPromise;
     state.configLoading = true;
+    const epoch = configEpoch;
     configPromise = request("/api/agents/config").then(config => {
+      if (epoch !== configEpoch) return state.config;
+      const changed = JSON.stringify(state.config) !== JSON.stringify(config);
       state.config = config;
+      if (changed && dialog?.open && state.editingId && !state.saving) {
+        const current = config.agents?.find(agent => agent.id === state.editingId);
+        if (current && current.revision !== state.editingRevision) {
+          errorMessage.textContent = "This agent changed in another browser. Your draft is unchanged. Close and reopen the editor to review the latest settings before saving.";
+          errorMessage.hidden = false;
+        }
+      }
       state.configError = "";
       return config;
     }).catch(error => {
+      if (epoch !== configEpoch) return state.config;
       state.configError = error.message || "Agent settings could not be loaded. Reload to try again.";
       throw error;
     }).finally(() => {
@@ -75,6 +86,8 @@
   }
   function render() {
     if (!mount) return;
+    const active = document.activeElement, scrollTop = mount.scrollTop;
+    const focusId = mount.contains(active) ? active.id : null;
     const container = node("div", "agents-workspace");
     const heading = node("div", "agent-workspace-heading");
     const create = button("New agent", () => openCreateAgent(), true); create.id = "agent-new";
@@ -102,7 +115,14 @@
       edit.setAttribute("aria-label", `Edit ${agent.name}`);
       row.append(details, edit); list.append(row);
     }
-    container.append(heading, feedback, list); mount.replaceChildren(container);
+    container.append(heading, feedback, list);
+    // Do not replace unchanged rows on a background refresh (keyboard focus,
+    // selection, and scroll position belong to the person using the dashboard).
+    const signature = JSON.stringify([agents, state.config?.voices, state.configError, state.notice, state.workspaceError, state.configLoading]);
+    if (renderedSignature === signature) return;
+    renderedSignature = signature;
+    mount.replaceChildren(container); mount.scrollTop = scrollTop;
+    if (focusId) $(focusId)?.focus({preventScroll: true});
   }
   function showError(message, control) {
     errorMessage.textContent = message; errorMessage.hidden = false;
@@ -147,6 +167,8 @@
     const generation = ++dialogGeneration;
     previousFocus = returnFocus || document.activeElement;
     state.editingId = agent?.id || null;
+    state.editingRevision = state.config?.agents?.find(item => item.id === agent?.id)?.revision ?? 0;
+    state.reviewRequired = false;
     form.reset(); clearError();
     title.textContent = agent ? "Edit agent" : "New agent";
     nameInput.value = agent?.name || "";
@@ -154,16 +176,20 @@
     const initialName = nameInput.value, initialPrompt = promptInput.value;
     populateChoices(agent);
     dialog.showModal(); nameInput.focus();
-    if (!state.config || state.configLoading) {
+    if (!state.config) {
       voiceInput.disabled = slotInput.disabled = saveButton.disabled = true;
       loadConfig().then(() => {
         if (dialog.open && generation === dialogGeneration) {
           const canonicalAgent = allAgents().find(item => item.id === agent?.id);
           if (canonicalAgent) {
+            const published = state.config?.agents?.find(item => item.id === canonicalAgent.id);
+            state.reviewRequired = Boolean(published && (nameInput.value !== initialName || promptInput.value !== initialPrompt));
+            state.editingRevision = state.reviewRequired ? 0 : published?.revision ?? 0;
             if (nameInput.value === initialName) nameInput.value = canonicalAgent.name || "";
             if (promptInput.value === initialPrompt) promptInput.value = canonicalAgent.prompt || "";
           }
           populateChoices(canonicalAgent);
+          if (state.reviewRequired) showError("Published settings loaded while you were editing. Your draft is unchanged. Close and reopen the editor to review the latest settings before saving.");
         }
       }).catch(error => {if (dialog.open && generation === dialogGeneration) showError(error.message);}).finally(() => {
         if (!state.saving && generation === dialogGeneration) voiceInput.disabled = slotInput.disabled = saveButton.disabled = false;
@@ -178,6 +204,7 @@
   async function saveAgent(event) {
     event.preventDefault(); if (state.saving) return;
     clearError();
+    if (state.reviewRequired) return showError("Published settings loaded while you were editing. Your draft is unchanged. Close and reopen the editor to review the latest settings before saving.");
     const name = nameInput.value.trim(), prompt = promptInput.value.trim();
     if (!name) return showError("Enter an agent name.", nameInput);
     if (name.length > 80) return showError("Use at most 80 characters for the name.", nameInput);
@@ -194,15 +221,18 @@
     }
     // Keep the ID for retries after a timeout or other ambiguous response.
     state.editingId ||= `agent-${crypto.randomUUID()}`;
-    setPending(true);
+    setPending(true); configEpoch += 1;
     let saved;
     try {
-      saved = await request(`/api/agents/${encodeURIComponent(state.editingId)}`, {method: "PUT", body: {name, prompt, voiceProfileId, slot}});
+      saved = await request(`/api/agents/${encodeURIComponent(state.editingId)}`, {method: "PUT", body: {name, prompt, voiceProfileId, slot, expectedRevision: state.editingRevision}});
       state.config.agents = [...(state.config.agents || []).filter(item => item.id !== saved.id), saved];
       state.notice = `${saved.name} saved.`;
     } catch (error) {
       if (error.status === 409) {
-        try {await loadConfig(); populateChoices({}, true);} catch (_) { /* Preserve the original save error. */ }
+        try {
+          if (configPromise) await configPromise.catch(() => {});
+          await loadConfig(); populateChoices({}, true);
+        } catch (_) { /* Preserve the original save error. */ }
       }
       setPending(false); showError(error.message || "The agent could not be saved. Try again."); return;
     }
@@ -255,6 +285,13 @@
       render();
     });
     render(); loadConfig().catch(() => {});
+    const refreshVisible = () => {
+      if (!document.hidden && !state.saving) loadConfig().catch(() => {});
+    };
+    window.setInterval?.(refreshVisible, 5000);
+    window.addEventListener?.("focus", refreshVisible);
+    window.addEventListener?.("online", refreshVisible);
+    document.addEventListener?.("visibilitychange", refreshVisible);
   }
   window.DashboardAgents = {init, editAgent, openCreateAgent};
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init, {once: true});

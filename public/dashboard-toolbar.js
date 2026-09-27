@@ -21,7 +21,12 @@
   let notificationBadge;
   let notificationList;
   let notificationEmpty;
+  let notificationError;
   let notificationRenderKey = "";
+  let notificationRequest = false;
+  let lastNotificationSync = 0;
+  const pendingReadIds = new Set();
+  const persistentNotifications = typeof window.fetch === "function";
   const seenCallIds = new Set();
   let callNotifications = [];
 
@@ -109,7 +114,7 @@
     notificationsButton.setAttribute("aria-label", label);
     notificationsButton.title = label;
     notificationEmpty.hidden = callNotifications.length > 0;
-    const key = JSON.stringify(callNotifications.map(item => [item.id, notificationCaller(item), item.phone, item.startedAt, item.active, item.available]));
+    const key = JSON.stringify(callNotifications.map(item => [item.id, notificationCaller(item), item.phone, item.startedAt, item.active, item.available, item.collection]));
     if (notificationRenderKey === key) return;
     notificationRenderKey = key;
     notificationList.replaceChildren();
@@ -126,7 +131,7 @@
       let open;
       if (item.available) {
         open = node("a", "toolbar-notification-open", "Open call →");
-        open.href = `#calls/recent/${encodeURIComponent(item.id)}`;
+        open.href = `#calls/${item.collection === "voicemail" ? "voicemail" : "recent"}/${encodeURIComponent(item.id)}`;
         open.setAttribute("aria-label", `Open call from ${notificationCaller(item)}`);
         open.addEventListener("click", event => {
           if (event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -142,10 +147,62 @@
     }
   }
 
+  function markNotificationsRead() {
+    for (const item of callNotifications) {
+      if (item.unread && persistentNotifications) pendingReadIds.add(item.id);
+      item.unread = false;
+    }
+    renderNotifications();
+    if (pendingReadIds.size) syncNotifications(true);
+  }
+
+  async function syncNotifications(force = false) {
+    if (!persistentNotifications || notificationRequest || (!force && Date.now() - lastNotificationSync < 5000)) return;
+    notificationRequest = true;
+    lastNotificationSync = Date.now();
+    const readIds = [...pendingReadIds].slice(0, MAX_NOTIFICATIONS);
+    for (const id of readIds) pendingReadIds.delete(id);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await window.fetch(readIds.length ? "/api/notifications/read" : "/api/notifications", {
+        method: readIds.length ? "POST" : "GET", credentials: "same-origin", cache: "no-store", signal: controller.signal,
+        headers: readIds.length ? {"Content-Type": "application/json", "X-Workspace-Request": "1"} : {},
+        ...(readIds.length ? {body: JSON.stringify({ids: readIds})} : {})
+      });
+      if (!response.ok) throw new Error("unavailable");
+      const data = await response.json();
+      if (!Array.isArray(data.notifications)) throw new Error("invalid");
+      const saved = data.notifications.filter(item => item && /^CA[0-9a-fA-F]{32}$/.test(item.id)
+        && typeof item.startedAt === "string" && typeof item.phone === "string"
+        && typeof item.unread === "boolean").slice(0, MAX_NOTIFICATIONS);
+      const ids = new Set(saved.map(item => item.id));
+      // A just-arrived live call can beat the server inbox response by one poll.
+      const arriving = callNotifications.filter(item => item.active && !ids.has(item.id));
+      callNotifications = [...arriving, ...saved].slice(0, MAX_NOTIFICATIONS).map(item => ({...item,
+        unread: pendingReadIds.has(item.id) ? false : item.unread}));
+      for (const item of saved) seenCallIds.add(item.id);
+      notificationError.hidden = true;
+      if (activePopover === notificationPopup) markNotificationsRead();
+      renderNotifications();
+    } catch (_) {
+      for (const item of callNotifications) if (readIds.includes(item.id)) item.unread = true;
+      notificationError.textContent = readIds.length
+        ? "Read status was not saved. Reopen notifications to retry."
+        : "Notification history is unavailable. Reconnecting…";
+      notificationError.hidden = false;
+      renderNotifications();
+    } finally {
+      clearTimeout(timeout);
+      notificationRequest = false;
+      if (pendingReadIds.size) syncNotifications(true);
+    }
+  }
+
   function setSessions(sessions) {
     if (!Array.isArray(sessions)) return;
     const added = [];
-    for (const item of callNotifications) item.available = false;
+    if (!persistentNotifications) for (const item of callNotifications) item.available = false;
     for (const session of sessions) {
       if (!session || !/^CA[0-9a-fA-F]{32}$/.test(session.call_sid)) continue;
       const detail = session.call_detail || {};
@@ -160,10 +217,12 @@
         if (startedAt) existing.startedAt = startedAt;
         existing.active = active;
         existing.available = true;
+        existing.collection = session.voicemail ? "voicemail" : "recent";
       }
       if (seenCallIds.has(session.call_sid)) continue;
       seenCallIds.add(session.call_sid);
-      if (active) added.push({id: session.call_sid, phone, startedAt, active, available: true, unread: activePopover !== notificationPopup});
+      if (active) added.push({id: session.call_sid, phone, startedAt, active, available: true,
+        collection: session.voicemail ? "voicemail" : "recent", unread: activePopover !== notificationPopup});
     }
     if (added.length) {
       callNotifications = [...added, ...callNotifications]
@@ -174,6 +233,7 @@
         : `${added.length} new live calls. Open notifications to view them.`;
     }
     renderNotifications();
+    syncNotifications();
   }
 
   function openCreateAgent() {
@@ -205,9 +265,12 @@
     notificationPopup.hidden = true;
     notificationPopup.setAttribute("aria-label", "Notifications");
     notificationEmpty = node("p", "toolbar-popover-empty", "No new calls yet.");
+    notificationError = node("p", "toolbar-popover-empty");
+    notificationError.hidden = true;
+    notificationError.setAttribute("role", "status");
     notificationList = node("ul", "toolbar-notification-list");
     notificationList.setAttribute("aria-label", "Recent call notifications");
-    notificationPopup.append(node("h2", "", "Notifications"), notificationEmpty, notificationList);
+    notificationPopup.append(node("h2", "", "Notifications"), notificationError, notificationEmpty, notificationList);
     const settingsPopup = node("section", "toolbar-popover");
     settingsPopup.id = "settings-popover";
     settingsPopup.hidden = true;
@@ -253,8 +316,7 @@
     attachPopover(notificationsButton, notificationPopup);
     notificationsButton.addEventListener("click", () => {
       if (activePopover !== notificationPopup) return;
-      for (const item of callNotifications) item.unread = false;
-      renderNotifications();
+      markNotificationsRead();
     });
     attachPopover(settings, settingsPopup);
     attachPopover(create, createPopup, true);
@@ -264,7 +326,9 @@
     liveNotice.setAttribute("aria-live", "polite");
     document.body.append(liveNotice);
     window.addEventListener("dashboard-contacts-changed", renderNotifications);
+    window.addEventListener("focus", () => syncNotifications(true));
     renderNotifications();
+    syncNotifications(true);
     document.addEventListener("pointerdown", event => {
       if (activePopover && !activePopover.contains(event.target) && !activeTrigger.contains(event.target)) closePopover();
     });

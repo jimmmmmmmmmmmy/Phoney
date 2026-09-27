@@ -285,3 +285,54 @@ window.DashboardToolbar.setSessions([call(1, {ended_at: '2026-09-26T20:04:00Z'})
 assert.equal(notificationLinks().length, 1);
 assert.match(text($('notifications-popover')), /Ended/);
 """)
+
+
+PERSISTED_NOTIFICATIONS = r"""
+let notificationData=[{id:call(8).call_sid,phone:'+19415550101',startedAt:'2026-09-26T20:00:00Z',
+ active:false,available:true,unread:true,collection:'voicemail'}];
+let notificationRequests=[],readFailure=false;
+window.fetch=async(path,options)=>{
+ notificationRequests.push({path,...options});
+ if(options.method==='POST'){
+   if(readFailure)return {ok:false,status:503,async json(){return {};}};
+   const ids=JSON.parse(options.body).ids;
+   notificationData=notificationData.map(item=>({...item,unread:ids.includes(item.id)?false:item.unread}));
+ }
+ return {ok:true,status:200,async json(){return {notifications:clone(notificationData)};}};
+};
+"""
+
+
+def test_persisted_notifications_restore_and_acknowledge_only_visible_ids():
+    run_toolbar(r"""
+await tick();
+assert.equal($('notification-count').textContent,'1');
+assert.equal(notificationLinks()[0].href,'#calls/voicemail/'+call(8).call_sid);
+// Pagination on the main list must not make an archived notification unavailable.
+window.DashboardToolbar.setSessions([call(9,{ended_at:'2026-09-26T20:01:00Z'})]);
+assert.equal(notificationLinks().length,1);
+$('notifications-button').click();await tick();
+assert.equal(notificationData[0].unread,false);
+const request=notificationRequests.find(item=>item.method==='POST');
+assert.deepEqual(JSON.parse(request.body),{ids:[call(8).call_sid]});
+assert.equal(request.headers['X-Workspace-Request'],'1');
+assert.equal($('notification-count').hidden,true);
+$('notifications-button').click();
+notificationData.unshift({...notificationData[0],id:call(10).call_sid,unread:true});
+window.dispatch('focus');await tick();
+assert.equal($('notification-count').textContent,'1');
+assert.equal(notificationRows().length,2);
+""",before=PERSISTED_NOTIFICATIONS)
+
+
+def test_notification_read_failure_is_visible_and_can_be_retried():
+    run_toolbar(r"""
+await tick();readFailure=true;
+$('notifications-button').click();await tick();
+assert.equal($('notification-count').textContent,'1');
+assert.match(text($('notifications-popover')),/Read status was not saved/);
+$('notifications-button').click();readFailure=false;
+$('notifications-button').click();await tick();
+assert.equal(notificationData[0].unread,false);
+assert.equal($('notification-count').hidden,true);
+""",before=PERSISTED_NOTIFICATIONS)

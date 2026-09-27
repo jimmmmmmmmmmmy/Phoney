@@ -83,6 +83,21 @@ def leg_twiml(public_base: str, session_id: str, role: str, generation: int, tok
     return str(response)
 
 
+def voicemail_recording_twiml(settings, call_sid):
+    """Provider-independent fallback on the existing caller leg."""
+    response = VoiceResponse()
+    response.say("Please leave your name, callback number, and message after the beep. "
+                 "Press pound when you are finished.", language="en-US")
+    response.record(action=settings.public_base_url + f"/twilio/voicemail/finished/{call_sid}",
+        method="POST", max_length=settings.voicemail_max_seconds, timeout=5,
+        finish_on_key="#", play_beep=True, trim="do-not-trim", transcribe=False,
+        recording_status_callback=settings.public_base_url + f"/twilio/voicemail/recording/{call_sid}",
+        recording_status_callback_method="POST",
+        recording_status_callback_event="in-progress completed absent")
+    response.hangup()
+    return str(response)
+
+
 class TwilioLegs:
     """Bounded async facade over the blocking Twilio REST SDK for call legs.
 
@@ -144,6 +159,30 @@ class TwilioLegs:
 
         await asyncio.to_thread(end)
 
+    async def replace_twiml(self, call_sid: str, twiml: str):
+        """Replace the failed agent stream with native recording on the same call."""
+        await asyncio.to_thread(lambda: self._client().calls(call_sid).update(twiml=twiml))
+
+    async def recording_audio(self, recording_sid: str):
+        """Fetch one validated private Record asset; never follow callback URLs."""
+        require_sid(recording_sid, "RE")
+        account = self.settings.account_sid
+        key = self.settings.api_key or account
+        secret = self.settings.api_secret or self.settings.auth_token
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{account}/Recordings/{recording_sid}.wav"
+        maximum = (self.settings.voicemail_max_seconds + 5) * 32000 + 65536
+        async with httpx.AsyncClient(auth=(key, secret), timeout=15, follow_redirects=False) as http:
+            async with http.stream("GET", url) as response:
+                response.raise_for_status()
+                data = bytearray()
+                async for chunk in response.aiter_bytes():
+                    data.extend(chunk)
+                    if len(data) > maximum:
+                        raise ValueError("Voicemail recording too large")
+        if len(data) < 44 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+            raise ValueError("Invalid voicemail audio")
+        return bytes(data)
+
     async def read_status(self, call_sid: str) -> dict:
         """Read provider state without changing a call when callbacks were lost."""
         def fetch():
@@ -163,7 +202,7 @@ class OperatorController:
                  voice=None, keypad_factory=Keypad, registry=None,
                  context_getter=None, on_call_start=None, on_call_end=None,
                  on_audio=None, on_output_audio=None, on_agent_turn=None,
-                 provider_transport=None):
+                 provider_transport=None, voicemail_store=None):
         self.settings = settings
         self.store = store
         self.dialer = dialer if dialer is not None else TwilioLegs(settings)
@@ -174,6 +213,7 @@ class OperatorController:
         self.audio_callback, self.output_callback = on_audio, on_output_audio
         self.agent_turn_callback = on_agent_turn
         self.provider_transport = provider_transport
+        self.voicemails = voicemail_store
         self._provider_clients = {}
         self._ai_pending = set()
         self._auto_consumed = set()
@@ -321,25 +361,66 @@ class OperatorController:
             return False
         if session.voicemail:
             return True
-        if not self.voice_ready or not await self.store.claim_voicemail(session_id, reason):
+        if not await self.store.claim_voicemail(session_id, reason):
             return False
         self.trace(session_id, 'voicemail-started', reason=reason)
+        if self.voicemails is not None:
+            self.voicemails.start(session.canonical_call_sid, reason, mode="voicemail_ai",
+                                  started_at=session.created_at)
         self.router(session_id).stop_cue()
         vm = VoicemailAgent(session,
             on_reply=lambda phase: self._voicemail_reply(session_id, phase),
-            on_end=lambda why: self.end(session_id, why))
+            on_end=lambda why: (self.fallback_voicemail(session_id, why)
+                if why == "voicemail-reply-unavailable" else self.end(session_id, why)))
         self._voicemail_agents[session_id] = vm
         vm.start()
         if session.legs[OWNER].call_sid:
             self.store.spawn(self._retire_voicemail_owner(session.legs[OWNER].call_sid))
-        if self.router(session_id).attached(REMOTE):
+        if not self.voice_ready:
+            await self.fallback_voicemail(session_id, "voice-unavailable")
+        elif self.router(session_id).attached(REMOTE):
             await self._resume_voicemail(session_id)
         return True
+
+    async def fallback_voicemail(self, session_id, reason):
+        """Claim once before awaiting providers; late STT cannot restart the AI."""
+        session = self.store.find(session_id)
+        if session is None or not session.active or not session.voicemail:
+            return False
+        if session.voicemail_fallback:
+            return True
+        session.voicemail_fallback = True
+        session.voicemail_phase = "recording"
+        self._takeover_requests[session_id] = self._takeover_requests.get(session_id, 0) + 1
+        self._accepted_takeovers.pop(session_id, None)
+        vm = self._voicemail_agents.pop(session_id, None)
+        if vm is not None:
+            vm.close()
+        self._voicemail_resume_reply.pop(session_id, None)
+        await self.store.invalidate_reply(session_id)
+        self._stop_playback(session_id)
+        self._note_cleared(session_id, self.router(session_id).clear(*ROLES))
+        self._note_interrupted(session_id)
+        self.router(session_id).stop_cue()
+        if self.voicemails is not None:
+            self.voicemails.fallback(session.canonical_call_sid, reason)
+        self.trace(session_id, "voicemail-recording-fallback", reason=reason)
+        try:
+            async with asyncio.timeout(12):
+                await self.dialer.replace_twiml(session.canonical_call_sid,
+                    voicemail_recording_twiml(self.settings, session.canonical_call_sid))
+            return True
+        except Exception as exc:
+            self.trace(session_id, "voicemail-fallback-failed", error=type(exc).__name__)
+            if self.voicemails is not None:
+                self.voicemails.fail_fallback(session.canonical_call_sid)
+            await self.end(session_id, "voicemail-recording-unavailable")
+            return False
 
     async def _resume_voicemail(self, session_id):
         session = self.store.find(session_id)
         vm = self._voicemail_agents.get(session_id)
-        if session is None or not session.active or vm is None:
+        if session is None or not session.active or vm is None or session.voicemail_fallback:
             return
         self.router(session_id).stop_cue()
         if session.agent_snapshot is None:
@@ -606,18 +687,21 @@ class OperatorController:
         if session is not None and session.voicemail:
             if role == OWNER:
                 return  # A retired/late owner socket cannot affect voicemail.
-            vm = self._voicemail_agents.get(session_id)
-            if vm is not None:
-                self._voicemail_resume_reply[session_id] = vm.suspend()
-            if session.agent_snapshot is None:
-                # Revoke an in-flight initial voice/context lookup. It must
-                # not interpret this recoverable transport gap as a failed call.
-                self._takeover_requests[session_id] = self._takeover_requests.get(session_id, 0) + 1
-            if session.active:
-                await self.store.invalidate_reply(session_id)
-                self._stop_playback(session_id)
-                self._note_cleared(session_id, self.router(session_id).clear(*ROLES))
-                self._note_interrupted(session_id)
+            if not session.voicemail_fallback:
+                vm = self._voicemail_agents.get(session_id)
+                if vm is not None:
+                    self._voicemail_resume_reply[session_id] = vm.suspend()
+                if session.agent_snapshot is None:
+                    # Revoke an in-flight initial voice/context lookup. It must
+                    # not interpret this recoverable transport gap as a failed call.
+                    self._takeover_requests[session_id] = self._takeover_requests.get(session_id, 0) + 1
+                if session.active:
+                    await self.store.invalidate_reply(session_id)
+                    self._stop_playback(session_id)
+                    self._note_cleared(session_id, self.router(session_id).clear(*ROLES))
+                    self._note_interrupted(session_id)
+            # Native Record deliberately replaces the stream, but still needs
+            # terminal-status recovery when Twilio's callbacks are missed.
         elif session is not None and session.mode != HUMAN:
             await self._release(session_id)
         if session is not None and session.active and hasattr(self.dialer, "read_status"):
@@ -881,7 +965,8 @@ class OperatorController:
         """Receive canonical STT updates; only remote speech drives dialogue."""
         session = self.store.find(session_id)
         text = str(text or "").strip()
-        if session is None or not session.active or not text or speaker not in (OWNER, REMOTE):
+        if (session is None or not session.active or session.voicemail_fallback
+                or not text or speaker not in (OWNER, REMOTE)):
             return
         if final and segment_id:
             seen = self._transcript_seen.setdefault(session_id, {})
@@ -976,7 +1061,7 @@ class OperatorController:
         log.warning("operator_takeover_abandoned session=%s reason=%s", session_id, reason)
         session = self.store.find(session_id)
         if session is not None and session.voicemail:
-            await self.end(session_id, 'voicemail-' + reason)
+            await self.fallback_voicemail(session_id, reason)
             return
         await self._release(session_id)
 
@@ -1124,12 +1209,12 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
                              dialer=None, voice=None, *, registry=None, context_getter=None,
                              on_call_start=None, on_call_end=None, on_audio=None,
                              on_output_audio=None, on_agent_turn=None, require_owner=None,
-                             provider_transport=None) -> OperatorController:
+                             provider_transport=None, voicemail_store=None) -> OperatorController:
     """Mount the operator bridge beside the existing conference path."""
     controller = OperatorController(settings, store, dialer, voice=voice, registry=registry,
         context_getter=context_getter, on_call_start=on_call_start, on_call_end=on_call_end,
         on_audio=on_audio, on_output_audio=on_output_audio, on_agent_turn=on_agent_turn,
-        provider_transport=provider_transport)
+        provider_transport=provider_transport, voicemail_store=voicemail_store)
     app.state.operator = store
     app.state.operator_controller = controller
     validate_twilio = twilio_validator(settings)
@@ -1239,6 +1324,8 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
         leg = session.legs[role]
         if leg.call_sid and leg.call_sid != call_sid:
             raise HTTPException(400, "Recovery callback does not match the leg")
+        if session.voicemail_fallback and role == REMOTE:
+            return _xml(voicemail_recording_twiml(settings, call_sid))
         if session.voicemail and role == OWNER:
             response = VoiceResponse()
             response.hangup()
@@ -1254,6 +1341,66 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
             return _xml(response)
         return _xml(leg_twiml(settings.public_base_url, session_id, role,
                               leg.generation, leg.token))
+
+    async def fallback_receipt(call_sid, form):
+        require_sid(call_sid)
+        if require_sid(form.get("CallSid")) != call_sid or voicemail_store is None:
+            raise HTTPException(400, "Voicemail callback does not match the call")
+        await voicemail_store.restore(call_sid)
+        receipt = await asyncio.to_thread(voicemail_store.get, call_sid)
+        if receipt is None or receipt["mode"] != "voicemail_fallback":
+            raise HTTPException(400, "Unknown voicemail recording")
+        return receipt
+
+    async def retire_fallback(call_sid, reason):
+        session = next((s for s in store.sessions.values()
+                        if s.canonical_call_sid == call_sid and s.voicemail_fallback and s.active), None)
+        if session is not None:
+            await controller.end(session.id, reason)
+
+    @app.post("/twilio/voicemail/finished/{call_sid}")
+    async def fallback_finished(call_sid: str, form=Depends(validate_twilio)):
+        await fallback_receipt(call_sid, form)
+        voicemail_store.finish(call_sid)
+        await retire_fallback(call_sid, "voicemail-recording-finished")
+        response = VoiceResponse()
+        response.hangup()
+        return _xml(response)
+
+    @app.post("/twilio/voicemail/recording/{call_sid}")
+    async def fallback_recording(call_sid: str, form=Depends(validate_twilio)):
+        await fallback_receipt(call_sid, form)
+        recording_sid = require_sid(form.get("RecordingSid"), "RE")
+        if form.get("RecordingSource", "RecordVerb") != "RecordVerb":
+            raise HTTPException(400, "Unexpected recording source")
+        raw = str(form.get("RecordingDuration", ""))
+        if raw and (not raw.isascii() or not raw.isdecimal() or len(raw) > 4):
+            raise HTTPException(400, "Invalid recording duration")
+        status = str(form.get("RecordingStatus", ""))
+        if not voicemail_store.recording(call_sid, recording_sid, status, int(raw) if raw else None):
+            raise HTTPException(400, "Unknown or mismatched voicemail recording")
+        if status in {"completed", "absent", "failed"}:
+            # Caller hangup can skip Record's action callback. The signed
+            # terminal recording callback must also release bridge capacity.
+            await retire_fallback(call_sid, f"voicemail-recording-{status}")
+        return Response(status_code=204)
+
+    @app.get("/api/voicemails/{call_sid}/audio")
+    async def fallback_audio(call_sid: str):
+        require_sid(call_sid)
+        receipt = (await asyncio.to_thread(voicemail_store.get, call_sid)
+                   if voicemail_store is not None else None)
+        if (receipt is None or receipt["mode"] != "voicemail_fallback"
+                or receipt["recording_status"] != "completed" or not receipt["recording_sid"]):
+            raise HTTPException(404, "Voicemail audio is not available")
+        try:
+            async with asyncio.timeout(20):
+                audio = await controller.dialer.recording_audio(receipt["recording_sid"])
+        except Exception:
+            raise HTTPException(502, "Voicemail audio is temporarily unavailable") from None
+        return Response(audio, media_type="audio/wav", headers={"Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f'inline; filename="{call_sid}-voicemail.wav"'})
 
     @app.get("/api/sessions/{session_id}", dependencies=[Depends(require_admin)])
     async def session_status(session_id: str):

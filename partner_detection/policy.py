@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 import math
 from typing import Iterable, Literal, TYPE_CHECKING
 
-from .analysis import MIN_RELIABLE_MS, build_analysis
+from .analysis import MAX_WINDOWS, MIN_RELIABLE_MS, build_analysis
 
 if TYPE_CHECKING:
     from .live import LiveDetectionOutcome
@@ -45,7 +45,7 @@ def decide_call_detection(
     completed = tuple(outcomes)
     sessions = {item.report.session_id for item in completed if item.report.session_id is not None}
     observations = tuple(observation for item in completed if item.report.reason is None
-                         for observation in item.report.observations)
+                         for observation in item.report.observations)[-MAX_WINDOWS:]
     qualified = tuple(observation for observation in observations
                       if observation.verdict in {"synthetic", "non-synthetic"}
                       and observation.confidence >= min_confidence)

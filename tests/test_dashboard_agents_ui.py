@@ -78,7 +78,7 @@ change('agent-name','Leasing agent');change('agent-outbound-prompt','Ask about a
 change('agent-edit-slot','2');await submit();
 const sent=requests.find(item=>item.method==='PUT');
 assert.equal(sent.path,'/api/agents/'+draft.id);
-assert.deepEqual(JSON.parse(sent.body),{name:'Leasing agent',prompt:'Ask about availability.',voiceProfileId:voice.id,slot:2});
+assert.deepEqual(JSON.parse(sent.body),{name:'Leasing agent',prompt:'Ask about availability.',voiceProfileId:voice.id,slot:2,expectedRevision:1});
 assert.equal(sent.credentials,'same-origin');assert.equal(sent.cache,'no-store');
 assert.equal(sent.headers['X-Agent-Request'],'1');
 assert.equal(sent.headers.Authorization,undefined);
@@ -107,7 +107,7 @@ change('agent-edit-slot','2');await submit();
 assert.equal(shared.open,false);assert.equal(edits().length,2);
 const sent=requests.find(item=>item.method==='PUT');
 assert.match(sent.path,/^\/api\/agents\/agent-/);
-assert.deepEqual(JSON.parse(sent.body),{name:'Voice Clone',prompt:'Tries to hang the call up asap',voiceProfileId:voice.id,slot:2});
+assert.deepEqual(JSON.parse(sent.body),{name:'Voice Clone',prompt:'Tries to hang the call up asap',voiceProfileId:voice.id,slot:2,expectedRevision:0});
 assert.equal(document.body.all().filter(item=>item.tagName==='DIALOG').length,1);
 const savedEdit=edits().find(item=>item.getAttribute('aria-label')==='Edit Voice Clone');
 shared.dispatch('close');
@@ -276,15 +276,20 @@ assert.equal(payload.name,'Published name');assert.equal(payload.prompt,'Latest 
 """, before="registry.agents=[{...published,name:'Published name',prompt:'Latest published instructions.'}];let release;const gate=new Promise(resolve=>{release=resolve;});const original=handler;handler=async(path,options)=>{if(path==='/api/agents/config')await gate;return original(path,options);};")
 
 
-def test_delayed_configuration_preserves_typed_edit_and_updates_only_untouched_field():
+def test_delayed_configuration_preserves_typed_edit_but_requires_review_before_overwrite():
     run_agents(r"""
 openEdit();change('agent-outbound-prompt','My new instructions.');
 release();await tick();
 assert.equal($('agent-name').value,'Published name');
 assert.equal($('agent-outbound-prompt').value,'My new instructions.');
 await submit();
+assert.equal(requests.some(item=>item.method==='PUT'),false);
+assert.match(text($('create-agent-dialog')),/review the latest settings/);
+$('agent-cancel').click();openEdit();
+assert.equal($('agent-outbound-prompt').value,'Latest published instructions.');
+change('agent-outbound-prompt','Reviewed instructions.');await submit();
 const payload=JSON.parse(requests.find(item=>item.method==='PUT').body);
-assert.equal(payload.name,'Published name');assert.equal(payload.prompt,'My new instructions.');
+assert.equal(payload.expectedRevision,1);assert.equal(payload.prompt,'Reviewed instructions.');
 """, before="registry.agents=[{...published,name:'Published name',prompt:'Latest published instructions.'}];let release;const gate=new Promise(resolve=>{release=resolve;});const original=handler;handler=async(path,options)=>{if(path==='/api/agents/config')await gate;return original(path,options);};")
 
 
@@ -323,4 +328,68 @@ assert.equal(meta().children.some(element=>element.className==='confidence'),fal
 call.segments=[{...session().segments[0],track:'outbound',confidence:.95}];render();
 assert.equal(meta().children[0].textContent,trackNames.outbound);
 assert.equal(meta().children[1].textContent,'95% confidence');
+""")
+
+
+def test_remote_refresh_keeps_open_agent_draft_and_frozen_revision():
+    run_agents(r"""
+openEdit();change('agent-outbound-prompt','My unsaved personality');$('agent-outbound-prompt').focus();
+registry.agents=[{...published,revision:2,name:'Remote name',prompt:'Remote personality'}];
+window.dispatch('focus');await tick();
+assert.equal($('agent-name').value,'Admissions');assert.equal($('agent-outbound-prompt').value,'My unsaved personality');
+assert.equal(document.activeElement,$('agent-outbound-prompt'));
+assert.match(text($('create-agent-dialog')),/changed in another browser/);
+const normal=handler;
+handler=(path,options)=>options.method==='PUT'?reply({detail:'This agent changed in another browser. Your draft is unchanged.'},409):normal(path,options);
+await submit();
+assert.equal(JSON.parse(requests.find(item=>item.method==='PUT').body).expectedRevision,1);
+assert.equal($('create-agent-dialog').open,true);assert.equal($('agent-outbound-prompt').value,'My unsaved personality');
+$('agent-cancel').click();openEdit();
+assert.equal($('agent-name').value,'Remote name');assert.equal($('agent-outbound-prompt').value,'Remote personality');
+handler=normal;await submit();
+assert.equal(JSON.parse(requests.filter(item=>item.method==='PUT').at(-1).body).expectedRevision,2);
+""")
+
+
+def test_periodic_refresh_changes_agent_list_and_keeps_focus_without_overwriting_save():
+    run_agents(r"""
+const edit=edits()[0];edit.focus();const list=$('agents-view').children[0];
+intervals[0].callback();await tick();
+assert.equal($('agents-view').children[0],list);assert.equal(document.activeElement,edit);
+registry.agents=[{...published,revision:2,name:'Other browser'}];
+intervals[0].callback();await tick();
+assert.match(text($('agents-view')),/Other browser/);assert.equal(document.activeElement,edits()[0]);
+assert.equal(intervals[0].delay,5000);
+""", before="const intervals=[];window.setInterval=(callback,delay)=>intervals.push({callback,delay});")
+
+
+def test_legacy_draft_is_created_in_registry_using_revision_zero():
+    run_agents(r"""
+openEdit();await submit();
+assert.equal(JSON.parse(requests.find(item=>item.method==='PUT').body).expectedRevision,0);
+""", before="registry.agents=[];workspaceSnapshot.agents=[{...draft,revision:4}];")
+
+
+def test_refresh_started_before_save_cannot_restore_the_old_registry():
+    run_agents(r"""
+openEdit();change('agent-name','New saved name');
+let release;const gate=new Promise(resolve=>release=resolve);const old=clone(registry),normal=handler;
+handler=async(path,options)=>{if(path==='/api/agents/config'){await gate;return reply(old);}return normal(path,options);};
+window.dispatch('focus');await tick();
+await submit();assert.match(text($('agents-view')),/New saved name/);
+release();await tick();
+assert.match(text($('agents-view')),/New saved name/);
+assert.equal($('create-agent-dialog').open,false);
+""")
+
+
+def test_opening_editor_during_background_refresh_does_not_adopt_unseen_revision():
+    run_agents(r"""
+let release;const gate=new Promise(resolve=>release=resolve),normal=handler;
+handler=async(path,options)=>{if(path==='/api/agents/config'){await gate;return reply(registry);}return normal(path,options);};
+window.dispatch('focus');await tick();openEdit();change('agent-outbound-prompt','My draft');
+registry.agents=[{...published,revision:2,prompt:'Remote change'}];release();await tick();
+assert.equal($('agent-outbound-prompt').value,'My draft');
+await submit();
+assert.equal(JSON.parse(requests.find(item=>item.method==='PUT').body).expectedRevision,1);
 """)

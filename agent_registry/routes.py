@@ -178,7 +178,7 @@ def register_agent_routes(app, settings, registry, voice_settings=None, *, provi
             require_agent_origin(request, settings)
         else:
             await asyncio.to_thread(owner_write_access, request, registry, settings)
-        snapshot = await operation("publish", agent_id, await json_body(request))
+        snapshot = await operation("publish", agent_id, await json_body(request), require_revision=True)
         return JSONResponse(snapshot.to_dict(), headers=SAFE_HEADERS)
 
     async def provider_action(method, *args):

@@ -13,6 +13,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from workspace_store import WorkspaceError
+from notification_store import NotificationStore
 from call_history import page as history_page, saved_call, details_for
 from call_details import normalize_caller_number
 
@@ -121,6 +122,79 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
                                 headers=SAFE_HEADERS) from None
         return JSONResponse(result, headers=SAFE_HEADERS)
 
+    notification_store = NotificationStore(workspace_store) if workspace_store is not None else None
+
+    def notification_calls():
+        hot = manager.snapshot()["sessions"]
+        archive = manager.archive_snapshot() if hasattr(manager, "archive_snapshot") else {"sessions": []}
+        details = (call_details_store.archive_snapshot() if hasattr(call_details_store, "archive_snapshot")
+                   else call_details_store.snapshot(hot) if call_details_store is not None else {"calls": []})
+        recordings = (recording_library.archive_snapshot() if hasattr(recording_library, "archive_snapshot")
+                      else recording_snapshot())
+        voicemail = voicemail_archive()
+        rows = {}
+        for source in (recordings["recordings"], archive["sessions"], hot, details["calls"]):
+            for item in source:
+                sid = item.get("call_sid")
+                if isinstance(sid, str) and SID.fullmatch(sid):
+                    rows[sid] = {**rows.get(sid, {}), **{key: value for key, value in item.items()
+                        if key in {"call_sid", "started_at", "ended_at", "status", "caller_number"}
+                        and value is not None}}
+        for item in voicemail["voicemails"]:
+            sid = item["call_sid"]
+            rows[sid] = {**item, **rows.get(sid, {}), "voicemail": True}
+        active = {item["call_sid"] for item in hot if not item.get("ended_at") and item.get("status")
+                  not in {"completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"}}
+        calls = [{**row, "active": sid in active and not row.get("ended_at")} for sid, row in rows.items()]
+        complete = not any(source.get("storage_error") for source in (archive, details, recordings, voicemail))
+        return calls, complete
+
+    async def notification_operation(method, *args):
+        if notification_store is None:
+            raise HTTPException(503, "Notification storage is unavailable.", headers=SAFE_HEADERS)
+        try:
+            result = await asyncio.to_thread(getattr(notification_store, method), *args)
+        except WorkspaceError as error:
+            raise HTTPException(error.status_code, str(error), headers=SAFE_HEADERS) from None
+        except Exception:
+            raise HTTPException(503, "Notification history could not be saved.", headers=SAFE_HEADERS) from None
+        return JSONResponse(result, headers=SAFE_HEADERS)
+
+    @app.get("/api/notifications")
+    async def notifications():
+        return await notification_operation("observe", *await asyncio.to_thread(notification_calls))
+
+    @app.post("/api/notifications/read")
+    async def read_notifications(request: Request):
+        payload = await workspace_payload(request)
+        # A live alert can be opened before the inbox's first polling request.
+        # Materialize trusted call headers before acknowledging that visible alert.
+        await notification_operation("observe", *await asyncio.to_thread(notification_calls))
+        return await notification_operation("mark_read", payload)
+
+    def analysis_manager(call_sid):
+        if not SID.fullmatch(call_sid):
+            raise HTTPException(404, "Call analysis is unavailable.", headers=SAFE_HEADERS)
+        service = getattr(app.state, "detection_backfill", None)
+        if service is None:
+            raise HTTPException(503, "Recorded analysis is unavailable.", headers=SAFE_HEADERS)
+        return service
+
+    @app.get("/api/detection/{call_sid}")
+    async def analysis_status(call_sid: str):
+        service = analysis_manager(call_sid)
+        return JSONResponse(await asyncio.to_thread(service.status, call_sid), headers=SAFE_HEADERS)
+
+    @app.post("/api/detection/{call_sid}/retry")
+    async def retry_analysis(call_sid: str, request: Request):
+        payload = await workspace_payload(request)
+        service = analysis_manager(call_sid)
+        if set(payload) != {"retry_token"}:
+            raise HTTPException(400, "Choose an available analysis to retry.", headers=SAFE_HEADERS)
+        result = await service.retry(call_sid, payload["retry_token"])
+        code = 202 if result["accepted"] else 400 if result.get("reason") == "invalid_request" else 409
+        return JSONResponse(result, status_code=code, headers=SAFE_HEADERS)
+
     @app.get("/api/workspace")
     async def shared_workspace():
         return await workspace_operation("snapshot")
@@ -215,15 +289,17 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
 
     @app.get("/api/transcripts")
     async def transcripts(call_sid: str | None = None, cursor: str | None = None,
-                          caller: str | None = None):
+                          caller: str | None = None, collection: str | None = None):
         if caller and not normalize_caller_number(caller):
             raise HTTPException(400, "Choose a valid caller number", headers=SAFE_HEADERS)
+        if collection not in (None, "recent", "voicemail"):
+            raise HTTPException(400, "Choose a valid call collection", headers=SAFE_HEADERS)
         snapshot = deepcopy(manager.snapshot())
         snapshot["schema_version"] = 1
         try:
             snapshot = await asyncio.to_thread(history_page, manager, call_details_store,
                                                recording_library, snapshot, await asyncio.to_thread(voicemail_archive),
-                                               cursor=cursor, caller=caller, call_sid=call_sid)
+                                               cursor=cursor, caller=caller, call_sid=call_sid, collection=collection)
         except ValueError:
             raise HTTPException(400, "Invalid call history cursor", headers=SAFE_HEADERS) from None
         snapshot["detection"] = await asyncio.to_thread(detection_snapshot)
@@ -252,6 +328,9 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
                     analysis.pop("synthetic_intervals", None)
             return list(catalog.values())
         snapshot["detection"]["calls"] = await asyncio.to_thread(page_detections)
+        analysis_service = getattr(app.state, "detection_backfill", None)
+        if evidence_sid and analysis_service is not None:
+            snapshot["detection_status"] = await asyncio.to_thread(analysis_service.status, evidence_sid)
         detections = {result["call_sid"]: result for result in snapshot["detection"]["calls"]}
         for session in sessions:
             if session["call_sid"] in detections:

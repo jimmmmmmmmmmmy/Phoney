@@ -86,7 +86,7 @@ def test_public_draft_is_not_execution_and_cannot_change_published_snapshot(tmp_
     folder = str(tmp_path / "workspace")
     public = WorkspaceStore(folder)
     draft = {"id": AGENT, "name": "Draft", "prompt": "Original", "createdAt": "2026-09-26T12:00:00Z"}
-    public.put_agent(AGENT, draft)
+    draft = public.put_agent(AGENT, draft)
     store = ready_store(tmp_path)
     assert store.snapshot()["agents"] == [] and store.resolve_slot("1") is None
     original = store.publish(AGENT, config())

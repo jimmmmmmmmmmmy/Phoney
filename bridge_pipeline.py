@@ -12,12 +12,13 @@ log = logging.getLogger("uvicorn.error")
 
 
 class BridgePipeline:
-    def __init__(self, settings, capture, transcription, detection, details):
+    def __init__(self, settings, capture, transcription, detection, details, voicemails=None, recordings=None):
         self.settings = settings
         self.capture = capture
         self.transcription = transcription
         self.detection = detection
         self.details = details
+        self.voicemails, self.recordings = voicemails, recordings
         self.controller = None
         self.calls = {}
         self.started = set()
@@ -141,7 +142,7 @@ class BridgePipeline:
         try:
             session = next((call for call in self.calls.values() if call.id == session_id), None)
             if session is not None and getattr(session, "voicemail", False):
-                await self.controller.end(session_id, "voicemail-transcription-unavailable")
+                await self.controller.fallback_voicemail(session_id, "transcription-unavailable")
             else:
                 await self.controller.set_mode(session_id, "human")
         except Exception:
@@ -179,6 +180,13 @@ class BridgePipeline:
             finally:
                 await asyncio.to_thread(self.details.finish, sid,
                                         duration_seconds=getattr(session, "duration_seconds", None))
+                if self.voicemails is not None and getattr(session, "voicemail", False):
+                    recording = (await asyncio.to_thread(self.recordings.get, sid)
+                                 if self.recordings is not None else None)
+                    self.voicemails.finish_ai(sid,
+                        available=bool(recording and recording.get("status") in {"completed", "partial"}),
+                        duration=recording.get("duration_seconds") if recording else None)
+                    self.voicemails.finish(sid)
         finally:
             self.calls.pop(sid, None)
             self.started.discard(sid)

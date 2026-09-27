@@ -1,6 +1,6 @@
 # Modulate detection integration
 
-The dashboard analyzes **new incoming calls' caller-input audio** with Modulate when `MODULATE_DETECTION_ENABLED=true`. The existing recording, Deepgram transcription, Gemini summaries, and operator controls continue independently. Results are advisory: detection cannot hang up, transfer, block, or answer a call.
+The dashboard analyzes **new incoming calls' caller-input audio** with Modulate when `MODULATE_DETECTION_ENABLED=true`. The existing recording, Deepgram transcription, Gemini summaries, and operator controls continue independently. Saved results are advisory. Only a current live provider event can request the configured automatic agent takeover; replaying a saved result or retrying recorded analysis cannot activate an agent.
 
 ## Imported work and audit
 
@@ -13,7 +13,8 @@ The audit covered the detector, its test coverage and CLI tools, configuration, 
 | One 45-second timeout included the entire live call | Separate bounded audio collection and provider send/finalization deadlines |
 | Reaching the audio cap discarded observations | Finish the analyzed portion normally and mark limited coverage |
 | Timestamps ignored; missing audio could compress the timeline | Preserve initial offset; gaps/overlap return an inconclusive result |
-| Reconnected streams reset the audio allowance | One shared per-call sample budget, including queued or failed submissions |
+| Detection ended after 120 seconds | Rotate contiguous provider sessions throughout the configured call limit; retain original caller timestamps |
+| Provider stalls could grow an audio backlog | Bounded input queues, at most two sockets per call, and 5/15/30-second recovery backoff |
 | Unbounded completed call history | Bounded active workers, stream epochs, history, audio, and result counts |
 | Cancelled work left no outcome | Save an explicit inconclusive result |
 | `non-synthetic` became `human` | Preserve synthetic/non-synthetic terminology; no identity claim |
@@ -30,7 +31,7 @@ MODULATE_DETECTION_ENABLED=true
 MODULATE_BACKFILL_ENABLED=true
 MODULATE_API_KEY=your_private_key
 DETECTION_STORAGE_DIR=/absolute/private/path/detection
-# Shared across all stream attempts for a call.
+# Maximum audio per provider session. Sessions rotate for the duration of the call.
 MODULATE_DETECTION_MAX_AUDIO_SECONDS=120
 MODULATE_DETECTION_DEADLINE_SECONDS=45
 MODULATE_DETECTION_MIN_CONFIDENCE=0.80
@@ -41,15 +42,17 @@ Capture must already be enabled. Configuration validates the key, limits, and a 
 
 Live media streams are analyzed when detection is enabled. Historical and newly finalized caller WAVs are processed only when `MODULATE_BACKFILL_ENABLED=true`. The private serial worker analyzes each complete caller WAV independently of live predictions and caches the result; see [caller AI alerts](CALLER_AI_ALERTS.md) for duration thresholds, quality checks, and retry behavior. Candidate deployments cannot open provider connections: the active serving PID and commit must match the supervisor's record. Deployment drain waits for detector finalization and pending result writes.
 
+Live detection continues across 120-second provider windows (or the configured 4–120-second window) up to the existing `MEDIA_MAX_SECONDS`/`MAX_CALL_SECONDS` limit. The 120-second bound is local policy, not a documented Modulate session limit. Windows contain consecutive new audio, without replaying overlapping paid input. Window results retain the original Twilio stream ID and call-relative millisecond offsets. At most one collecting and one finalizing socket per call share a global 32-socket limit; slow providers drop bounded audio rather than block calling. Failed connections retry on fresh audio with 5/15/30-second backoff. Missing coverage stays marked incomplete and the full caller WAV is still analyzed after the call.
+
 The caller's validated inbound G.711 μ-law bytes are decoded to mono 8 kHz PCM16 and passed through a bounded, nonblocking detector queue. Outbound audio is excluded. A queue overflow, gap, failed transport, malformed result, insufficient speech, or conflicting evidence is inconclusive. Failure does not interrupt the human conference, local capture, or transcription.
 
 ## API and dashboard
 
-The existing `/api/transcripts` polling response includes `detection.calls`; retained transcript sessions also include their matching `detection`. JSON exports include saved analysis when available. There is no public provider trigger or detector write endpoint. Detection follows the dashboard's existing URL-accessible visibility.
+The existing `/api/transcripts` polling response includes `detection.calls`; retained transcript sessions also include their matching `detection`. JSON exports include saved analysis when available. Detection follows the dashboard's existing URL-accessible visibility. The Call details recovery control reads durable `BackfillManager.status` state and queues a retry through `BackfillManager.retry`. Dashboard write routes enforce same-origin JSON requests. Only ended calls with a finalized, valid caller recording can retry; active calls, candidate deployments, draining workers, corrupt jobs, changed recordings, and concurrent work are rejected. Exact job tokens reject stale/double submissions. Three automatic attempts plus two explicit retries are allowed per recorded range, persisted across restarts. Completed ranges are never uploaded again, and HTTP retries only queue work for the serial background worker.
 
 Results contain only bounded advisory metadata: provider, status, label, verdict confidence, reason, analyzed duration, coverage flag, counts, and update time. Credentials, raw provider messages, and audio are excluded. Files are atomic `0600` writes in private storage. A persisted unfinished analysis becomes inconclusive after restart. The detector store is separate from call details so rollback does not invalidate caller information or either Gemini summary.
 
-The UI shows one bright-red **AI Detected** flag beside Call details once at least four seconds of strongly synthetic caller audio is detected; whole-call percentage tiers are retired. Silence is excluded, weak overlapping windows cannot erase qualified speech, and conflicting qualified verdicts remain uncertain. Finalized caller transcript messages overlapping strong synthetic intervals receive a pale-red background across the whole row, rounded corners, and a red robot icon. Session stream IDs and audio timestamps must match, and operator/interim text is never annotated. The highlight marks an audio overlap, not individual words. Unflagged, inconclusive, and unavailable results show no badge. Version 2 files preserve timestamped evidence with independently versioned analysis policies; older files remain readable. Live/partial flags identify provisional coverage in their tooltip and accessible label. Transcription confidence remains separate.
+The UI shows one bright-red **AI Detected** flag beside Call details once at least four seconds of strongly synthetic caller audio is detected; whole-call percentage tiers are retired. Silence is excluded, weak overlapping windows cannot erase qualified speech, and conflicting qualified verdicts remain uncertain. Finalized caller transcript messages overlapping strong synthetic intervals receive a pale-red background across the whole row, rounded corners, and a red robot icon. Session stream IDs and audio timestamps must match, and operator/interim text is never annotated. The highlight marks an audio overlap, not individual words. Unflagged and inconclusive results show no AI badge. Analysis progress and failures have a separate compact status and retry control; they are never presented as a negative AI verdict. Version 2 files preserve timestamped evidence with independently versioned analysis policies; older files remain readable. Live/partial flags identify provisional coverage in their tooltip and accessible label. Transcription confidence remains separate.
 
 ## Offline checks
 

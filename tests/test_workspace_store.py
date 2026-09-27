@@ -34,13 +34,13 @@ def payload(**changes):
 def test_restart_and_two_existing_instances_see_atomic_record_edits(tmp_path):
     directory = str(tmp_path / "workspace")
     first, second = WorkspaceStore(directory), WorkspaceStore(directory)
-    assert first.put_contact(contact()["id"], contact()) == contact()
-    assert second.snapshot()["contacts"] == [contact()]
-    updated = contact(firstName="Updated", labels=["Legal"])
+    assert first.put_contact(contact()["id"], contact()) == {**contact(), "revision": 1}
+    assert second.snapshot()["contacts"] == [{**contact(), "revision": 1}]
+    updated = contact(firstName="Updated", labels=["Legal"], revision=1)
     second.put_contact(updated["id"], updated)
     second.put_agent(agent()["id"], agent())
     assert WorkspaceStore(directory).snapshot() == {
-        "version": 1, "contacts": [updated], "demoOverrides": [], "agents": [agent()]}
+        "version": 1, "contacts": [{**updated, "revision": 2}], "demoOverrides": [], "agents": [{**agent(), "revision": 1}]}
 
 
 def test_database_and_directory_are_private_even_if_preexisting(tmp_path):
@@ -103,7 +103,7 @@ def test_import_skips_stale_ids_and_normalized_duplicate_phones(tmp_path):
     store.put_contact(current["id"], current)
     incoming = payload(contacts=[contact(firstName="Old"), contact(2, phone="+1 (941) 666-0001"), contact(3)])
     expected = store.import_records(incoming)
-    assert expected["contacts"] == [current, contact(3)]
+    assert expected["contacts"] == [{**current, "revision": 1}, {**contact(3), "revision": 1}]
     assert store.import_records(incoming) == expected
 
 
@@ -133,8 +133,8 @@ def test_import_invalid_record_and_capacity_failure_roll_back_every_record(tmp_p
 def test_contact_capacity_allows_updates_but_rejects_new_record(tmp_path):
     store = WorkspaceStore(str(tmp_path / "workspace"))
     store.import_records(payload(contacts=[contact(i) for i in range(1, 501)]))
-    updated = contact(firstName="Updated")
-    assert store.put_contact(updated["id"], updated) == updated
+    updated = contact(firstName="Updated", revision=1)
+    assert store.put_contact(updated["id"], updated) == {**updated, "revision": 2}
     with pytest.raises(WorkspaceConflict):
         store.put_contact(contact(501)["id"], contact(501))
 
@@ -247,3 +247,76 @@ def test_settings_workspace_path_is_explicit_absolute_and_read_from_environment(
     monkeypatch.setenv("WORKSPACE_STORAGE_DIR", directory)
     monkeypatch.setattr("config.load_dotenv", lambda *args, **kwargs: None)
     assert Settings.from_env().workspace_storage_dir == directory
+
+
+def test_stale_contact_and_draft_edits_are_rejected_atomically(tmp_path):
+    directory = str(tmp_path / "workspace")
+    first, second = WorkspaceStore(directory), WorkspaceStore(directory)
+    for kind, value in (("contact", contact()), ("agent", agent())):
+        save = getattr(first, "put_" + kind)
+        saved = save(value["id"], value)
+        stale = dict(saved)
+        field = "firstName" if kind == "contact" else "prompt"
+        changed = getattr(second, "put_" + kind)(value["id"], {**saved, field: "Newer edit"})
+        assert changed["revision"] == 2
+        for invalid_revision in (None, 0, 1):
+            payload = {**stale, field: "Stale edit"}
+            if invalid_revision is None:
+                payload.pop("revision")
+            else:
+                payload["revision"] = invalid_revision
+            with pytest.raises(WorkspaceConflict, match="changed in another browser"):
+                save(value["id"], payload)
+        assert first.snapshot()["contacts" if kind == "contact" else "agents"] == [changed]
+        latest = save(value["id"], {**changed, field: "Reviewed latest"})
+        assert latest["revision"] == 3
+
+
+def test_concurrent_updates_to_same_revision_have_one_winner(tmp_path):
+    directory = str(tmp_path / "workspace")
+    saved = WorkspaceStore(directory).put_contact(contact()["id"], contact())
+
+    def edit(number):
+        try:
+            return WorkspaceStore(directory).put_contact(saved["id"], {**saved, "firstName": str(number)})
+        except WorkspaceConflict:
+            return None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(edit, range(8)))
+    winners = [value for value in results if value]
+    assert len(winners) == 1 and winners[0]["revision"] == 2
+
+
+def test_legacy_payload_without_revision_remains_editable_after_upgrade(tmp_path):
+    directory = tmp_path / "workspace"
+    store = WorkspaceStore(str(directory))
+    store.put_contact(contact()["id"], contact())
+    with sqlite3.connect(directory / DATABASE_NAME) as database:
+        database.execute("UPDATE contacts SET payload=?", (json.dumps(contact()),))
+    old = store.snapshot()["contacts"][0]
+    assert old["revision"] == 1
+    assert store.put_contact(old["id"], {**old, "firstName": "Updated"})["revision"] == 2
+
+
+@pytest.mark.parametrize("revision", [True, -1, "1", 1.5, 2**53])
+def test_invalid_revisions_cannot_write(tmp_path, revision):
+    store = WorkspaceStore(str(tmp_path / "workspace"))
+    with pytest.raises(WorkspaceError):
+        store.put_contact(contact()["id"], contact(revision=revision))
+    with pytest.raises(WorkspaceError):
+        store.put_agent(agent()["id"], agent(revision=revision))
+    assert store.snapshot()["contacts"] == store.snapshot()["agents"] == []
+
+
+def test_corrupt_saved_revision_fails_closed_without_replacing_record(tmp_path):
+    directory = tmp_path / "workspace"
+    store = WorkspaceStore(str(directory))
+    old = store.put_contact(contact()["id"], contact())
+    with sqlite3.connect(directory / DATABASE_NAME) as database:
+        database.execute("UPDATE contacts SET payload=?", (json.dumps({**old, "revision": "invalid"}),))
+    with pytest.raises(WorkspaceUnavailable):
+        store.put_contact(old["id"], {**old, "firstName": "Should not be saved"})
+    with sqlite3.connect(directory / DATABASE_NAME) as database:
+        record = json.loads(database.execute("SELECT payload FROM contacts").fetchone()[0])
+    assert record["firstName"] == old["firstName"] and record["revision"] == "invalid"

@@ -167,3 +167,54 @@ assert.deepEqual(api.getSnapshot().contacts,[CONTACT]);assert.deepEqual(api.getS
 let releaseLoad;const loadGate=new Promise(resolve=>releaseLoad=resolve);const normalHandler=handler;
 handler=async(path,options)=>{if(options.method==='GET')await loadGate;return normalHandler(path,options);};
 """)
+
+
+def test_periodic_and_focus_refresh_load_new_records_without_reimport_or_duplicate_events():
+    run_workspace(r"""
+await api.ready;
+const events=[];api.subscribe(value=>events.push(value));
+const count=events.length;
+await api.refresh();assert.equal(events.length,count,'Unchanged refresh must not rerender consumers');
+server.contacts=[{...CONTACT,revision:1}];
+await intervals[0].callback();await api.refresh();
+assert.equal(api.getSnapshot().contacts[0].revision,1);
+server.contacts=[{...CONTACT,revision:2,firstName:'Remote'}];
+for(const handler of listeners.focus)handler();await api.refresh();
+assert.equal(api.getSnapshot().contacts[0].firstName,'Remote');
+assert.equal(intervals[0].delay,5000);
+assert.equal(calls.some(call=>call.method==='POST'),false);
+""", before=r"""
+const intervals=[],listeners={};
+window.setInterval=(callback,delay)=>intervals.push({callback,delay});
+window.addEventListener=(name,callback)=>(listeners[name]||=[]).push(callback);
+""")
+
+
+def test_stale_save_refreshes_canonical_state_but_preserves_original_revision():
+    run_workspace(r"""
+await api.ready;
+const opened=clone(api.getSnapshot().contacts[0]);
+server.contacts=[{...CONTACT,revision:2,firstName:'Remote edit'}];
+const normal=handler;
+handler=async(path,options)=>options.method==='PUT'
+ ? response({detail:'This contact changed in another browser. Your draft is unchanged.'},409):normal(path,options);
+let failure;try{await api.saveContact({...opened,firstName:'My draft'});}catch(error){failure=error;}
+assert.equal(failure.status,409);assert.match(failure.message,/changed in another browser/);
+assert.equal(api.getSnapshot().contacts[0].firstName,'Remote edit');
+assert.equal(JSON.parse(calls.find(call=>call.method==='PUT').body).revision,1);
+assert.equal(opened.revision,1);
+""", before="server={...clone(EMPTY),contacts:[{...CONTACT,revision:1}]};")
+
+
+def test_refresh_coalesces_slow_requests_and_retries_without_removing_data():
+    run_workspace(r"""
+await api.ready;
+let release;const gate=new Promise(resolve=>release=resolve);const normal=handler;
+handler=async(...args)=>{await gate;return normal(...args);};
+const first=api.refresh(),second=api.refresh();assert.equal(first,second);
+release();await first;
+assert.equal(calls.length,2);
+fail=true;await assert.rejects(api.refresh());assert.equal(api.getSnapshot().contacts.length,1);
+fail=false;server.contacts=[{...CONTACT,firstName:'Recovered'}];await api.refresh();
+assert.equal(api.getSnapshot().contacts[0].firstName,'Recovered');
+""", before="server={...clone(EMPTY),contacts:[CONTACT]};")

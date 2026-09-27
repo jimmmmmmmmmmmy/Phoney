@@ -14,12 +14,13 @@ import time
 
 import httpx
 
-from voice_stack.agent import (Conversation, ReplyCommandBuffer, SentenceBuffer,
+from voice_stack.agent import (Conversation, GeminiError, ReplyCommandBuffer, SentenceBuffer,
                                reply_events_with_retry as reply_events)
 from voice_stack.audio import FRAME_BYTES, iter_frames
 from voice_stack.tts import TTSError, speech, speech_bytes
 from voice_stack.prompts import (VOICEMAIL_GREETING,
                                  three_reply_phase_instruction, voicemail_phase_instruction)
+from voice_stack.voicemail_recovery import recovery_reply
 from .sessions import AGENT, ANNOUNCING, HUMAN, OWNER, PREPARING, REMOTE, OperatorRejected
 
 PHRASE_QUEUE_SIZE = 4
@@ -28,6 +29,8 @@ MAX_REPLY_CHARS = 8_000
 MAX_AUDIO_BYTES = 8000 * 60
 PREPARATION_SECONDS = 15.0
 FIRST_TEXT_SECONDS = 3.0
+VOICEMAIL_FIRST_TEXT_SECONDS = 4.0
+VOICEMAIL_PHRASE_CHARS = 240
 PLAYBACK_ACK_SECONDS = 5.0
 FRAME_STALL_SECONDS = 2.0
 ANNOUNCEMENT = "An AI assistant is joining this call."
@@ -131,6 +134,7 @@ class DialogueRun:
         self.voicemail = getattr(session, "voicemail", False)
         self.bounded_replies = getattr(session, "agent_kind", "manual") == "ai-detected"
         self.caller_requested_end = False
+        self.context = []
         self.stage = "context"
         self.started = time.monotonic()
 
@@ -152,6 +156,7 @@ class DialogueRun:
                 turns = (await maybe_await(self.controller.context_getter(self.session))
                          if self.controller.context_getter else self.session.turns)
             context = handoff_context(turns)
+            self.context = context
             latest_caller = next((text for speaker, text in reversed(context) if speaker == "remote"), "")
             self.caller_requested_end = bool(re.search(
                 r"^(?:(?:ok(?:ay)?|thanks?|thank you)[,.! ]+)*(?:goodbye|bye(?: bye)?|hang up|"
@@ -226,20 +231,17 @@ class DialogueRun:
                     else:
                         self.trace("agent-end-call")
                         await self.controller.end(self.session.id, "agent-end-call")
-                if self.voicemail and self.current() and self.confirmed:
+                if self.voicemail and self.current() and (self.confirmed or self.end_deferred):
                     # Terminal voicemail phases also hang up in reply_completed,
                     # even when Gemini omits its command. Fresh caller activity
                     # must revoke that second ending path as well. Keep pending
                     # finalized speech so the ordinary quiet-period policy can
                     # read back or confirm it instead of ending the call.
-                    terminal_phase = self.voicemail_phase in {"no_message", "unconfirmed", "complete"}
+                    terminal_phase = self.voicemail_phase in {"no_message", "unconfirmed", "complete", "followup_timeout"}
                     fresh_caller = self.remote_revision != self.controller._remote_revisions.get(self.session.id, 0)
                     if self.end_deferred or (terminal_phase and fresh_caller):
                         self.end_deferred = True
                         self.trace("voicemail-resume-after-deferred-end", phase=self.voicemail_phase)
-                        voicemail = self.controller._voicemail_agents.get(self.session.id)
-                        if voicemail is not None:
-                            voicemail.resume_listening()
                     else:
                         await self.controller.voicemail_reply_completed(self.session.id, self.voicemail_phase)
         except asyncio.CancelledError:
@@ -276,12 +278,19 @@ class DialogueRun:
                     > self.pending["sent_before"]):
                 await self._record(self.pending, "interrupted")
                 self.pending = None
+            if (self.completed and self.voicemail and self.end_deferred and self.current()
+                    and self.takeover_request == self.controller._takeover_requests.get(self.session.id, 0)):
+                # Arm the next quiet period only after every awaited cleanup.
+                # Even a short pause cannot race this run's provider teardown.
+                voicemail = self.controller._voicemail_agents.get(self.session.id)
+                if voicemail is not None:
+                    voicemail.resume_listening()
 
     async def _prepare_first(self, http):
         self.stage = "first-phrase"
         first = await self._next_phrase()
         if first is None:
-            if not self.end_requested:
+            if not (self.end_requested or self.end_deferred):
                 raise ValueError("Empty agent reply")
             return None, None, None
         self.stage = "first-audio"
@@ -354,28 +363,64 @@ class DialogueRun:
             await self.phrases.put(VOICEMAIL_GREETING)
             await self.phrases.put(None)
             return
-        buffer = SentenceBuffer()
+        # A short voicemail recap should keep its sentence/intonation together,
+        # rather than split a clause at the normal phone phrase's 120-char cap.
+        buffer = SentenceBuffer(limit=VOICEMAIL_PHRASE_CHARS if self.voicemail else 120)
         commands = ReplyCommandBuffer()
         chars = 0
         first_token = True
-        async for event in reply_events(http, self.voice.gemini_api_key,
-                conversation.system, deepcopy(conversation.contents),
-                model=self.voice.gemini_model, max_output_tokens=self.voice.max_reply_tokens,
-                timeout=self.voice.request_timeout, first_text_timeout=FIRST_TEXT_SECONDS, trace=True):
-            if event["kind"] == "trace":
-                self.trace("gemini-attempt-" + event["stage"], **{
-                    key: value for key, value in event.items() if key not in {"kind", "stage"}})
-            if event["kind"] == "retry":
-                self.trace("gemini-response-retry", reason=event.get("reason", "unknown"))
-            if event["kind"] == "text":
-                if first_token:
-                    self.trace("gemini-first-text")
-                    first_token = False
-                chars += len(event["text"])
-                if chars > MAX_REPLY_CHARS:
-                    raise ValueError("Reply too long")
-                for phrase in buffer.feed(commands.feed(event["text"])):
-                    await self.phrases.put(phrase)
+        # Voicemail has no human bridge to resume after a slow response. Bound
+        # silence with a brief same-voice acknowledgement instead of a restart.
+        first_text_seconds = VOICEMAIL_FIRST_TEXT_SECONDS if self.voicemail else FIRST_TEXT_SECONDS
+        try:
+            async for event in reply_events(http, self.voice.gemini_api_key,
+                    conversation.system, deepcopy(conversation.contents),
+                    model=self.voice.gemini_model, max_output_tokens=self.voice.max_reply_tokens,
+                    timeout=self.voice.request_timeout, first_text_timeout=first_text_seconds,
+                    retry_first_text_timeout=not self.voicemail, trace=True):
+                if event["kind"] == "trace":
+                    self.trace("gemini-attempt-" + event["stage"], **{
+                        key: value for key, value in event.items() if key not in {"kind", "stage"}})
+                if event["kind"] == "retry":
+                    self.trace("gemini-response-retry", reason=event.get("reason", "unknown"))
+                if event["kind"] == "text":
+                    if first_token:
+                        self.trace("gemini-first-text")
+                        first_token = False
+                    chars += len(event["text"])
+                    if chars > MAX_REPLY_CHARS:
+                        raise ValueError("Reply too long")
+                    for phrase in buffer.feed(commands.feed(event["text"])):
+                        await self.phrases.put(phrase)
+        except (GeminiError, httpx.HTTPError, TimeoutError) as exc:
+            if not self.voicemail or chars:
+                raise
+            if self.remote_revision != self.controller._remote_revisions.get(self.session.id, 0):
+                # New speech was accepted while Gemini was still preparing.
+                # Speaking the old snapshot would put an agent turn after that
+                # correction, hiding it from the next local readback. Let the
+                # listening policy wait for its endpoint and capture it afresh.
+                self.end_deferred = True
+                self.trace("voicemail-local-reply-deferred-for-new-speech", phase=self.voicemail_phase)
+                await self.phrases.put(None)
+                return
+            # A model timeout must not turn a conversational voicemail into a
+            # second mailbox. Acknowledge the captured message without parroting
+            # it or pretending to summarize; a later turn can use Gemini again.
+            recovery = recovery_reply(
+                self.voicemail_phase, self.context,
+                caller_requested_end=self.caller_requested_end)
+            self.end_requested = recovery.end_requested
+            if recovery.phase != self.voicemail_phase:
+                self.voicemail_phase = recovery.phase
+                voicemail = self.controller._voicemail_agents.get(self.session.id)
+                if voicemail is not None:
+                    voicemail.reframe_reply(recovery.phase)
+            self.trace("voicemail-local-reply", phase=self.voicemail_phase,
+                       reason=type(exc).__name__, end_requested=self.end_requested)
+            await self.phrases.put(recovery.spoken)
+            await self.phrases.put(None)
+            return
         commands.finish()
         self.end_requested = commands.end_call
         trailing = buffer.flush()

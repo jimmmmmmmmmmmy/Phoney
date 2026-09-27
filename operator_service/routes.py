@@ -98,6 +98,15 @@ def voicemail_recording_twiml(settings, call_sid):
     return str(response)
 
 
+def voicemail_closing_twiml():
+    """Close after captured caller speech without asking for the message again."""
+    response = VoiceResponse()
+    response.say("Thank you for your message. I cannot read it back right now. Goodbye.",
+                 language="en-US")
+    response.hangup()
+    return str(response)
+
+
 class TwilioLegs:
     """Bounded async facade over the blocking Twilio REST SDK for call legs.
 
@@ -395,8 +404,10 @@ class OperatorController:
             return False
         if session.voicemail_fallback:
             return True
+        vm = self._voicemail_agents.get(session_id)
+        close_with_message = bool(vm and vm.has_final_message and not vm.utterance_open)
         session.voicemail_fallback = True
-        session.voicemail_phase = "recording"
+        session.voicemail_phase = "complete" if close_with_message else "recording"
         self._cancel_voicemail_warmup(session_id)
         self._takeover_requests[session_id] = self._takeover_requests.get(session_id, 0) + 1
         self._accepted_takeovers.pop(session_id, None)
@@ -409,19 +420,24 @@ class OperatorController:
         self._note_cleared(session_id, self.router(session_id).clear(*ROLES))
         self._note_interrupted(session_id)
         self.router(session_id).stop_cue()
-        if self.voicemails is not None:
+        if self.voicemails is not None and not close_with_message:
             self.voicemails.fallback(session.canonical_call_sid, reason)
-        self.trace(session_id, "voicemail-recording-fallback", reason=reason)
+        self.trace(session_id, "voicemail-message-preserved" if close_with_message
+                   else "voicemail-recording-fallback", reason=reason)
         try:
             async with asyncio.timeout(12):
                 await self.dialer.replace_twiml(session.canonical_call_sid,
+                    voicemail_closing_twiml() if close_with_message else
                     voicemail_recording_twiml(self.settings, session.canonical_call_sid))
+            # Twilio must speak the native farewell before Hangup. Its signed
+            # terminal callback (or existing status recovery) finishes storage.
             return True
         except Exception as exc:
             self.trace(session_id, "voicemail-fallback-failed", error=type(exc).__name__)
             if self.voicemails is not None:
                 self.voicemails.fail_fallback(session.canonical_call_sid)
-            await self.end(session_id, "voicemail-recording-unavailable")
+            await self.end(session_id, "voicemail-closing-unavailable" if close_with_message
+                           else "voicemail-recording-unavailable")
             return False
 
     async def _resume_voicemail(self, session_id):
@@ -449,6 +465,7 @@ class OperatorController:
             return
         if self.playing(session_id):
             raise OperatorRejected('voicemail-reply-already-playing')
+        self.trace(session_id, 'voicemail-reply-requested', phase=phase)
         session.voicemail_phase = phase
         await self.store.invalidate_reply(session_id)
         self._start_dialogue(session)
@@ -1035,6 +1052,10 @@ class OperatorController:
             if (timestamp_ms is not None and floor is not None and timestamp_ms < floor
                     and not continuing_turn):
                 return
+            if session.voicemail and (speech_final is True or (final and text)):
+                self.trace(session_id, 'voicemail-caller-endpoint' if speech_final is True
+                           else 'voicemail-caller-final', speech_start_ms=timestamp_ms,
+                           speech_end_ms=turn_end_ms, has_text=bool(text))
             activity = bool(text or speech_started)
             if speech_started:
                 self.trace(session_id, "caller-speech-started", speech_start_ms=timestamp_ms)
@@ -1422,6 +1443,8 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
         if leg.call_sid and leg.call_sid != call_sid:
             raise HTTPException(400, "Recovery callback does not match the leg")
         if session.voicemail_fallback and role == REMOTE:
+            if session.voicemail_phase == "complete":
+                return _xml(voicemail_closing_twiml())
             return _xml(voicemail_recording_twiml(settings, call_sid))
         if session.voicemail and role == OWNER:
             response = VoiceResponse()

@@ -96,7 +96,7 @@
           <div class="card-heading">
             <h2 id="transcript-title" class="sr-only">Waiting for a call</h2><div class="card-title"><span id="voicemail-badge" class="badge" data-tone="neutral" hidden></span><button id="audio-reopen" class="text-button audio-reopen" type="button" aria-controls="audio-panel" hidden>Show player</button></div>
             <section id="summary-panel" class="summary-panel" aria-labelledby="summary-heading"><h3 id="summary-heading" class="sr-only">Summary</h3><p id="call-summary" class="summary-text" data-empty="true">No summary yet.</p></section>
-            <p id="voicemail-detail" class="voicemail-note" hidden></p><p id="session-storage-warning" class="track-error" role="status" hidden></p>
+            <p id="voicemail-detail" class="voicemail-note" hidden></p><a id="voicemail-extra-audio" class="voicemail-note" hidden download>Additional message recording (WAV) ↓</a><p id="session-storage-warning" class="track-error" role="status" hidden></p>
           </div>
           <div class="transcript-toolbar"><span class="live-label">Transcript</span></div>
             <div id="empty" class="empty"><div class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4M8 22h8"></path></svg></div><h2 id="empty-title">Ready when you are.</h2><p id="empty-description">When a call connects, its transcript will appear here. The view updates automatically.</p></div>
@@ -440,7 +440,8 @@
       let message = "";
       if (state.audioUrl) {
         if (state.audioPhase === "error") message = "Audio could not be loaded. Try downloading the WAV.";
-        else if (fallbackVoicemailUrl(session)) message = "Recorded message · Transcript above covers the conversation before basic recording began.";
+        else if (playingFallbackVoicemail()) message = "Recorded message · Transcript above covers the conversation before basic recording began.";
+        else if (conversationVoicemailUrl(session)) message = "Original conversation · Additional message recording is linked above.";
         else if (recording && recording.status === "partial") message = "This recording is incomplete.";
       } else if (session) {
         if (state.snapshot && state.snapshot.recordings && state.snapshot.recordings.enabled === false) {
@@ -464,6 +465,21 @@
         && /^RE[0-9a-fA-F]{32}$/.test(voicemail.recording_sid || "")
           ? `/api/voicemails/${session.call_sid}/audio` : "";
     }
+    function conversationVoicemailUrl(session) {
+      // A failed readback can leave both the original message and a later native
+      // recording. Keep the transcript synchronized with its original audio.
+      const recording = session && session.recording;
+      const segments = session && Array.isArray(session.segments) ? session.segments : [];
+      return fallbackVoicemailUrl(session) && recording && recording.call_sid === session.call_sid
+        && ["completed", "partial"].includes(recording.status)
+        && segments.some(segment => segment.source === "agent")
+        && segments.some(segment => segment.track === "inbound" && text(segment.text).trim())
+          ? recordingUrl(recording, "combined") : "";
+    }
+    function playingFallbackVoicemail() {
+      const url = fallbackVoicemailUrl(state.audioSession);
+      return Boolean(url && state.audioUrl === url);
+    }
     function renderAudio(session) {
       const recording = session && session.recording;
       const call = session ? session.call_sid : null;
@@ -475,7 +491,7 @@
         state.audioTrack = "combined";
       }
       state.audioSession = session || null;
-      const url = fallbackVoicemailUrl(session) || recordingUrl(recording, "combined");
+      const url = conversationVoicemailUrl(session) || fallbackVoicemailUrl(session) || recordingUrl(recording, "combined");
       $("audio-panel").hidden = !session || state.audioDismissed;
       $("audio-reopen").hidden = !session || !state.audioDismissed;
       const audio = $("call-audio");
@@ -490,7 +506,7 @@
         state.audioPhase = "idle";
       }
       audio.hidden = !url;
-      audio.setAttribute("aria-label", fallbackVoicemailUrl(session) ? "Play recorded voicemail message" : "Play selected call recording");
+      audio.setAttribute("aria-label", playingFallbackVoicemail() ? "Play recorded voicemail message" : "Play selected call recording");
       const download = $("audio-download");
       download.hidden = !url;
       download.setAttribute("aria-disabled", String(!url));
@@ -599,7 +615,7 @@
     function updatePlaybackHighlight(clear = false) {
       const audio = $("call-audio");
       const time = audio.currentTime * 1000;
-      const enabled = !clear && !fallbackVoicemailUrl(state.audioSession) && !state.audioDismissed && state.highlightEnabled && state.audioUrl && !audio.ended
+      const enabled = !clear && !playingFallbackVoicemail() && !state.audioDismissed && state.highlightEnabled && state.audioUrl && !audio.ended
         && state.audioCall === state.selected && state.renderedCall === state.audioCall && Number.isFinite(time);
       const recording = state.audioSession && state.audioSession.recording;
       let first = null;
@@ -833,6 +849,18 @@
       $("voicemail-detail").textContent = voicemail
         ? [voicemailDescription || "Recording status is unavailable.",
           voicemailDuration(voicemail) ? "Duration: " + voicemailDuration(voicemail) + "." : ""].filter(Boolean).join(" ") : "";
+      const extraAudio = $("voicemail-extra-audio");
+      const conversationAudio = conversationVoicemailUrl(session);
+      extraAudio.hidden = !conversationAudio;
+      if (conversationAudio) {
+        $("voicemail-detail").textContent = "Original conversation saved. "
+          + (voicemailDuration(voicemail) ? "Additional message: " + voicemailDuration(voicemail) + "." : "");
+        extraAudio.href = fallbackVoicemailUrl(session);
+        extraAudio.download = `${session.call_sid}-additional-message.wav`;
+      } else {
+        extraAudio.removeAttribute("href");
+        extraAudio.removeAttribute("download");
+      }
       for (const format of ["txt", "json"]) {
         const link = $("export-" + format);
         link.setAttribute("aria-disabled", String(!session || noTranscript));

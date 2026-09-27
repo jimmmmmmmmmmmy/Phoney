@@ -19,21 +19,30 @@ class VoicemailAgent:
     stale pre-playback STT, and non-caller tracks.
     """
 
-    def __init__(self, session, *, on_reply, on_end, pause_seconds=2.0,
+    def __init__(self, session, *, on_reply, on_end, pause_seconds=1.0,
                  initial_silence_seconds=20.0, confirmation_silence_seconds=15.0,
-                 capture_seconds=60.0, total_seconds=180.0):
+                 capture_seconds=60.0, total_seconds=180.0,
+                 vad_grace_seconds=1.25):
         self.session = session
         self.on_reply, self.on_end = on_reply, on_end
         self.pause_seconds = float(pause_seconds)
         self.initial_silence_seconds = float(initial_silence_seconds)
         self.confirmation_silence_seconds = float(confirmation_silence_seconds)
         self.capture_seconds, self.total_seconds = float(capture_seconds), float(total_seconds)
+        self.vad_grace_seconds = float(vad_grace_seconds)
         self.phase = "greeting"
         self.busy = True
         self.closed = False
         self.pending_final = False
         self.utterance_open = False
+        self._recognized_utterance_open = False
+        self._vad_hold = False
+        self._vad_grace_exhausted = False
         self.has_message = False
+        self.followup_mode = False
+        # Unlike has_message (a heard readback), this survives reply_started
+        # consuming pending_final. Only accepted final caller text sets it.
+        self.has_final_message = False
         self.activity_version = 0
         self._timers = {}
 
@@ -77,6 +86,8 @@ class VoicemailAgent:
         self.session.voicemail_phase = self.phase
         self.busy = True
         self.pending_final = False
+        self._clear_vad_hold()
+        self._vad_grace_exhausted = False
         for name in ("pause", "silence", "capture"):
             self._cancel(name)
 
@@ -88,12 +99,21 @@ class VoicemailAgent:
         if phase != self.phase:
             return  # A canceled reply cannot advance a newer dialogue phase.
         self.busy = False
-        if phase in {"no_message", "unconfirmed", "complete"}:
+        if phase in {"no_message", "unconfirmed", "followup_timeout", "complete"}:
             await self._finish("voicemail-" + phase.replace("_", "-"))
             return
         if phase in {"readback", "confirm"}:
             self.has_message = True
+            self.followup_mode = False
+        elif phase == "followup":
+            self.has_message = True
+            self.followup_mode = True
         self._listen()
+
+    def reframe_reply(self, phase):
+        """Change what the current reply asks without consuming new speech."""
+        self.phase = str(phase)
+        self.session.voicemail_phase = self.phase
 
     def interrupted(self):
         """A caller interrupted audible agent speech; wait for the caller's turn."""
@@ -106,6 +126,7 @@ class VoicemailAgent:
         """Keep the hard deadline during transport recovery, but stop local replies."""
         was_busy = self.busy
         self.busy = True
+        self._clear_vad_hold()
         for name in ("pause", "silence", "capture"):
             self._cancel(name)
         return was_busy
@@ -115,25 +136,60 @@ class VoicemailAgent:
             self.busy = False
             self._listen()
 
+    def _clear_vad_hold(self):
+        self._cancel("vad-grace")
+        if self._vad_hold and not self._recognized_utterance_open:
+            self.utterance_open = False
+        self._vad_hold = False
+
+    async def _vad_grace_expired(self):
+        # Noise can produce repeated VAD onsets without recognized words.
+        # Only new text grants another grace period; more noise cannot keep a
+        # completed message waiting indefinitely. Never close real speech here.
+        self._vad_grace_exhausted = True
+        self._vad_hold = False
+        if not self._recognized_utterance_open:
+            self.utterance_open = False
+            self._listen()
+
     def transcript(self, text, *, final=True, activity=False, speech_final=None,
                    speech_started=False):
         """Collect final chunks, but start the pause only at an actual endpoint.
 
         ``None`` preserves callers without endpoint metadata. Production STT
         supplies explicit booleans, including empty end-of-utterance events.
-        VAD activity can extend listening but cannot invent a recorded message.
+        VAD-only activity has a bounded grace period for words to arrive. Once
+        words arrive, only an actual endpoint can finish that utterance.
         """
         text = str(text or "").strip()
         activity = bool(activity or speech_started)
         if not self._active() or (not text and not activity and speech_final is not True):
             return
-        self.activity_version += 1
-        if speech_final is True or (speech_final is None and final and text):
-            self.utterance_open = False
-        elif speech_final is False and (text or activity):
+        if not text and activity and speech_final is not True:
+            if (self._recognized_utterance_open or self._vad_hold
+                    or self._vad_grace_exhausted):
+                return
+            self._vad_hold = True
             self.utterance_open = True
+            self._arm("vad-grace", self.vad_grace_seconds, self._vad_grace_expired)
+        elif text:
+            self._clear_vad_hold()
+            self._vad_grace_exhausted = False
+            self._recognized_utterance_open = not (
+                speech_final is True or (speech_final is None and final))
+            self.utterance_open = self._recognized_utterance_open
+        else:  # Empty, explicit endpoint closes speech but never creates text.
+            if not self._recognized_utterance_open and not self._vad_hold and not self.utterance_open:
+                return  # A redundant empty endpoint cannot restart the pause.
+            if self._vad_hold:
+                self._vad_grace_exhausted = True
+            self._clear_vad_hold()
+            self._recognized_utterance_open = False
+            self.utterance_open = False
+        self.activity_version += 1
         if final and text:
             self.pending_final = True
+            self.has_final_message = True
         self._cancel("pause")
         self._cancel("silence")
         if not self.busy:
@@ -154,7 +210,7 @@ class VoicemailAgent:
             async def quiet():
                 if (not self.busy and self.pending_final and not self.utterance_open
                         and self.activity_version == version):
-                    await self._request("confirm" if self.has_message else "readback")
+                    await self._request(self._message_reply_phase())
 
             self._arm("pause", self.pause_seconds, quiet)
         else:
@@ -174,15 +230,21 @@ class VoicemailAgent:
             await self._finish("voicemail-reply-unavailable")
 
     async def _silence_expired(self):
-        await self._request("unconfirmed" if self.has_message else "no_message")
+        await self._request(self._silence_reply_phase())
+
+    def _message_reply_phase(self):
+        return "followup" if self.followup_mode else "confirm" if self.has_message else "readback"
+
+    def _silence_reply_phase(self):
+        return "followup_timeout" if self.followup_mode else "unconfirmed" if self.has_message else "no_message"
 
     async def _capture_expired(self):
         if self.pending_final:
-            await self._request("confirm" if self.has_message else "readback")
+            await self._request(self._message_reply_phase())
         else:
             # No finalized text means there is nothing safe to repeat back.
             # The model must not invent a message from silence or an interim.
-            await self._request("unconfirmed" if self.has_message else "no_message")
+            await self._request(self._silence_reply_phase())
 
     async def _deadline(self):
         await self._finish("voicemail-time-limit")

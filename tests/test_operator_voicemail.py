@@ -174,6 +174,22 @@ def test_message_waits_for_pause_after_latest_interim_before_readback():
     asyncio.run(run())
 
 
+def test_final_message_evidence_survives_first_readback_start():
+    async def run():
+        vm, replies, ended = policy()
+        await vm.reply_completed('greeting')
+        vm.transcript('', final=False, speech_started=True, speech_final=False)
+        vm.transcript('Please call', final=False, speech_final=False)
+        assert not vm.has_final_message
+        vm.transcript('Please call Alex back.', speech_final=True)
+        await until(lambda: replies == ['readback'])
+        assert vm.has_final_message and not vm.pending_final and not vm.has_message
+        await vm.reply_completed('readback')
+        assert vm.has_final_message and vm.has_message
+        vm.close()
+    asyncio.run(run())
+
+
 def test_interims_never_invent_a_final_message_and_no_message_waits_for_farewell():
     async def run():
         vm, replies, ended = policy(initial_silence_seconds=.04)
@@ -327,5 +343,189 @@ def test_open_message_without_endpoint_is_still_bounded_by_capture_deadline():
         assert replies == []
         await until(lambda: replies)
         assert replies == ['readback'] and ended == []
+        vm.close()
+    asyncio.run(run())
+
+
+def test_default_voicemail_pause_is_one_second_after_endpoint():
+    session = SimpleNamespace(active=True, voicemail=True, voicemail_phase='greeting')
+    vm = VoicemailAgent(session, on_reply=lambda phase: None, on_end=lambda reason: None)
+    assert vm.pause_seconds == 1.0
+    assert vm.vad_grace_seconds == 1.25
+
+
+def test_repeated_vad_without_words_cannot_hold_completed_message_indefinitely():
+    async def run():
+        vm, replies, ended = policy(pause_seconds=.01, vad_grace_seconds=.025)
+        await vm.reply_completed('greeting')
+        vm.transcript('Please call me tomorrow.', speech_final=True)
+        for _ in range(14):
+            vm.transcript('', final=False, speech_started=True, speech_final=False)
+            await asyncio.sleep(.005)
+        assert replies == ['readback'] and ended == []
+        assert vm.has_final_message and not vm.pending_final
+        vm.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('final', [False, True])
+def test_words_during_vad_grace_keep_message_open_until_explicit_endpoint(final):
+    async def run():
+        vm, replies, ended = policy(pause_seconds=.01, vad_grace_seconds=.02)
+        await vm.reply_completed('greeting')
+        vm.transcript('Please call me.', speech_final=True)
+        vm.transcript('', final=False, speech_started=True, speech_final=False)
+        await asyncio.sleep(.005)
+        vm.transcript('Actually, my number is', final=final, speech_final=False)
+        assert 'vad-grace' not in vm._timers
+        for _ in range(5):
+            vm.transcript('', final=False, speech_started=True, speech_final=False)
+            await asyncio.sleep(.008)
+        assert vm.utterance_open and replies == []
+        vm.transcript('Actually, my number is five five five.', speech_final=True)
+        await until(lambda: replies)
+        assert replies == ['readback'] and ended == []
+        vm.close()
+    asyncio.run(run())
+
+
+def test_vad_cannot_close_an_already_open_recognized_utterance():
+    async def run():
+        vm, replies, ended = policy(pause_seconds=.01, vad_grace_seconds=.015)
+        await vm.reply_completed('greeting')
+        vm.transcript('My message is', speech_final=False)
+        vm.transcript('', final=False, speech_started=True, speech_final=False)
+        await asyncio.sleep(.04)
+        assert vm.utterance_open and replies == []
+        assert 'vad-grace' not in vm._timers
+        vm.transcript('', final=False, speech_final=True)
+        await until(lambda: replies)
+        assert replies == ['readback'] and ended == []
+        vm.close()
+    asyncio.run(run())
+
+
+def test_vad_only_noise_never_creates_readback_or_restarts_silence_forever():
+    async def run():
+        vm, replies, ended = policy(initial_silence_seconds=.025, vad_grace_seconds=.015)
+        await vm.reply_completed('greeting')
+        for _ in range(15):
+            vm.transcript('', final=False, speech_started=True, speech_final=False)
+            await asyncio.sleep(.005)
+        assert replies == ['no_message'] and ended == []
+        assert not vm.has_final_message and not vm.pending_final
+        vm.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('action', ['reply', 'suspend', 'close'])
+def test_vad_grace_is_canceled_when_listening_stops(action):
+    async def run():
+        vm, replies, ended = policy(vad_grace_seconds=.02)
+        await vm.reply_completed('greeting')
+        vm.transcript('Please call me.', speech_final=True)
+        vm.transcript('', final=False, speech_started=True, speech_final=False)
+        assert 'vad-grace' in vm._timers
+        if action == 'reply':
+            vm.reply_started('readback')
+        elif action == 'suspend':
+            vm.suspend()
+        else:
+            vm.close()
+        assert 'vad-grace' not in vm._timers
+        await asyncio.sleep(.045)
+        assert replies == ended == []
+        vm.close()
+    asyncio.run(run())
+
+
+def test_noise_endpoints_do_not_keep_restarting_completed_message_pause():
+    async def run():
+        vm, replies, ended = policy(pause_seconds=.025, vad_grace_seconds=.015)
+        await vm.reply_completed('greeting')
+        vm.transcript('Please call me tomorrow.', speech_final=True)
+        for _ in range(12):
+            vm.transcript('', final=False, speech_started=True, speech_final=False)
+            vm.transcript('', final=False, speech_final=True)
+            await asyncio.sleep(.005)
+        assert replies == ['readback'] and ended == []
+        vm.close()
+    asyncio.run(run())
+
+
+def test_reframing_reply_preserves_fresh_caller_activity_and_pending_message():
+    async def run():
+        vm, replies, ended = policy()
+        vm.reply_started('readback')
+        vm.transcript('Actually, one more detail.', speech_final=False)
+        version = vm.activity_version
+        timers = dict(vm._timers)
+        vm.reframe_reply('followup')
+        assert vm.phase == vm.session.voicemail_phase == 'followup'
+        assert vm.pending_final and vm.utterance_open and vm.activity_version == version
+        assert vm._timers == timers and not vm.followup_mode
+        await vm.reply_completed('followup')
+        assert vm.followup_mode and vm.has_message
+        assert replies == []
+        vm.transcript('', final=False, speech_final=True)
+        await until(lambda: replies)
+        assert replies == ['followup'] and ended == []
+        vm.close()
+    asyncio.run(run())
+
+
+def test_played_followup_routes_next_caller_reply_to_followup_not_confirmation():
+    async def run():
+        vm, replies, ended = policy()
+        vm.reply_started('readback')
+        vm.reframe_reply('followup')
+        await vm.reply_completed('followup')
+        vm.transcript('Yes, one more thing.', speech_final=True)
+        await until(lambda: replies)
+        assert replies == ['followup'] and ended == []
+        vm.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('deadline', ['silence', 'capture'])
+def test_followup_timeout_waits_for_playback_before_ending(deadline):
+    async def run():
+        vm, replies, ended = policy(**(
+            {'confirmation_silence_seconds': .02} if deadline == 'silence'
+            else {'capture_seconds': .02, 'confirmation_silence_seconds': .2}))
+        vm.reply_started('followup')
+        await vm.reply_completed('followup')
+        await until(lambda: replies)
+        assert replies == ['followup_timeout'] and ended == []
+        await vm.reply_completed('followup_timeout')
+        assert ended == ['voicemail-followup-timeout']
+    asyncio.run(run())
+
+
+def test_followup_capture_bound_preserves_pending_text_phase():
+    async def run():
+        vm, replies, ended = policy(capture_seconds=.025)
+        vm.reply_started('followup')
+        await vm.reply_completed('followup')
+        vm.transcript('One more thing.', speech_final=False)
+        await until(lambda: replies)
+        assert replies == ['followup'] and ended == []
+        vm.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('phase', ['readback', 'confirm'])
+def test_played_readback_or_confirmation_clears_followup_mode(phase):
+    async def run():
+        vm, replies, ended = policy()
+        vm.reply_started('followup')
+        await vm.reply_completed('followup')
+        assert vm.followup_mode
+        vm.reply_started(phase)
+        await vm.reply_completed(phase)
+        assert not vm.followup_mode
+        vm.transcript('Yes, that is correct.', speech_final=True)
+        await until(lambda: replies)
+        assert replies == ['confirm'] and ended == []
         vm.close()
     asyncio.run(run())

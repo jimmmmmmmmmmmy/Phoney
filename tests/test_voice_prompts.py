@@ -7,7 +7,35 @@ import pytest
 
 from scripts.evaluate_voice_prompts import (SCENARIOS, DiagnosticTransport, checks_for, evaluate,
                                           evaluate_scenario)
-from voice_stack.prompts import VOICEMAIL_GREETING, voicemail_phase_instruction
+from voice_stack.prompts import (VOICEMAIL_GREETING, VOICEMAIL_PROMPT,
+                                voicemail_phase_instruction)
+
+
+def test_voicemail_greeting_invites_message_without_explaining_the_readback():
+    assert VOICEMAIL_GREETING == (
+        "Hi, I'm the AI voicemail assistant. The owner can't answer right now. "
+        "Please leave your name and message."
+    )
+
+
+def test_voicemail_readback_uses_concise_paraphrase_without_losing_actionable_details():
+    readback = voicemail_phase_instruction("readback")
+    assert "paraphrase" in VOICEMAIL_PROMPT and "paraphrase" in readback
+    assert "25 to 40 words" in VOICEMAIL_PROMPT and "25 to 40 words" in readback
+    assert "accuracy takes priority" in VOICEMAIL_PROMPT
+    assert "Do not recite the transcript word for word" in VOICEMAIL_PROMPT
+    assert "or begin with 'I heard:'" in VOICEMAIL_PROMPT
+    assert "names, callback numbers, dates, times, amounts, and corrections exactly" in VOICEMAIL_PROMPT
+    assert "Keep uncertain details uncertain" in VOICEMAIL_PROMPT
+    assert "This pause is not confirmation. Do not end yet" in readback
+
+
+def test_voicemail_corrections_confirm_only_changed_details_and_keep_call_open():
+    confirm = voicemail_phase_instruction("confirm")
+    assert "only the changed or newly added information" in confirm
+    assert "latest corrected details exactly" in confirm
+    assert "Do not repeat the whole message" in confirm
+    assert "Ask one short confirmation question and wait; do not end" in confirm
 
 
 def test_offline_conversations_drive_the_real_stream_and_end_command_parser():

@@ -205,13 +205,16 @@ async def reply_events(http: httpx.AsyncClient, api_key: str, system: str,
 
 
 async def reply_events_with_retry(http, api_key, system, contents, *,
-                                  first_text_timeout=None, trace=False, **kwargs):
+                                  first_text_timeout=None, retry_first_text_timeout=True,
+                                  trace=False, **kwargs):
     """Retry one empty or transiently failed reply before any text was emitted.
 
     An observed provider response can be HTTP 200 + STOP with no content. Both
     attempts share one deadline. A partially spoken response is never replayed.
     Explicit blocked/truncated output, malformed data, and permanent HTTP
     failures do not retry. Caller cancellation always propagates immediately.
+    Callers allowing a longer uninterrupted first-text wait can disable retry
+    of that deadline without disabling recovery from other transient failures.
     """
     async with asyncio.timeout(kwargs.get("timeout", GENERATION_SECONDS)):
         for attempt in range(2):
@@ -219,7 +222,9 @@ async def reply_events_with_retry(http, api_key, system, contents, *,
             started = time.monotonic()
             model = kwargs.get("model", DEFAULT_MODEL)
             if trace:
-                yield _attempt_trace("request-started", attempt + 1, model, started)
+                yield _attempt_trace("request-started", attempt + 1, model, started,
+                                     first_text_timeout_seconds=first_text_timeout,
+                                     retry_first_text_timeout=retry_first_text_timeout)
             try:
                 async for event in reply_events(http, api_key, system, contents,
                         first_text_timeout=first_text_timeout,
@@ -233,7 +238,8 @@ async def reply_events_with_retry(http, api_key, system, contents, *,
                 if trace:
                     yield _attempt_trace("request-failed", attempt + 1, model, started,
                                          reason=reason or "invalid-response", emitted_text=emitted)
-                if attempt or emitted or reason is None:
+                if (attempt or emitted or reason is None
+                        or (isinstance(exc, _FirstTextTimeout) and not retry_first_text_timeout)):
                     raise
                 yield {"kind": "retry", "reason": reason, "attempt": 2}
 

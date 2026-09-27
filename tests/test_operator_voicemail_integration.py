@@ -2,11 +2,14 @@
 import asyncio
 import json
 from types import SimpleNamespace
+import xml.etree.ElementTree as ET
 
 import httpx
 import pytest
+from fastapi import FastAPI
+from twilio.request_validator import RequestValidator
 
-from operator_service.routes import OperatorController
+from operator_service.routes import OperatorController, register_operator_routes
 from operator_service.sessions import AGENT, OWNER, REMOTE, OperatorSessions
 from operator_service.voicemail_agent import VoicemailAgent
 from voicemail import VoicemailStore
@@ -37,13 +40,15 @@ class Provider:
                 return httpx.Response(self.status, text="unavailable")
             if "generativelanguage" in request.url.host:
                 system = json.dumps(body["systemInstruction"])
-                phase = next(p for p in ("greeting", "readback", "confirm", "no_message", "unconfirmed")
+                phase = next(p for p in ("greeting", "readback", "confirm", "no_message", "unconfirmed", "followup", "followup_timeout")
                              if f"voicemail phase: {p}." in system)
                 self.phases.append(phase)
                 text = {
                     "greeting": "I'm the voicemail assistant. Please leave a message.",
                     "readback": "Alex called about tomorrow's meeting at ten. Is that right?",
                     "confirm": "Thank you, goodbye.\n[/END CALL]",
+                    "followup": "Thank you, goodbye.\n[/END CALL]",
+                    "followup_timeout": "Thank you for your message. Goodbye.\n[/END CALL]",
                     "no_message": "I did not hear a message. Please call again. Goodbye.\n[/END CALL]",
                     "unconfirmed": "I heard your message but could not confirm the details. Goodbye.\n[/END CALL]",
                 }[phase]
@@ -153,15 +158,14 @@ def test_late_owner_socket_cannot_release_or_end_voicemail(tmp_path, monkeypatch
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("provider", ["gemini", "elevenlabs"])
-def test_provider_failure_switches_once_to_native_recording(tmp_path, monkeypatch, provider):
+def test_readback_tts_failure_preserves_message_and_closes_once(tmp_path, monkeypatch):
     quick_timers(monkeypatch)
     class FailedProvider(Provider):
+        fail = False
         def transport(self):
             good = super().transport()
             async def handle(request):
-                target = "generativelanguage" if provider == "gemini" else "elevenlabs"
-                if target in request.url.host:
+                if self.fail and 'elevenlabs' in request.url.host:
                     return httpx.Response(503, text="unavailable")
                 return await good.handle_async_request(request)
             return httpx.MockTransport(handle)
@@ -169,23 +173,179 @@ def test_provider_failure_switches_once_to_native_recording(tmp_path, monkeypatc
         h = Harness(tmp_path, FailedProvider())
         s = await h.incoming()
         await h.controller.on_timeout(s, "owner-no-answer")
-        if provider == "gemini":
-            await h.ready()
-            assert not h.dialer.replacements
-            await h.controller.transcript(s.id, REMOTE, "Please call Alex back.", segment_id="m1")
+        await h.ready()
+        assert not h.dialer.replacements
+        h.provider.fail = True
+        await h.controller.transcript(s.id, REMOTE, "Please call Alex back.", segment_id="m1")
         await until(lambda: h.dialer.replacements)
-        assert s.active and s.voicemail_fallback
+        assert s.active and s.voicemail_fallback and s.voicemail_phase == 'complete'
         assert REMOTE_SID not in h.dialer.ended
         sid, xml = h.dialer.replacements[0]
-        assert sid == REMOTE_SID and '<Record ' in xml and '<Say ' in xml
-        assert 'transcribe="false"' in xml and '<Connect>' not in xml
-        assert h.voicemails.get(REMOTE_SID)['mode'] == 'voicemail_fallback'
+        root = ET.fromstring(xml)
+        assert sid == REMOTE_SID and [node.tag for node in root] == ['Say', 'Hangup']
+        assert root.find('Say').text == (
+            'Thank you for your message. I cannot read it back right now. Goodbye.')
+        assert h.voicemails.get(REMOTE_SID)['mode'] == 'voicemail_ai'
         assert h.voicemails.get(REMOTE_SID)['recording_status'] == 'awaiting'
+        assert any(t['text'] == 'Please call Alex back.' for t in s.turns)
+        turns = list(s.turns)
+        requests = len(h.provider.requests)
         await h.controller.fallback_voicemail(s.id, "repeat-error")
         await h.controller.transcript(s.id, REMOTE, "Late STT must not revive the agent")
         await h.controller.stream_stopped(s.id, REMOTE, "socket-disconnected")
         assert len(h.dialer.replacements) == 1 and s.active
+        assert len(h.provider.requests) == requests and s.turns == turns
         assert s.id not in h.controller._voicemail_agents
+        # Storage remains local and can finish from the normal terminal callback.
+        h.voicemails.finish_ai(REMOTE_SID, available=True, duration=35)
+        assert h.voicemails.get(REMOTE_SID)['recording_status'] == 'completed'
+        await h.close()
+    asyncio.run(run())
+
+
+def test_gemini_failure_keeps_voicemail_on_same_stream_and_voice(tmp_path, monkeypatch):
+    quick_timers(monkeypatch)
+    class FailedGemini(Provider):
+        def transport(self):
+            good = super().transport()
+            async def handle(request):
+                if 'generativelanguage' in request.url.host:
+                    self.requests.append((str(request.url), json.loads(request.content)))
+                    return httpx.Response(503, text='unavailable')
+                return await good.handle_async_request(request)
+            return httpx.MockTransport(handle)
+    async def run():
+        h = Harness(tmp_path, FailedGemini())
+        s = await h.incoming()
+        await h.controller.on_timeout(s, 'owner-no-answer')
+        await h.ready()
+        stream = s.legs[REMOTE].stream_sid
+        vm = h.controller._voicemail_agents[s.id]
+        await h.controller.transcript(s.id, REMOTE, 'Please call Alex back.',
+                                      segment_id='message', speech_final=True)
+        await until(lambda: vm.has_message and not h.controller.playing(s.id))
+        readback = ' '.join(args[1] for args, _ in h.delivered[1:])
+        assert 'Please call Alex back.' not in readback and 'anything else' in readback
+        assert vm.followup_mode and s.voicemail_phase == 'followup'
+        assert s.active and not s.voicemail_fallback and not h.dialer.replacements
+        assert h.controller._voicemail_agents[s.id] is vm
+        assert s.legs[REMOTE].stream_sid == stream and s.legs[REMOTE].attached
+        assert h.voicemails.get(REMOTE_SID)['mode'] == 'voicemail_ai'
+        assert all(metadata['delivery'] == 'played' for _, metadata in h.delivered)
+        assert REMOTE_SID not in h.dialer.ended
+        await h.controller.transcript(s.id, REMOTE, "No, that's all.",
+                                      segment_id='confirmation', speech_final=True)
+        await until(lambda: not s.active)
+        await h.store.wait_idle()
+        assert REMOTE_SID in h.dialer.ended and not h.dialer.replacements
+        assert h.delivered[-1][0][1].endswith('Goodbye.')
+        assert h.delivered[-1][1]['delivery'] == 'played'
+        speech_urls = [url for url, _ in h.provider.requests if 'elevenlabs' in url]
+        assert speech_urls and all('/text-to-speech/owner-voice/stream' in url for url in speech_urls)
+        model_requests = [body for url, body in h.provider.requests if 'generativelanguage' in url]
+        assert len(model_requests) == 4
+        assert 'anything else' in json.dumps(model_requests[-1]['contents'])
+        assert 'voicemail phase: followup.' in json.dumps(model_requests[-1]['systemInstruction'])
+        assert h.voicemails.get(REMOTE_SID)['mode'] == 'voicemail_ai'
+        await h.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('evidence', ['none', 'vad', 'interim', 'stale-final', 'owner-final',
+                                      'open-message', 'open-correction'])
+def test_fallback_without_finished_caller_message_still_records(tmp_path, monkeypatch, evidence):
+    quick_timers(monkeypatch)
+    async def run():
+        h = Harness(tmp_path)
+        s = await h.incoming()
+        await h.controller.on_timeout(s, 'owner-no-answer')
+        await h.ready()
+        vm = h.controller._voicemail_agents[s.id]
+        floor = h.controller._caller_turn_floor[s.id]
+        if evidence == 'vad':
+            await h.controller.transcript(s.id, REMOTE, '', final=False, speech_started=True,
+                                          speech_final=False, timestamp_ms=floor + 1)
+        elif evidence == 'interim':
+            await h.controller.transcript(s.id, REMOTE, 'Please call', final=False,
+                                          speech_final=False, timestamp_ms=floor + 1)
+        elif evidence == 'stale-final':
+            await h.controller.transcript(s.id, REMOTE, 'Old speech.', segment_id='stale',
+                                          speech_final=True, timestamp_ms=floor - 1)
+        elif evidence == 'owner-final':
+            await h.controller.transcript(s.id, OWNER, 'Not a caller message.', segment_id='owner')
+        elif evidence in {'open-message', 'open-correction'}:
+            await h.controller.transcript(s.id, REMOTE, 'Please call Alex.', segment_id='message',
+                speech_final=evidence == 'open-correction', timestamp_ms=floor + 1)
+            if evidence == 'open-correction':
+                await h.controller.transcript(s.id, REMOTE, 'Actually', final=False,
+                    speech_final=False, timestamp_ms=floor + 2)
+        assert vm.has_final_message == (evidence in {'open-message', 'open-correction'})
+        await h.controller.fallback_voicemail(s.id, 'transcription-unavailable')
+        xml = ET.fromstring(h.dialer.replacements[0][1])
+        assert [node.tag for node in xml] == ['Say', 'Record', 'Hangup']
+        assert xml.find('Record').attrib['transcribe'] == 'false'
+        assert h.voicemails.get(REMOTE_SID)['mode'] == 'voicemail_fallback'
+        assert s.active and s.voicemail_phase == 'recording'
+        await h.close()
+    asyncio.run(run())
+
+
+def test_saved_message_closing_transport_failure_retains_local_receipt(tmp_path, monkeypatch):
+    quick_timers(monkeypatch)
+    class FailedDialer(RecordingDialer):
+        async def replace_twiml(self, *args):
+            await super().replace_twiml(*args)
+            raise RuntimeError('twilio-offline')
+    async def run():
+        h = Harness(tmp_path, dialer=FailedDialer())
+        s = await h.incoming()
+        await h.controller.on_timeout(s, 'owner-no-answer')
+        await h.ready()
+        await h.controller.transcript(s.id, REMOTE, 'Please call Alex back.', segment_id='message')
+        assert not await h.controller.fallback_voicemail(s.id, 'dialogue-timeout')
+        assert len(h.dialer.replacements) == 1 and not s.active
+        assert s.ended_reason == 'voicemail-closing-unavailable'
+        assert h.voicemails.get(REMOTE_SID)['mode'] == 'voicemail_ai'
+        h.voicemails.finish_ai(REMOTE_SID, available=True, duration=35)
+        assert h.voicemails.get(REMOTE_SID)['recording_status'] == 'completed'
+        await h.close()
+    asyncio.run(run())
+
+
+def test_native_closing_reconnect_waits_for_terminal_status(tmp_path):
+    async def run():
+        h = Harness(tmp_path)
+        app = FastAPI()
+        controller = register_operator_routes(app, h.settings, h.store, dialer=h.dialer,
+            voicemail_store=h.voicemails,
+            on_call_end=lambda session: h.voicemails.finish_ai(
+                session.canonical_call_sid, available=True, duration=35))
+        s, _ = await h.store.reserve_inbound(REMOTE_SID, '+12025550199')
+        assert await h.store.claim_voicemail(s.id)
+        h.voicemails.start(REMOTE_SID, 'owner-no-answer', mode='voicemail_ai')
+        vm = VoicemailAgent(s, on_reply=lambda _: None, on_end=lambda _: None)
+        controller._voicemail_agents[s.id] = vm
+        vm.transcript('Please call Alex back.', speech_final=True)
+        await controller.fallback_voicemail(s.id, 'dialogue-timeout')
+        assert s.active and not h.dialer.ended
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url=h.settings.public_base_url) as client:
+            async def signed(path, **extra):
+                body = {'AccountSid': h.settings.account_sid, 'CallSid': REMOTE_SID} | extra
+                signature = RequestValidator(h.settings.auth_token).compute_signature(
+                    h.settings.public_base_url + path, body)
+                return await client.post(path, data=body, headers={'X-Twilio-Signature': signature})
+            reconnect = await signed(f'/twilio/reconnect/{s.id}/remote')
+            assert reconnect.status_code == 200
+            assert reconnect.text == h.dialer.replacements[0][1]
+            assert [node.tag for node in ET.fromstring(reconnect.text)] == ['Say', 'Hangup']
+            assert s.active and not h.dialer.ended
+            status = await signed(f'/twilio/status/{s.id}/remote',
+                                  CallStatus='completed', CallDuration='35')
+            assert status.status_code == 204 and not s.active
+            record = h.voicemails.get(REMOTE_SID)
+            assert record['mode'] == 'voicemail_ai' and record['recording_status'] == 'completed'
+            assert record['recording_sid'] == ''
         await h.close()
     asyncio.run(run())
 

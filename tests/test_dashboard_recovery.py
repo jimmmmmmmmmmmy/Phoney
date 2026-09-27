@@ -98,3 +98,40 @@ await poll();assert.equal(historyState().next_cursor,'vm-cursor');
 showCollection('recent');assert.equal(historyState().next_cursor,'recent-cursor');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 ''')
+
+
+def test_failed_ai_readback_keeps_original_audio_and_additional_recording(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const call=session();
+call.segments=[
+ {id:'greeting',track:'outbound',source:'agent',delivery:'played',start_ms:0,end_ms:1000,text:'Please leave a message.'},
+ {id:'message',track:'inbound',start_ms:1000,end_ms:3000,text:'This is Alex. Please call tomorrow.'}
+];
+const value=snapshot([call],[recording()]);
+value.voicemail={enabled:true,voicemails:[{call_sid:SID,mode:'voicemail_fallback',recording_status:'completed',
+ recording_sid:'RE'+'c'.repeat(32),duration_seconds:18}]};
+state.snapshot=value;render();openCall();
+const audio=$('call-audio'),extra=$('voicemail-extra-audio');
+assert.equal(audio.src,`/api/recordings/${SID}/audio?track=combined`);
+assert.equal(extra.hidden,false);assert.equal(extra.href,`/api/voicemails/${SID}/audio`);
+assert.equal(extra.download,`${SID}-additional-message.wav`);
+assert.match($('audio-status').textContent,/Original conversation/);
+audio.play();audio.currentTime=1.5;audio.events.timeupdate();
+assert.ok(state.transcriptRows.some(item=>item.row.classList.contains('playing-line')));
+// Polling must not switch the caller away from the original timeline.
+const loads=audio.loads;render();assert.equal(audio.loads,loads);assert.equal(audio.currentTime,1.5);
+state.snapshot=snapshot([session(OTHER)],[recording(OTHER)]);render();openCall(OTHER);
+assert.equal(extra.hidden,true);assert.equal(extra.href,undefined);
+''')
+
+
+def test_failed_ai_readback_without_local_audio_still_plays_native_recording(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const call=session();call.segments.push({id:'agent',track:'outbound',source:'agent',text:'Please leave a message.'});
+const value=snapshot([call],[]);
+value.voicemail={enabled:true,voicemails:[{call_sid:SID,mode:'voicemail_fallback',recording_status:'completed',
+ recording_sid:'RE'+'c'.repeat(32)}]};
+state.snapshot=value;render();openCall();
+assert.equal($('call-audio').src,`/api/voicemails/${SID}/audio`);
+assert.equal($('voicemail-extra-audio').hidden,true);
+''')

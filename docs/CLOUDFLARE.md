@@ -49,7 +49,39 @@ Signed GitHub push events remain the fast path, with a 30-second `main` polling 
 
 Keep the Mac powered, online, and logged in. The existing login service uses `caffeinate -i` to inhibit idle sleep while running. Closing a laptop lid, explicitly sleeping, logging out, or shutting down can make the service unreachable. Cloudflare does not keep the Python app running when the Mac is unavailable.
 
-For a stable public hostname, create a named Cloudflare Tunnel using a Cloudflare account and a domain on Cloudflare, with a published application route to `http://127.0.0.1:8000`. The current `cloudflare` runner is specifically the Quick Tunnel integration; named-tunnel credentials and fixed-hostname lifecycle need a separate runner configuration before switching. [Named tunnel setup](https://developers.cloudflare.com/tunnel/get-started/).
+The runner supports a stable hostname through a locally managed named Cloudflare Tunnel. Set both `CLOUDFLARE_TUNNEL_CONFIG` and `CLOUDFLARE_PUBLIC_URL` with `TUNNEL_PROVIDER=cloudflare`; leaving both named settings empty selects the existing Quick Tunnel behavior. A named tunnel keeps the hostname across connector restarts. The Mac still runs the application. [Named tunnel setup](https://developers.cloudflare.com/tunnel/get-started/).
+
+## Use phoney.dev with a named tunnel
+
+Allow about ten minutes once Cloudflare account access is available. Update the installed controller with these runner changes before applying the new environment settings. Normal application deployment does not update the controller.
+
+1. Authenticate the local connector with `cloudflared tunnel login`, create the tunnel with `cloudflared tunnel create phoney`, and route the domain with `cloudflared tunnel route dns phoney phoney.dev`. Reuse the intended existing tunnel instead of creating a duplicate. The DNS route must point `phoney.dev` at that tunnel.
+2. Save a private YAML configuration outside release directories, for example `~/Library/Application Support/NewCollegeOperator/.runtime/cloudflare/phoney.yml`. Use the tunnel UUID and the absolute credentials file path returned by tunnel creation:
+
+   ```yaml
+   tunnel: YOUR-TUNNEL-UUID
+   credentials-file: /Users/YOUR-USER/.cloudflared/YOUR-TUNNEL-UUID.json
+   ingress:
+     - hostname: phoney.dev
+       service: http://127.0.0.1:8000
+     - service: http_status:404
+   ```
+
+   Keep the directory private (`700`) and the configuration and credentials files private (`600`). Credentials remain in the JSON file; do not put tunnel tokens or credential contents in command arguments, `.env`, Git, or logs. The runner passes an explicit configuration path, so unrelated default Cloudflare configuration is preserved.
+3. After publishing the runner changes to `main`, run `python3 scripts/server.py install` from the project checkout to update the clean installed controller. It preserves the existing service `.env` and healthy owned app/connector processes. Then set these values in `~/Library/Application Support/NewCollegeOperator/.env`, keeping the existing credentials and storage paths:
+
+   ```dotenv
+   TUNNEL_PROVIDER=cloudflare
+   TUNNEL_TRANSPORT_PROTOCOL=http2
+   CLOUDFLARE_TUNNEL_CONFIG="/Users/YOUR-USER/Library/Application Support/NewCollegeOperator/.runtime/cloudflare/phoney.yml"
+   CLOUDFLARE_PUBLIC_URL=https://phoney.dev
+   ```
+
+   Use an existing absolute regular file for the config, not a symlink. The public URL must be an HTTPS hostname origin without credentials, port, trailing slash, path, query, or fragment. The config must publish that hostname to the app; the fixed URL setting does not create a Cloudflare DNS route.
+4. The supervisor reads the updated environment on its next check, closes new-call admission, and waits up to 60 seconds for calls and pending work to finish before replacing the connector. An active call defers the change and reopens admission for an automatic retry. It validates ingress before stopping the current connector, checks ownership of the new connector's readiness port, saves `PUBLIC_BASE_URL=https://phoney.dev`, reloads the application with that origin, and updates the Twilio and GitHub callbacks. `python3 scripts/server.py status` should then display the fixed URL. Explicit `server.py stop` ends calls; use it only after calls finish if a maintenance stop is needed.
+5. Verify `https://phoney.dev/health`, open `https://phoney.dev/dashboard#calls/recent`, and read back Twilio `/voice` and `/status` plus GitHub `/github/webhook` destinations. Repeat the signed callback/media checks and a real phone call. Connector readiness alone does not verify the DNS route, certificate, public hostname, or live media.
+
+The runner records the configuration path, a content hash, protocol, and hostname with its owned process. A Quick Tunnel cannot be reused as a named tunnel, and configuration changes trigger the same call-aware replacement. Changes to a referenced credentials file alone require a maintenance connector restart; the runner does not copy or inspect its secret contents. To return to a Quick Tunnel, remove both named settings; the supervisor drains and replaces the connector, then reconciles the new random URL and callbacks. A default Cloudflare `config.yml`/`config.yaml` still prevents Quick Tunnel startup, so keep the named configuration at its explicit custom path.
 
 The sharing scope stays the same: anyone with the public URL can see caller details, summaries and transcripts and play/download finalized local WAVs. Twilio signatures, GitHub signatures, and deployment-control authentication remain required on their existing routes. Tunnel selection does not alter Gemini billing; its depleted-credit blocker is documented in [CALL_SUMMARIES.md](CALL_SUMMARIES.md).
 

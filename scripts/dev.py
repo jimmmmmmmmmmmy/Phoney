@@ -3,6 +3,7 @@
 import argparse
 from contextlib import contextmanager
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -144,7 +145,7 @@ def tunnel_environment():
     environment = dict(os.environ)
     path = ROOT / ".env"
     for line in path.read_text().splitlines() if path.exists() else []:
-        match = re.match(r"^\s*(?:export\s+)?(TUNNEL_PROVIDER|TUNNEL_TRANSPORT_PROTOCOL)\s*=\s*(.*?)\s*$", line)
+        match = re.match(r"^\s*(?:export\s+)?(TUNNEL_PROVIDER|TUNNEL_TRANSPORT_PROTOCOL|CLOUDFLARE_TUNNEL_CONFIG|CLOUDFLARE_PUBLIC_URL)\s*=\s*(.*?)\s*$", line)
         if match:
             value = match.group(2).split(" #", 1)[0].strip().strip("\"'")
             environment[match.group(1)] = value
@@ -156,6 +157,63 @@ def tunnel_provider(environment):
     if provider not in ("ngrok", "cloudflare"):
         raise RuntimeError("TUNNEL_PROVIDER must be ngrok or cloudflare.")
     return provider
+
+
+def cloudflare_configuration(environment):
+    """Validate connector inputs without putting tunnel credentials in state or argv."""
+    protocol = environment.get("TUNNEL_TRANSPORT_PROTOCOL", "auto").strip().lower()
+    if protocol not in ("auto", "http2", "quic"):
+        raise RuntimeError("TUNNEL_TRANSPORT_PROTOCOL must be auto, http2, or quic.")
+    config = environment.get("CLOUDFLARE_TUNNEL_CONFIG", "").strip()
+    public = environment.get("CLOUDFLARE_PUBLIC_URL", "").strip()
+    if not config and not public:
+        return {"mode": "quick", "protocol": protocol}
+    if not config or not public:
+        raise RuntimeError("CLOUDFLARE_TUNNEL_CONFIG and CLOUDFLARE_PUBLIC_URL must be set together.")
+    try:
+        parsed = urlparse(public)
+        hostname = parsed.hostname or ""
+        valid_host = (len(hostname) <= 253 and all(re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in hostname.split(".")))
+        valid = (parsed.scheme == "https" and valid_host and parsed.netloc == hostname
+                 and not parsed.path and not parsed.params and not parsed.query and not parsed.fragment
+                 and public == "https://" + hostname)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise RuntimeError("CLOUDFLARE_PUBLIC_URL must be an HTTPS hostname origin without credentials, port, path, query, or fragment.")
+    path = Path(config)
+    if not path.is_absolute():
+        raise RuntimeError("CLOUDFLARE_TUNNEL_CONFIG must be an absolute path to a readable configuration file.")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise OSError("not a regular file")
+            content = handle.read(1024 * 1024 + 1)
+            if not content or len(content) > 1024 * 1024:
+                raise OSError("empty or oversized configuration")
+    except OSError:
+        raise RuntimeError("CLOUDFLARE_TUNNEL_CONFIG must be an existing readable regular file, not a symlink.") from None
+    return {"mode": "named", "protocol": protocol, "config": str(path),
+            "config_sha256": hashlib.sha256(content).hexdigest(), "public_url": public}
+
+
+def cloudflare_matches(record, configuration):
+    if not record:
+        return False
+    saved = record.get("configuration")
+    # Older versions recorded only Quick Tunnels; preserve those healthy processes.
+    return saved == configuration or (saved is None and configuration["mode"] == "quick")
+
+
+def tunnel_change_requires_drain(environment, state):
+    provider = tunnel_provider(environment)
+    configuration = cloudflare_configuration(environment) if provider == "cloudflare" else None
+    if provider != state.get("tunnel_provider", "ngrok"):
+        return True
+    record = state.get("cloudflared")
+    return bool(configuration and record and not cloudflare_matches(record, configuration))
 
 
 @contextmanager
@@ -262,12 +320,12 @@ def _ensure_ngrok(state, environment, stopping):
 
 
 def _ensure_cloudflare(state, environment, stopping):
-    protocol = environment.get("TUNNEL_TRANSPORT_PROTOCOL", "auto").strip().lower()
-    if protocol not in ("auto", "http2", "quic"):
-        raise RuntimeError("TUNNEL_TRANSPORT_PROTOCOL must be auto, http2, or quic.")
+    configuration = cloudflare_configuration(environment)
+    protocol = configuration["protocol"]
+    named = configuration["mode"] == "named"
     record = state.get("cloudflared")
-    if not owned(record):
-        if not available(4041):
+    if not owned(record) or not cloudflare_matches(record, configuration):
+        if not available(4041) and (not owned(record) or listener_pids(4041) != {record["pid"]}):
             raise RuntimeError("Port 4041 belongs to an untracked process; no processes were stopped.")
         executable = shutil.which("cloudflared")
         if not executable:
@@ -275,22 +333,41 @@ def _ensure_cloudflare(state, environment, stopping):
         config_dirs = (Path.home() / ".cloudflared", Path.home() / ".cloudflare-warp",
                        Path.home() / "cloudflare-warp", Path("/etc/cloudflared"),
                        Path("/usr/local/etc/cloudflared"), Path("/opt/homebrew/etc/cloudflared"))
-        if any((directory / name).exists() for directory in config_dirs
-               for name in ("config.yml", "config.yaml")):
+        if not named and any((directory / name).exists() for directory in config_dirs
+                             for name in ("config.yml", "config.yaml")):
             raise RuntimeError("An existing cloudflared config may override Quick Tunnel settings. "
                                "Move it aside before starting this demo; it was not modified.")
         # Verify that ownership checks can run before launching a connector.
         listener_pids(4041)
         check_stopping(stopping)
-        spawn("cloudflared", [executable, "tunnel", "--no-autoupdate", "--protocol", protocol,
-                              "--url", BASE,
-                              "--metrics", "127.0.0.1:4041", "--output", "json"],
-              state, environment=environment)
+        if named:
+            try:
+                validated = subprocess.run([executable, "tunnel", "--config", configuration["config"],
+                                            "ingress", "validate"], capture_output=True, timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                raise RuntimeError("Cloudflare named tunnel configuration could not be validated; the existing connector was preserved.") from None
+            if validated.returncode:
+                raise RuntimeError("Cloudflare named tunnel configuration failed ingress validation; the existing connector was preserved.")
+        check_stopping(stopping)
+        if owned(record):
+            terminate(record, timeout=5)
+            if not available(4041):
+                raise RuntimeError("Previous Cloudflare connector is still using port 4041; no replacement was started.")
+            state.pop("cloudflared", None)
+            write_state(state)
+        command = [executable, "tunnel", "--no-autoupdate", "--protocol", protocol]
+        command += ["--config", configuration["config"]] if named else ["--url", BASE]
+        command += ["--metrics", "127.0.0.1:4041", "--output", "json"]
+        if named:
+            command.append("run")
+        spawn("cloudflared", command, state, environment=environment)
         record = state["cloudflared"]
+        record["configuration"] = configuration
+        write_state(state)
     deadline = time.monotonic() + 40
     while owned(record) and time.monotonic() < deadline:
         check_stopping(stopping)
-        url = cloudflare_url(record)
+        url = configuration["public_url"] if named else cloudflare_url(record)
         if url and cloudflare_ready(record):
             record["public_url"] = url
             return url
@@ -325,10 +402,14 @@ def ensure_tunnel(environment, stopping=None):
 
 def status():
     state = read_state()
-    provider = tunnel_provider(tunnel_environment())
+    environment = tunnel_environment()
+    provider = tunnel_provider(environment)
     if provider == "cloudflare":
+        configuration = cloudflare_configuration(environment)
         record = state.get("cloudflared")
-        url = cloudflare_url(record) if cloudflare_ready(record) else None
+        ready = cloudflare_matches(record, configuration) and cloudflare_ready(record)
+        url = (configuration["public_url"] if configuration["mode"] == "named"
+               else cloudflare_url(record)) if ready else None
         tunnel_alive = bool(url)
     else:
         url = public_url(request(TUNNELS))

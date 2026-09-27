@@ -494,3 +494,57 @@ def test_provider_switch_waits_for_calls_before_replacing_connector(supervisor, 
         supervisor.ensure_tunnel()
     helper.assert_not_called()
     assert control.call_args_list == [call(True), call(False)]
+
+
+def test_quick_to_named_switch_waits_for_calls_before_replacing_connector(supervisor, monkeypatch):
+    protected_app(supervisor, monkeypatch)
+    state = deploy.dev.read_state()
+    state.update(tunnel_provider="cloudflare", cloudflared={"pid": 5678, "identity": "quick"})
+    deploy.dev.write_state(state)
+    config = supervisor.root / "named.yml"
+    config.write_text("tunnel: named\ningress:\n  - service: http_status:404\n")
+    (supervisor.root / ".env").write_text(
+        "TUNNEL_PROVIDER=cloudflare\nCLOUDFLARE_PUBLIC_URL=https://phoney.dev\n"
+        "CLOUDFLARE_TUNNEL_CONFIG=" + str(config) + "\nDEPLOY_CONTROL_TOKEN=" + "x" * 32 + "\n")
+    helper = Mock()
+    monkeypatch.setattr(deploy.dev, "ensure_tunnel", helper)
+    control = Mock(side_effect=[deploy.DeploymentDeferred("call still active"), drain_state(draining=False)])
+    monkeypatch.setattr(supervisor, "deployment_control", control)
+    with pytest.raises(deploy.DeploymentDeferred):
+        supervisor.ensure_tunnel()
+    helper.assert_not_called()
+    assert control.call_args_list == [call(True), call(False)]
+
+
+def test_unchanged_named_connector_does_not_drain_calls(supervisor, monkeypatch):
+    protected_app(supervisor, monkeypatch)
+    config = supervisor.root / "named.yml"
+    config.write_text("tunnel: named\ningress:\n  - service: http_status:404\n")
+    (supervisor.root / ".env").write_text(
+        "TUNNEL_PROVIDER=cloudflare\nCLOUDFLARE_PUBLIC_URL=https://phoney.dev\n"
+        "CLOUDFLARE_TUNNEL_CONFIG=" + str(config) + "\n")
+    state = deploy.dev.read_state()
+    state.update(tunnel_provider="cloudflare", cloudflared={"pid": 5678, "identity": "named",
+                 "configuration": deploy.dev.cloudflare_configuration(supervisor.environment())})
+    deploy.dev.write_state(state)
+    helper = Mock(return_value="https://phoney.dev")
+    monkeypatch.setattr(deploy.dev, "ensure_tunnel", helper)
+    control = Mock()
+    monkeypatch.setattr(supervisor, "deployment_control", control)
+    assert supervisor.ensure_tunnel() == "https://phoney.dev"
+    helper.assert_called_once()
+    control.assert_not_called()
+
+
+def test_invalid_named_config_does_not_close_call_admission(supervisor, monkeypatch):
+    protected_app(supervisor, monkeypatch)
+    (supervisor.root / ".env").write_text(
+        "TUNNEL_PROVIDER=cloudflare\nCLOUDFLARE_PUBLIC_URL=https://phoney.dev\n"
+        "CLOUDFLARE_TUNNEL_CONFIG=" + str(supervisor.root / "missing.yml") + "\n")
+    helper, control = Mock(), Mock()
+    monkeypatch.setattr(deploy.dev, "ensure_tunnel", helper)
+    monkeypatch.setattr(supervisor, "deployment_control", control)
+    with pytest.raises(RuntimeError, match="CLOUDFLARE_TUNNEL_CONFIG"):
+        supervisor.ensure_tunnel()
+    helper.assert_not_called()
+    control.assert_not_called()

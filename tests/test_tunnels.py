@@ -356,3 +356,169 @@ def test_invalid_cloudflare_protocol_never_launches_connector(sandbox):
     with pytest.raises(RuntimeError, match="TUNNEL_TRANSPORT_PROTOCOL"):
         dev.ensure_tunnel({"TUNNEL_PROVIDER": "cloudflare", "TUNNEL_TRANSPORT_PROTOCOL": "invalid"})
     assert sandbox.launched == []
+
+
+@pytest.fixture
+def named_environment(sandbox, monkeypatch):
+    config = dev.ROOT / "named tunnel.yml"
+    config.write_text("tunnel: 11111111-1111-1111-1111-111111111111\n"
+                      "credentials-file: /private/credentials.json\n"
+                      "ingress:\n  - hostname: phoney.dev\n    service: http://127.0.0.1:8000\n"
+                      "  - service: http_status:404\n")
+    monkeypatch.setattr(dev.subprocess, "run", Mock(return_value=SimpleNamespace(returncode=0)))
+    return {"TUNNEL_PROVIDER": "cloudflare", "TUNNEL_TRANSPORT_PROTOCOL": "http2",
+            "CLOUDFLARE_TUNNEL_CONFIG": str(config), "CLOUDFLARE_PUBLIC_URL": "https://phoney.dev"}
+
+
+def test_named_tunnel_uses_explicit_config_and_fixed_origin_without_log_url(sandbox, named_environment):
+    sandbox.emit_url = False
+    assert dev.ensure_tunnel(named_environment) == "https://phoney.dev"
+    command = sandbox.launched[0][1]
+    assert command == ["/test/cloudflared", "tunnel", "--no-autoupdate", "--protocol", "http2",
+                       "--config", named_environment["CLOUDFLARE_TUNNEL_CONFIG"], "--metrics",
+                       "127.0.0.1:4041", "--output", "json", "run"]
+    dev.subprocess.run.assert_called_once_with(
+        ["/test/cloudflared", "tunnel", "--config", named_environment["CLOUDFLARE_TUNNEL_CONFIG"],
+         "ingress", "validate"], capture_output=True, timeout=10)
+    state = dev.read_state()
+    assert state["public_url"] == state["cloudflared"]["public_url"] == "https://phoney.dev"
+    assert state["cloudflared"]["configuration"]["mode"] == "named"
+    assert "credentials-file" not in dev.STATE.read_text()
+    assert "PUBLIC_BASE_URL=https://phoney.dev" in (dev.ROOT / ".env").read_text()
+
+
+def test_named_tunnel_reuses_owned_configuration_after_log_rotation(sandbox, named_environment):
+    dev.ensure_tunnel(named_environment)
+    (dev.RUNTIME / "cloudflared.log").unlink()
+    assert dev.ensure_tunnel(named_environment) == "https://phoney.dev"
+    assert len(sandbox.launched) == 1
+    assert sandbox.stopped == []
+
+
+def test_named_tunnel_requires_readiness_and_recovers_without_duplicate(sandbox, named_environment):
+    sandbox.ready = False
+    with pytest.raises(RuntimeError, match="not ready"):
+        dev.ensure_tunnel(named_environment)
+    assert "public_url" not in dev.read_state()
+    sandbox.ready = True
+    assert dev.ensure_tunnel(named_environment) == "https://phoney.dev"
+    assert len(sandbox.launched) == 1
+    assert sandbox.stopped == []
+
+
+def test_named_tunnel_replaces_quick_connector_and_never_adopts_random_url(sandbox, named_environment):
+    dev.ensure_tunnel({"TUNNEL_PROVIDER": "cloudflare"})
+    previous = dev.read_state()["cloudflared"]
+    assert dev.ensure_tunnel(named_environment) == "https://phoney.dev"
+    assert sandbox.stopped == [(previous, 5)]
+    assert len(sandbox.launched) == 2
+
+
+def test_named_switch_refuses_metrics_listener_owned_by_another_process(sandbox, named_environment, monkeypatch):
+    dev.ensure_tunnel({"TUNNEL_PROVIDER": "cloudflare"})
+    previous = dev.read_state()
+    monkeypatch.setattr(dev, "available", lambda port: False)
+    monkeypatch.setattr(dev, "listener_pids", lambda port: {999})
+    with pytest.raises(RuntimeError, match="untracked"):
+        dev.ensure_tunnel(named_environment)
+    assert dev.read_state() == previous
+    assert sandbox.stopped == []
+    assert len(sandbox.launched) == 1
+
+
+def test_config_content_change_replaces_named_connector(sandbox, named_environment):
+    dev.ensure_tunnel(named_environment)
+    previous = dev.read_state()["cloudflared"]
+    config = Path(named_environment["CLOUDFLARE_TUNNEL_CONFIG"])
+    config.write_text(config.read_text().replace("11111111", "22222222"))
+    assert dev.tunnel_change_requires_drain(named_environment, dev.read_state())
+    assert dev.ensure_tunnel(named_environment) == "https://phoney.dev"
+    assert sandbox.stopped == [(previous, 5)]
+    assert len(sandbox.launched) == 2
+
+
+def test_switch_back_to_quick_tunnel_replaces_named_connector(sandbox, named_environment):
+    dev.ensure_tunnel(named_environment)
+    previous = dev.read_state()["cloudflared"]
+    assert dev.ensure_tunnel({"TUNNEL_PROVIDER": "cloudflare"}) == URL
+    assert sandbox.stopped == [(previous, 5)]
+    assert dev.read_state()["cloudflared"]["configuration"]["mode"] == "quick"
+
+
+@pytest.mark.parametrize("field", ["CLOUDFLARE_TUNNEL_CONFIG", "CLOUDFLARE_PUBLIC_URL"])
+def test_partial_named_settings_preserve_quick_connector(sandbox, named_environment, field):
+    dev.ensure_tunnel({"TUNNEL_PROVIDER": "cloudflare"})
+    previous = dev.read_state()
+    named_environment.pop(field)
+    with pytest.raises(RuntimeError, match="set together"):
+        dev.ensure_tunnel(named_environment)
+    assert dev.read_state() == previous
+    assert sandbox.stopped == []
+    assert len(sandbox.launched) == 1
+
+
+@pytest.mark.parametrize("origin", ["http://phoney.dev", "https://user:secret@phoney.dev",
+    "https://phoney.dev/", "https://phoney.dev/dashboard", "https://phoney.dev?x=1",
+    "https://phoney.dev#calls", "https://phoney.dev:443", "https://phoney.dev\\evil",
+    "https://-phoney.dev", "https://phoney..dev", "https://phoney.dev\n.evil", "https://[invalid"])
+def test_invalid_named_origin_never_launches_or_stops_connector(sandbox, named_environment, origin):
+    named_environment["CLOUDFLARE_PUBLIC_URL"] = origin
+    with pytest.raises(RuntimeError, match="HTTPS hostname origin"):
+        dev.ensure_tunnel(named_environment)
+    assert sandbox.launched == sandbox.stopped == []
+
+
+@pytest.mark.parametrize("kind", ["missing", "relative", "directory", "symlink", "fifo", "empty"])
+def test_bad_named_config_preserves_quick_connector(sandbox, named_environment, kind):
+    dev.ensure_tunnel({"TUNNEL_PROVIDER": "cloudflare"})
+    previous = dev.read_state()
+    path = dev.ROOT / "bad-config.yml"
+    if kind == "directory":
+        path.mkdir()
+    elif kind == "symlink":
+        path.symlink_to(named_environment["CLOUDFLARE_TUNNEL_CONFIG"])
+    elif kind == "fifo":
+        os.mkfifo(path)
+    elif kind == "empty":
+        path.touch()
+    named_environment["CLOUDFLARE_TUNNEL_CONFIG"] = "relative.yml" if kind == "relative" else str(path)
+    with pytest.raises(RuntimeError, match="CLOUDFLARE_TUNNEL_CONFIG"):
+        dev.ensure_tunnel(named_environment)
+    assert dev.read_state() == previous
+    assert sandbox.stopped == []
+    assert len(sandbox.launched) == 1
+
+
+def test_invalid_named_ingress_preserves_quick_connector(sandbox, named_environment):
+    dev.ensure_tunnel({"TUNNEL_PROVIDER": "cloudflare"})
+    previous = dev.read_state()
+    dev.subprocess.run.return_value.returncode = 1
+    with pytest.raises(RuntimeError, match="failed ingress validation"):
+        dev.ensure_tunnel(named_environment)
+    assert dev.read_state() == previous
+    assert sandbox.stopped == []
+    assert len(sandbox.launched) == 1
+
+
+def test_named_configuration_allows_unrelated_default_config(sandbox, named_environment, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: dev.ROOT)
+    config = dev.ROOT / ".cloudflared/config.yaml"
+    config.parent.mkdir()
+    config.write_text("tunnel: unrelated-user-tunnel\n")
+    assert dev.ensure_tunnel(named_environment) == "https://phoney.dev"
+    assert config.read_text() == "tunnel: unrelated-user-tunnel\n"
+
+
+def test_named_status_reads_dotenv_and_refuses_mismatched_connector(sandbox, named_environment, monkeypatch, capsys):
+    (dev.ROOT / ".env").write_text("\n".join(key + "=" + value for key, value in named_environment.items()) + "\n")
+    dev.ensure_tunnel(dev.tunnel_environment())
+    state = dev.read_state()
+    state["app"] = {"pid": 999, "identity": "owned"}
+    dev.write_state(state)
+    old_request = dev.request
+    monkeypatch.setattr(dev, "request", lambda url: {} if url == dev.BASE + "/health" else old_request(url))
+    assert dev.status() == 0
+    assert "cloudflare: https://phoney.dev" in capsys.readouterr().out
+    state["cloudflared"].pop("configuration")
+    dev.write_state(state)
+    assert dev.status() == 1

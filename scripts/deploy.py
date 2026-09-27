@@ -153,7 +153,7 @@ class Supervisor:
 
         environment = self.environment()
         state = dev.read_state()
-        if dev.tunnel_provider(environment) != state.get("tunnel_provider", "ngrok"):
+        if dev.tunnel_change_requires_drain(environment, state):
             # Keep the old connector carrying media until active calls finish.
             with self.drain(state.get("app")):
                 return dev.ensure_tunnel(environment, stopping=check_stopping)

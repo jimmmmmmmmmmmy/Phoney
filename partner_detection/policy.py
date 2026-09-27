@@ -67,12 +67,10 @@ def decide_call_detection(
         reason = "provider_incomplete"
     elif dropped_frames:
         reason = "dropped_audio"
-    elif analysis["alert"] in {"ai_caller", "none"}:
-        label = "synthetic" if analysis["alert"] == "ai_caller" else "non-synthetic"
+    elif analysis["alert"] in {"ai_detected", "none"}:
+        label = "synthetic" if analysis["alert"] == "ai_detected" else "non-synthetic"
         reason = "confident_synthetic" if label == "synthetic" else "confident_non_synthetic"
         confidence = min(item.confidence for item in qualified if item.verdict == label)
-    elif analysis["alert"] == "potential_ai":
-        reason = "conflicting_evidence"
     elif len({item.verdict for item in qualified}) > 1:
         reason = "conflicting_evidence"
     elif qualified:

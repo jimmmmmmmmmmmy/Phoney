@@ -186,13 +186,15 @@ def test_version_two_windows_survive_restart_and_catalog_remains_compact(tmp_pat
     stored = json.loads((tmp_path / (CALL + ".json")).read_text())
     assert stored["schema_version"] == 2
     assert stored["analysis"]["windows"] == evidence["windows"]
+    assert stored["analysis"]["synthetic_intervals"] == evidence["synthetic_intervals"]
     restarted = DetectionStore(str(tmp_path))
     assert restarted.get(CALL)["analysis"] == evidence
     catalog = restarted.snapshot()["calls"][0]
     assert "windows" not in catalog["analysis"]
-    assert catalog["analysis"]["alert"] == "ai_caller"
+    assert "synthetic_intervals" not in catalog["analysis"]
+    assert catalog["analysis"]["alert"] == "ai_detected"
     catalog["analysis"]["alert"] = "none"
-    assert restarted.get(CALL)["analysis"]["alert"] == "ai_caller"
+    assert restarted.get(CALL)["analysis"]["alert"] == "ai_detected"
 
 
 def test_interrupted_live_windows_remain_partial_evidence_after_restart(tmp_path):
@@ -204,8 +206,9 @@ def test_interrupted_live_windows_remain_partial_evidence_after_restart(tmp_path
     assert restored["status"] == "unknown"
     assert restored["reason"] == "interrupted"
     assert restored["analysis"]["complete"] is False
-    assert restored["analysis"]["alert"] == "ai_caller"
+    assert restored["analysis"]["alert"] == "ai_detected"
     assert len(restored["analysis"]["windows"]) == 1
+    assert len(restored["analysis"]["synthetic_intervals"]) == 1
 
 
 def test_full_window_cache_is_bounded_and_evicted_details_reload_on_demand(tmp_path, monkeypatch):
@@ -215,11 +218,23 @@ def test_full_window_cache_is_bounded_and_evicted_details_reload_on_demand(tmp_p
         assert store.save("CA" + str(index) * 32, result(analysis=analysis()))
     assert len(store._details) == 2
     assert all("windows" not in value["analysis"] for value in store._records.values())
+    assert all("synthetic_intervals" not in value["analysis"] for value in store._records.values())
     assert len(store.get("CA" + "0" * 32)["analysis"]["windows"]) == 1
+    assert len(store.get("CA" + "0" * 32)["analysis"]["synthetic_intervals"]) == 1
     assert len(store._details) == 2
     restarted = DetectionStore(str(tmp_path))
     assert len(restarted._details) == 2
     assert len(restarted._records) == 6
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_legacy_analysis_versions_remain_readable_without_interval_migration(tmp_path, version):
+    from partner_detection.analysis import build_analysis
+    evidence = build_analysis(analysis()["windows"], version=version)
+    store = DetectionStore(str(tmp_path))
+    assert store.save(CALL, result(analysis=evidence))
+    assert DetectionStore(str(tmp_path)).get(CALL)["analysis"] == evidence
+    assert "synthetic_intervals" not in evidence
 
 
 def test_analysis_tampering_and_extra_payloads_are_rejected(tmp_path):

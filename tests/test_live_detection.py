@@ -419,7 +419,7 @@ def test_live_windows_publish_throttled_alert_before_call_finishes(monkeypatch):
         assert len(updates) == 2  # Initial state plus one throttled progress publication.
         progress = updates[-1]
         assert progress["status"] == "analyzing"
-        assert progress["analysis"]["alert"] == "ai_caller"
+        assert progress["analysis"]["alert"] == "ai_detected"
         assert progress["analysis"]["complete"] is False
         assert progress["analysis"]["windows"][0]["start_ms"] == 100
         manager.finish("CA-progress")
@@ -428,8 +428,12 @@ def test_live_windows_publish_throttled_alert_before_call_finishes(monkeypatch):
     asyncio.run(scenario())
     assert len(updates) == 3
     assert updates[-1]["status"] == "complete"
+    assert updates[-1]["label"] == "synthetic"
+    assert updates[-1]["reason"] == "confident_synthetic"
     assert updates[-1]["analysis"]["complete"] is True
     assert updates[-1]["analysis"]["synthetic_ms"] == 8000
+    assert updates[-1]["analysis"]["synthetic_intervals"] == [
+        {"stream_id": "MZ-progress", "start_ms": 100, "end_ms": 8100}]
 
 
 def test_transport_failure_retains_partial_windows_but_invalid_response_discards_them():
@@ -452,7 +456,7 @@ def test_transport_failure_retains_partial_windows_but_invalid_response_discards
     transport = asyncio.run(scenario(False))
     assert transport["status"] == "unknown"
     assert transport["analysis"]["complete"] is False
-    assert transport["analysis"]["alert"] == "ai_caller"
+    assert transport["analysis"]["alert"] == "ai_detected"
     assert len(transport["analysis"]["windows"]) == 1
     invalid = asyncio.run(scenario(True))
     assert invalid["status"] == "unknown"

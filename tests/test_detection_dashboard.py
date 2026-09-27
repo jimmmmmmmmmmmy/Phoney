@@ -85,20 +85,27 @@ def test_detector_result_has_no_public_write_or_provider_trigger(tmp_path):
 
 def test_polling_limits_timed_evidence_to_selected_call(tmp_path):
     store = DetectionStore(str(tmp_path))
-    evidence = result() | {"analysis": build_analysis([
+    evidence = result() | {"label": "synthetic", "reason": "confident_synthetic", "analysis": build_analysis([
         {"stream_id": "MZ" + "1" * 32, "start_ms": 0, "end_ms": 6000,
-         "verdict": "non-synthetic", "confidence": .91}])}
+         "verdict": "synthetic", "confidence": .91}])}
     assert store.save(SID, evidence)
     assert store.save(OTHER, evidence)
     with client_for(store) as client:
         first = client.get("/api/transcripts", params={"call_sid": SID}).json()
         rows = {item["call_sid"]: item for item in first["detection"]["calls"]}
         assert rows[SID]["analysis"]["windows"]
+        assert rows[SID]["analysis"]["alert"] == "ai_detected"
+        assert rows[SID]["analysis"]["synthetic_intervals"] == [
+            {"stream_id": "MZ" + "1" * 32, "start_ms": 0, "end_ms": 6000}]
         assert "windows" not in rows[OTHER]["analysis"]
+        assert "synthetic_intervals" not in rows[OTHER]["analysis"]
         second = client.get("/api/transcripts", params={"call_sid": OTHER}).json()
         rows = {item["call_sid"]: item for item in second["detection"]["calls"]}
         assert rows[OTHER]["analysis"]["windows"]
+        assert rows[OTHER]["analysis"]["synthetic_intervals"]
         assert "windows" not in rows[SID]["analysis"]
+        assert "synthetic_intervals" not in rows[SID]["analysis"]
         exported = client.get(f"/api/transcripts/{SID}/export").json()
         assert exported["detection"]["analysis"]["windows"]
+        assert exported["detection"]["analysis"]["synthetic_intervals"]
         assert store.get(OTHER)["analysis"]["windows"]

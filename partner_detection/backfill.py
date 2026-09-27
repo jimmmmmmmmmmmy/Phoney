@@ -360,7 +360,7 @@ class BackfillManager:
         analysis = build_analysis(windows, min_confidence=self.settings.modulate_detection_min_confidence,
                                   source=source, complete=complete,
                                   recording_fingerprint=capture['fingerprint'])
-        label = {'ai_caller': 'synthetic', 'none': 'non-synthetic'}.get(analysis['alert'], 'unknown')
+        label = {'ai_detected': 'synthetic', 'none': 'non-synthetic'}.get(analysis['alert'], 'unknown')
         confidence = min((w['confidence'] for w in windows if w['verdict'] == label
                           and w['confidence'] >= self.settings.modulate_detection_min_confidence),
                          default=None) if label != 'unknown' else None

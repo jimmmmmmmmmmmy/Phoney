@@ -86,7 +86,7 @@ def test_strip_initial_padding_preserve_offsets_cache_and_restart(tmp_path):
         assert provider.calls == [(125, 40000, b'\x01\x00')]
         result = store.get(CALL)
         assert result['analysis']['source'] == 'recording'
-        assert result['analysis']['complete'] and result['analysis']['alert'] == 'ai_caller'
+        assert result['analysis']['complete'] and result['analysis']['alert'] == 'ai_detected'
         assert result['analysis']['windows'][0]['start_ms'] == 125
         await manager.run_once()
         await BackfillManager(config, DetectionStore(config.detection_storage_dir), provider=provider).run_once()
@@ -261,7 +261,7 @@ def test_scalar_confidence_only_uses_qualified_evidence(tmp_path):
         store = DetectionStore(config.detection_storage_dir)
         await BackfillManager(config, store, provider=provider).run_once()
         result = store.get(CALL)
-        assert result['analysis']['alert'] == 'ai_caller'
+        assert result['analysis']['alert'] == 'ai_detected'
         assert result['confidence'] == .95
     asyncio.run(run())
 
@@ -522,9 +522,8 @@ def test_uncertain_full_batch_is_complete_but_has_no_decisive_verdict(tmp_path, 
             frames = [{'start_ms': source_start_ms, 'end_ms': source_start_ms + 10000,
                        'verdict': 'synthetic', 'confidence': .5}]
             if kind == 'conflict':
-                frames = [dict(frames[0], end_ms=source_start_ms + 5000, confidence=.95),
-                          dict(frames[0], start_ms=source_start_ms + 5000,
-                               verdict='non-synthetic', confidence=.95)]
+                frames = [dict(frames[0], end_ms=source_start_ms + 6000, confidence=.95),
+                          dict(frames[0], verdict='non-synthetic', confidence=.95)]
             return {'frames': frames}
         store = DetectionStore(config.detection_storage_dir)
         await BackfillManager(config, store, provider=uncertain).run_once()
@@ -554,6 +553,53 @@ def test_complete_recording_result_reconstructs_missing_cache_without_upload(tmp
         assert recovered['chunks'][0]['status'] == 'complete'
         assert recovered['chunks'][0]['attempts'] == 1
         assert recovered['chunks'][0]['windows'] == analysis['windows']
+    asyncio.run(run())
+
+
+def test_paid_recording_evidence_reaggregates_locally_to_binary_policy_without_upload(tmp_path):
+    async def run():
+        config = settings(tmp_path); capture(config, seconds=60)
+        store = DetectionStore(config.detection_storage_dir)
+        recording = inspect_recordings(config)[0]
+        windows = [{'stream_id': STREAM, 'start_ms': 125, 'end_ms': 4125,
+                    'verdict': 'synthetic', 'confidence': .95},
+                   {'stream_id': STREAM, 'start_ms': 4125, 'end_ms': 60125,
+                    'verdict': 'non-synthetic', 'confidence': .95}]
+        previous = build_analysis(windows, source='recording', version=2,
+                                  recording_fingerprint=recording['fingerprint'])
+        assert previous['alert'] == 'none'
+        save_analysis(store, previous)
+        provider = Provider()
+        manager = BackfillManager(config, store, provider=provider)
+        await manager.run_once()
+        result = store.get(CALL)
+        assert result['label'] == 'synthetic' and result['status'] == 'complete'
+        assert result['analysis']['version'] == 3
+        assert result['analysis']['alert'] == 'ai_detected'
+        assert result['analysis']['synthetic_intervals'] == [
+            {'stream_id': STREAM, 'start_ms': 125, 'end_ms': 4125}]
+        before = result['updated_at']
+        await BackfillManager(config, DetectionStore(config.detection_storage_dir), provider=provider).run_once()
+        assert provider.calls == []
+        assert store.get(CALL)['updated_at'] == before
+    asyncio.run(run())
+
+
+def test_brief_synthetic_evidence_below_gate_cannot_be_labelled_natural(tmp_path):
+    async def run():
+        config = settings(tmp_path); capture(config, seconds=60)
+        async def provider(wav_bytes, *, source_start_ms):
+            return {'frames': [
+                {'start_ms': source_start_ms, 'end_ms': source_start_ms + 3999,
+                 'verdict': 'synthetic', 'confidence': .95},
+                {'start_ms': source_start_ms + 3999, 'end_ms': source_start_ms + 60000,
+                 'verdict': 'non-synthetic', 'confidence': .95}]}
+        store = DetectionStore(config.detection_storage_dir)
+        await BackfillManager(config, store, provider=provider).run_once()
+        result = store.get(CALL)
+        assert result['label'] == 'unknown' and result['confidence'] is None
+        assert result['analysis']['alert'] == 'inconclusive'
+        assert result['analysis']['complete'] is True
     asyncio.run(run())
 
 

@@ -39,6 +39,45 @@ def test_confident_non_synthetic_evidence_is_retains_non_synthetic_label():
     assert decision.submitted_audio_ms == 4000
 
 
+def test_confident_synthetic_completion_retains_v3_detection_label():
+    decision = decide_call_detection([outcome("synthetic", .95)], min_confidence=.80)
+    assert decision.label == "synthetic"
+    assert decision.reason == "confident_synthetic"
+    assert decision.confidence == .95
+
+
+def test_short_ai_segment_in_long_natural_call_is_not_diluted_by_human_speech():
+    from dataclasses import replace
+    original = outcome("synthetic", .95)
+    natural = replace(original.report.observations[0], start_ms=4000, end_ms=120000,
+                      verdict="non-synthetic", provider_verdict="non-synthetic", confidence=.99)
+    sample = replace(original, report=replace(original.report,
+                     observations=(*original.report.observations, natural), submitted_audio_ms=120000))
+    decision = decide_call_detection([sample], min_confidence=.80)
+    assert decision.label == "synthetic"
+    assert decision.reason == "confident_synthetic"
+    assert decision.confidence == .95
+
+
+def test_subthreshold_synthetic_segment_never_produces_a_natural_verdict():
+    from dataclasses import replace
+    original = outcome("synthetic", .95)
+    short = replace(original.report.observations[0], end_ms=3999)
+    natural = replace(short, start_ms=3999, end_ms=120000,
+                      verdict="non-synthetic", provider_verdict="non-synthetic", confidence=.99)
+    sample = replace(original, report=replace(original.report, observations=(short, natural)))
+    decision = decide_call_detection([sample], min_confidence=.80)
+    assert decision.label == "unknown"
+    assert decision.confidence is None
+
+
+def test_qualified_conflict_same_stream_excludes_synthetic_overlap():
+    decision = decide_call_detection([outcome("synthetic", .95), outcome("non-synthetic", .96)],
+                                     min_confidence=.80)
+    assert decision.label == "unknown"
+    assert decision.reason == "conflicting_evidence"
+
+
 def test_dropped_audio_forces_unknown_even_with_confident_provider_evidence():
     decision = decide_call_detection(
         [outcome("synthetic", 0.99, dropped=1)], min_confidence=0.80)

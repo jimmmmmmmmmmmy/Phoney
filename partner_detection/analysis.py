@@ -11,6 +11,7 @@ WINDOW_FIELDS = {"stream_id", "start_ms", "end_ms", "verdict", "confidence"}
 ANALYSIS_FIELDS = {"version", "track", "source", "complete", "alert", "synthetic_ms",
                    "non_synthetic_ms", "uncertain_ms", "no_content_ms", "analyzed_ms",
                    "synthetic_share", "min_confidence", "recording_fingerprint", "windows"}
+INTERVAL_FIELDS = {"stream_id", "start_ms", "end_ms"}
 STREAM_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -37,7 +38,7 @@ def validate_windows(windows):
 
 
 def build_analysis(windows, *, min_confidence=.8, source="live", complete=True,
-                   recording_fingerprint=None, version=2):
+                   recording_fingerprint=None, version=3):
     """Partition observed time once, preserving qualified speech in overlapping windows.
 
     Missing intervals are unobserved, not negative evidence. ``complete`` describes
@@ -46,8 +47,10 @@ def build_analysis(windows, *, min_confidence=.8, source="live", complete=True,
     Version 1 retains the historical overlap veto for validating stored evidence.
     Version 2 lets qualified speech outrank weak speech and no-content windows;
     disagreement between qualified speech verdicts remains uncertain.
+    Version 3 preserves that partition and exposes exact synthetic intervals,
+    alerting on four seconds of synthetic evidence regardless of call length.
     """
-    if (type(version) is not int or version not in {1, 2}
+    if (type(version) is not int or version not in {1, 2, 3}
             or type(min_confidence) not in (int, float) or not math.isfinite(min_confidence)
             or not .5 <= min_confidence <= 1 or source not in {"live", "recording", "combined"}
             or type(complete) is not bool or (recording_fingerprint is not None
@@ -55,6 +58,8 @@ def build_analysis(windows, *, min_confidence=.8, source="live", complete=True,
         raise ValueError("Invalid detection analysis options")
     normalized = validate_windows(windows)
     multiple_epochs = len({window["stream_id"] for window in normalized}) > 1
+    stream_id = normalized[0]["stream_id"] if normalized and not multiple_epochs else None
+    synthetic_intervals = []
     events = defaultdict(list)
     for window in normalized:
         verdict = window["verdict"]
@@ -80,6 +85,11 @@ def build_analysis(windows, *, min_confidence=.8, source="live", complete=True,
                 else:
                     category = "no_content"
             totals[category] += timestamp - previous
+            if version == 3 and category == "synthetic":
+                if synthetic_intervals and synthetic_intervals[-1]["end_ms"] == previous:
+                    synthetic_intervals[-1]["end_ms"] = timestamp
+                else:
+                    synthetic_intervals.append(dict(stream_id=stream_id, start_ms=previous, end_ms=timestamp))
         for category, delta in events[timestamp]:
             active[category] += delta
         previous = timestamp
@@ -87,7 +97,12 @@ def build_analysis(windows, *, min_confidence=.8, source="live", complete=True,
     analyzed = synthetic + natural + uncertain
     share = synthetic / analyzed if analyzed else None
     alert = "inconclusive"
-    if not multiple_epochs and synthetic + natural >= MIN_RELIABLE_MS and analyzed:
+    if version == 3:
+        if not multiple_epochs and synthetic >= MIN_RELIABLE_MS:
+            alert = "ai_detected"
+        elif not multiple_epochs and synthetic == 0 and natural >= MIN_RELIABLE_MS and uncertain < MIN_RELIABLE_MS:
+            alert = "none"
+    elif not multiple_epochs and synthetic + natural >= MIN_RELIABLE_MS and analyzed:
         # Integer comparisons preserve the exact 50% and 75% boundaries.
         if synthetic * 4 >= analyzed * 3:
             alert = "ai_caller"
@@ -103,13 +118,28 @@ def build_analysis(windows, *, min_confidence=.8, source="live", complete=True,
         "analyzed_ms": analyzed, "synthetic_share": share,
         "min_confidence": float(min_confidence), "recording_fingerprint": recording_fingerprint,
         "windows": normalized,
+        **({"synthetic_intervals": synthetic_intervals} if version == 3 else {}),
     }
 
 
 def validate_analysis(value):
-    if (not isinstance(value, dict) or set(value) != ANALYSIS_FIELDS
-            or type(value["version"]) is not int or value["version"] not in {1, 2}):
+    if (not isinstance(value, dict) or type(value.get("version")) is not int
+            or value["version"] not in {1, 2, 3}):
         raise ValueError("Invalid detection analysis")
+    fields = ANALYSIS_FIELDS | ({"synthetic_intervals"} if value["version"] == 3 else set())
+    if set(value) != fields:
+        raise ValueError("Invalid detection analysis")
+    if value["version"] == 3:
+        intervals = value["synthetic_intervals"]
+        if not isinstance(intervals, list) or len(intervals) > MAX_WINDOWS * 2:
+            raise ValueError("Invalid synthetic intervals")
+        for interval in intervals:
+            if (not isinstance(interval, dict) or set(interval) != INTERVAL_FIELDS
+                    or not isinstance(interval["stream_id"], str)
+                    or not STREAM_ID.fullmatch(interval["stream_id"])
+                    or type(interval["start_ms"]) is not int or type(interval["end_ms"]) is not int
+                    or not 0 <= interval["start_ms"] < interval["end_ms"] <= MAX_TIME_MS):
+                raise ValueError("Invalid synthetic interval")
     rebuilt = build_analysis(value["windows"], min_confidence=value["min_confidence"],
                              source=value["source"], complete=value["complete"],
                              recording_fingerprint=value["recording_fingerprint"],
@@ -118,6 +148,6 @@ def validate_analysis(value):
                    ("synthetic_ms", "non_synthetic_ms", "uncertain_ms", "no_content_ms", "analyzed_ms"))
             or type(value["complete"]) is not bool
             or (value["synthetic_share"] is not None and type(value["synthetic_share"]) not in (int, float))
-            or any(value[key] != rebuilt[key] for key in ANALYSIS_FIELDS - {"windows"})):
+            or any(value[key] != rebuilt[key] for key in fields - {"windows"})):
         raise ValueError("Detection analysis does not match its evidence")
     return rebuilt

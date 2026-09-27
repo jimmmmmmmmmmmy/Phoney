@@ -22,7 +22,8 @@
     .transcript-card{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;background:#fff}.card-heading{padding:12px 0}.card-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.card-title:has(> :not([hidden])){margin-bottom:8px}.badge{display:inline-flex;font-size:10px;font-weight:650;color:var(--teal);background:var(--teal-light);border-radius:5px;padding:3px 7px}.badge[data-tone="bad"]{color:var(--red);background:var(--red-light)}.badge[data-tone="neutral"]{color:var(--muted);background:#f0f3f6}.voicemail-note{font-size:12px;color:var(--muted);margin-top:10px}
     .exports{display:flex;gap:5px;flex:none}.export{font-size:10px;border:1px solid var(--line);border-radius:6px;padding:5px 7px;color:var(--muted);text-decoration:none;font-weight:650}.export:hover{color:var(--teal);background:#f4f8f8}.export[aria-disabled="true"]{pointer-events:none;opacity:.4}
     .summary-panel{margin-top:0}.summary-text{font-size:13px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere;max-width:860px}.summary-text[data-empty="true"]{color:var(--muted)}.track-error{margin-top:7px;font-size:11px;color:var(--red);overflow-wrap:anywhere}
-    .caller-ai-badge{display:inline-flex;align-items:center;flex:none;max-width:100%;padding:3px 7px;border-radius:5px;background:#fff6df;color:#806025;font-size:11px;line-height:1.5;font-weight:650}.caller-ai-badge[data-tone="ai"]{color:#8c4416;background:#fff0df}
+    .caller-ai-badge{display:inline-flex;align-items:center;flex:none;max-width:100%;padding:3px 7px;border-radius:5px;background:#fff6df;color:#806025;font-size:11px;line-height:1.5;font-weight:650}
+    .message.ai-detected .message-text{background:#fff0ed;border-radius:3px;box-shadow:0 0 0 3px #fff0ed}.segment-ai-marker{display:inline-flex;align-items:center;flex:none;color:var(--red)}.segment-ai-marker svg{width:14px;height:14px}
     .transcript-toolbar{flex:none;display:flex;align-items:center;padding:0 0 10px;color:var(--muted);font-size:10px}.live-label{letter-spacing:.9px;text-transform:uppercase;font-weight:650}.transcript{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 28px 24px;scroll-behavior:smooth;scrollbar-width:thin;scrollbar-color:#cbd4dc transparent}
     .messages{display:flex;flex-direction:column;gap:7px}.message{display:grid;grid-template-columns:39px minmax(0,1fr);gap:10px;border-radius:6px;padding:4px 8px;margin:0 -8px;border-left:3px solid transparent}.timestamp{font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#8a97a4;padding-top:2px;font-variant-numeric:tabular-nums}.message-meta{display:flex;align-items:center;gap:8px;margin-bottom:2px}.speaker{font-size:10px;color:var(--teal);font-weight:750}.message[data-track="outbound"] .speaker{color:#596a91}.confidence{font-size:9px;color:#94a0ad}.message-text{font-size:14px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;max-width:860px}.interim .message-text{color:#8995a2}.interim .speaker{color:#81968c}.interim-label{font-size:9px;background:#f0f4f1;color:#84918a;padding:2px 5px;border-radius:4px}.message.playing-line{background:#e3f3e9;border-left-color:var(--teal)}.message[data-track="outbound"].playing-line{background:#ecf0fa;border-left-color:#677bad}
     .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:100%;min-height:180px;padding:20px}.empty-icon{display:grid;place-items:center;width:44px;height:44px;border-radius:12px;background:var(--teal-light);color:var(--teal);margin-bottom:14px}.empty h2{font-size:16px;font-weight:650;margin-bottom:7px}.empty p{font-size:12px;color:var(--muted);max-width:305px;line-height:1.7}.empty svg{width:23px;height:23px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
@@ -135,7 +136,7 @@
       controller: null, polling: false, paused: false, renderKey: "", listKey: "",
       voicemailKey: "", refreshRequested: false, audioCall: null, audioTrack: "combined",
       audioUrl: "", audioPhase: "idle", audioSession: null, audioDismissed: false, highlightEnabled: false,
-      transcriptRows: [], renderedCall: null};
+      transcriptRows: [], renderedCall: null, detectionKey: ""};
     const callSidPattern = /^CA[0-9a-fA-F]{32}$/;
     const audioTracks = {combined: "Call audio"};
     const endedStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
@@ -227,6 +228,7 @@
       $("page-caption").hidden = true;
       $("call-exports").hidden = !visibleDetail();
       renderDetection(state.selectedSession);
+      updateDetectionHighlights(state.selectedSession);
       const caller = state.detail && state.selectedSession ? callerNumber(state.selectedSession) : state.callerFilter;
       const normalizedCaller = normalizeCaller(caller);
       const contact = window.DashboardCRM?.findContactByPhone?.(normalizedCaller);
@@ -628,8 +630,7 @@
       $("session-storage-warning").textContent = [message, voicemailMessage, transcriptionMessage].filter(Boolean).join(" ");
       $("session-storage-warning").hidden = !message && !voicemailMessage && !transcriptionMessage;
     }
-    function renderDetection(session) {
-      const badge = $("caller-ai-badge");
+    function callerAnalysis(session) {
       const detection = session && session.detection;
       const value = detection && detection.analysis;
       const valid = visibleDetail() && session && session.call_sid === state.selected
@@ -637,21 +638,26 @@
         && detection.call_sid === session.call_sid && detection.provider === "modulate"
         && ["analyzing", "complete", "unknown"].includes(detection.status)
         && value && typeof value === "object" && !Array.isArray(value)
-        && [1, 2].includes(value.version) && value.track === "inbound"
+        && [1, 2, 3].includes(value.version) && value.track === "inbound"
         && typeof value.complete === "boolean" && ["live", "recording", "combined"].includes(value.source)
-        && ["ai_caller", "potential_ai"].includes(value.alert);
+        && (value.version === 3 ? value.alert === "ai_detected" : ["ai_caller", "potential_ai"].includes(value.alert));
+      return valid ? value : null;
+    }
+    function renderDetection(session) {
+      const badge = $("caller-ai-badge");
+      const value = callerAnalysis(session);
+      const detection = session && session.detection;
+      const valid = Boolean(value);
       badge.hidden = !valid;
       if (!valid) {
         badge.textContent = "";
-        delete badge.dataset.tone;
         badge.removeAttribute("title");
         badge.removeAttribute("aria-label");
         return;
       }
       // Use the server's caller-speech classification, never provider confidence or a browser percentage.
-      const label = value.alert === "ai_caller" ? "AI Caller" : "Potentially AI";
+      const label = "AI Detected";
       if (badge.textContent !== label) badge.textContent = label;
-      badge.dataset.tone = value.alert === "ai_caller" ? "ai" : "potential";
       const source = value.source === "recording" ? "Recorded caller audio"
         : value.source === "combined" ? "Live and recorded caller audio" : "Live caller audio";
       const context = detection.status === "analyzing" ? "Provisional analysis in progress."
@@ -661,6 +667,54 @@
       const description = `${label}. ${source}. ${context}`;
       badge.setAttribute("title", description);
       badge.setAttribute("aria-label", description);
+    }
+    function segmentAiMarker() {
+      const marker = node("span", "segment-ai-marker");
+      const description = "AI detected in audio overlapping this transcript segment.";
+      marker.setAttribute("role", "img");
+      marker.setAttribute("aria-label", description);
+      marker.setAttribute("title", description);
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      for (const [name, value] of Object.entries({viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+        "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false"})) {
+        svg.setAttribute(name, value);
+      }
+      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      for (const [name, value] of Object.entries({x: "4", y: "7", width: "16", height: "13", rx: "3"})) rect.setAttribute(name, value);
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", "M12 3v4M8 12h.01M16 12h.01M9 16h6M1 11v5m22-5v5");
+      svg.append(rect, path);
+      marker.append(svg);
+      return marker;
+    }
+    function updateDetectionHighlights(session) {
+      const analysis = callerAnalysis(session);
+      const stream = session && session.stream_sid;
+      const evidence = analysis && analysis.version === 3 && analysis.synthetic_intervals;
+      const aligned = state.renderedCall === (session && session.call_sid)
+        && typeof stream === "string" && /^MZ[0-9a-fA-F]{32}$/.test(stream);
+      const valid = aligned && Array.isArray(evidence) && evidence.length <= 8192
+        && evidence.every(interval => interval && typeof interval === "object" && !Array.isArray(interval)
+          && typeof interval.stream_id === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(interval.stream_id)
+          && Number.isInteger(interval.start_ms) && Number.isInteger(interval.end_ms)
+          && interval.start_ms >= 0 && interval.start_ms < interval.end_ms && interval.end_ms <= 3600000);
+      const intervals = valid ? evidence.filter(interval => interval.stream_id === stream) : [];
+      const key = JSON.stringify([session && session.call_sid, stream, intervals]);
+      if (key === state.detectionKey) return;
+      state.detectionKey = key;
+      for (const item of state.transcriptRows) {
+        // Transcript and detection intervals use the same Twilio stream clock.
+        // A paragraph marks overlapping audio, not individual synthesized words.
+        const flagged = item.track === "inbound" && Number.isInteger(item.start) && Number.isInteger(item.end)
+          && item.start >= 0 && item.end > item.start && item.end <= 3600000
+          && intervals.some(interval => interval.start_ms < item.end && interval.end_ms > item.start);
+        item.row.classList.toggle("ai-detected", flagged);
+        if (flagged && !item.aiMarker) {
+          item.aiMarker = segmentAiMarker();
+          item.row.children[1].children[0].append(item.aiMarker);
+        }
+        if (item.aiMarker) item.aiMarker.hidden = !flagged;
+      }
     }
     function renderSession(session) {
       renderStorageWarnings(session);
@@ -721,6 +775,7 @@
         const followLive = viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop < 48;
         const fragment = document.createDocumentFragment();
         state.transcriptRows = [];
+        state.detectionKey = "";
         segments.forEach(segment => {
           const row = messageRow(segment);
           row.dataset.segmentId = String(segment.id);
@@ -759,6 +814,7 @@
         state.renderedCall = loading ? null : session && session.call_sid;
         state.renderKey = key;
       }
+      updateDetectionHighlights(session);
       updatePlaybackHighlight();
     }
     function retainLiveTranscript(session) {

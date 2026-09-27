@@ -152,7 +152,8 @@ class DetectionStore:
     def _summary(record):
         result = {key: value for key, value in record.items() if key != "analysis"}
         if "analysis" in record:
-            result["analysis"] = {key: value for key, value in record["analysis"].items() if key != "windows"}
+            result["analysis"] = {key: value for key, value in record["analysis"].items()
+                                  if key not in {"windows", "synthetic_intervals"}}
         return result
 
     def _cache_detail(self, record):
@@ -169,10 +170,11 @@ class DetectionStore:
             return
         if current and current["updated_at"] == record["updated_at"]:
             # Retain live ownership/recovery state when reloading evicted detail.
-            windows = record.get("analysis", {}).get("windows")
+            evidence = {key: value for key, value in record.get("analysis", {}).items()
+                        if key in {"windows", "synthetic_intervals"}}
             record = deepcopy(current)
-            if windows is not None:
-                record["analysis"]["windows"] = windows
+            if evidence:
+                record["analysis"].update(evidence)
         elif record["status"] == "analyzing":
             record.update(status="unknown", label="unknown", confidence=None, reason="interrupted")
             if "analysis" in record:

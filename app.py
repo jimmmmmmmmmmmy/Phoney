@@ -28,6 +28,7 @@ from summaries import SummaryManager
 from operator_service import OperatorSessions, register_operator_routes
 from partner_detection import LiveDetectionManager
 from partner_detection.storage import DetectionStore
+from partner_detection.backfill import BackfillManager
 
 logger = logging.getLogger("uvicorn.error")
 MAX_GITHUB_BODY_BYTES = 1024 * 1024
@@ -52,7 +53,8 @@ def write_deploy_trigger(path: str, delivery_id: str) -> None:
 
 
 def create_app(settings: Settings, gateway=None, transcription_connector=None, summary_provider=None,
-               operator_dialer=None, operator_voice=None, detection_connector=None) -> FastAPI:
+               operator_dialer=None, operator_voice=None, detection_connector=None,
+               detection_batch_provider=None) -> FastAPI:
     transcription = TranscriptionManager(settings, connector=transcription_connector)
     voicemails = VoicemailStore(settings)
     recordings = RecordingLibrary(settings)
@@ -113,11 +115,18 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     summaries = SummaryManager(settings, transcription, call_details,
         active_call_ids=lambda: {sid for sid, session in switchboard.sessions.items() if session.phase != "ended"},
         provider=summary_provider, can_run=provider_worker_active)
+    detection_backfill = BackfillManager(settings, detection_store,
+        active_call_ids=lambda: (
+            {sid for sid, session in switchboard.sessions.items() if session.phase != "ended"}
+            | live_detection.active_call_ids | set(detection_last_write)),
+        provider=detection_batch_provider, can_run=provider_worker_active)
 
     @asynccontextmanager
     async def lifespan(app):
         summaries.start()
+        detection_backfill.start()
         yield
+        await detection_backfill.close()
         await summaries.close()
         await switchboard.close()
         await media_capture.close()
@@ -142,6 +151,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     app.state.transcription = transcription
     app.state.live_detection = live_detection
     app.state.detection_store = detection_store
+    app.state.detection_backfill = detection_backfill
     app.state.detection_writes = detection_writes
     app.state.voicemails = voicemails
     app.state.recordings = recordings
@@ -171,6 +181,8 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
             result["summaries_enabled"] = True
         if live_detection.enabled:
             result["detection_enabled"] = settings.switchboard_ready
+        if detection_backfill.enabled:
+            result["detection_backfill_enabled"] = settings.switchboard_ready
         return result
 
     async def validate_deploy_control(request: Request):
@@ -188,6 +200,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
                                              + media_capture.pending_count + transcription.active_count
                                              + voicemails.active_count + summaries.active_count
                                              + operator.pending_count + live_detection.active_count
+                                             + detection_backfill.active_count
                                              + len(detection_writes)},
                             headers={"Cache-Control": "no-store"})
 

@@ -115,10 +115,10 @@ def test_no_usable_speech_content_is_unknown():
     assert decision.reason == "no_usable_content"
 
 
-def test_unanimous_synthetic_streams_use_the_lowest_qualified_confidence():
+def test_overlapping_synthetic_windows_use_the_lowest_qualified_confidence():
     decision = decide_call_detection([
         outcome("synthetic", 0.99, stream_id="MZ-first"),
-        outcome("synthetic", 0.88, stream_id="MZ-second"),
+        outcome("synthetic", 0.88, stream_id="MZ-first"),
     ], min_confidence=0.80)
 
     assert decision.label == "synthetic"
@@ -127,14 +127,14 @@ def test_unanimous_synthetic_streams_use_the_lowest_qualified_confidence():
     assert decision.streams == 2
 
 
-def test_low_confidence_opposing_frame_does_not_override_qualified_evidence():
+def test_unmapped_epochs_do_not_establish_a_call_verdict():
     decision = decide_call_detection([
         outcome("non-synthetic", 0.95, stream_id="MZ-first"),
         outcome("synthetic", 0.70, stream_id="MZ-second"),
     ], min_confidence=0.80)
 
-    assert decision.label == "non-synthetic"
-    assert decision.confidence == 0.95
+    assert decision.label == "unknown"
+    assert decision.confidence is None
 
 
 def test_tiny_confident_observation_is_insufficient_evidence():

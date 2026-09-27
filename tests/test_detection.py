@@ -403,3 +403,16 @@ def test_stalled_binary_upload_has_its_own_timeout():
                                     collection_seconds=.5, connector=FakeConnector(socket)))
     assert report.reason == "provider_timeout"
     assert socket.closed
+
+
+def test_observation_callback_is_offset_and_cannot_break_the_provider_stream():
+    observed = []
+    def observer(item):
+        observed.append(item)
+        raise RuntimeError("UI is unavailable")
+    socket = FakeSocket(response_frames())
+    report = run(stream_inbound_pcm(frames(frame(timestamp=120)), api_key="key",
+                                    connector=FakeConnector(socket), on_observation=observer))
+    assert report.status == "non-synthetic"
+    assert observed[0].start_ms == 120
+    assert observed[0].end_ms == 140

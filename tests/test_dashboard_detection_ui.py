@@ -6,9 +6,11 @@ from test_dashboard_playback_ui import AudioMarkup, HTML, run_browser_logic
 
 
 DETECTION = r"""
+function analysis(overrides={}) {return {version:1,track:'inbound',source:'live',complete:true,
+ alert:'ai_caller',synthetic_share:.8,analyzed_ms:25000,windows:[],...overrides};}
 function detection(overrides={}) {return {call_sid:SID,provider:'modulate',status:'complete',
  label:'synthetic',confidence:.97,reason:'confident_synthetic',submitted_audio_ms:25000,
- coverage_limited:false,...overrides};}
+ coverage_limited:false,analysis:analysis(),...overrides};}
 function withDetection(result, calls=[session()]) {
  const value=snapshot(calls,[recording()]);
  value.detection={enabled:true,storage_error:'',calls:result?[result]:[]};
@@ -30,23 +32,25 @@ def test_voice_analysis_is_an_accessible_hidden_section_near_the_summary():
 
 def test_polling_updates_verdict_without_replacing_transcript_or_reloading_audio(tmp_path):
     run_browser_logic(tmp_path, DETECTION + r"""
-state.snapshot=withDetection(detection({status:'analyzing',label:'unknown',confidence:null}));render();openCall();
+state.snapshot=withDetection(detection({status:'analyzing',label:'unknown',confidence:null,
+ analysis:analysis({alert:'inconclusive',complete:false})}));render();openCall();
 assert.equal($('voice-analysis').hidden,false);
 assert.equal($('voice-analysis-status').textContent,'Analyzing caller audio…');
-assert.equal($('voice-analysis-meta').textContent,'Modulate · 25s analyzed');
+assert.equal($('voice-analysis-meta').textContent,'Live analysis · provisional');
 assert.equal($('voice-analysis-note').hidden,true);
 const firstRow=$('messages').children[0], audio=$('call-audio'), loads=audio.loads;
 audio.play();audio.currentTime=18;
 state.snapshot=withDetection(detection());render();
-assert.equal($('voice-analysis-status').textContent,'Synthetic speech detected');
-assert.equal($('voice-analysis-status').dataset.tone,'synthetic');
-assert.equal($('voice-analysis-meta').textContent,'Modulate · 25s analyzed · Provider verdict confidence: 97%');
+assert.equal($('voice-analysis-status').textContent,'AI caller');
+assert.equal($('voice-analysis-status').dataset.tone,'ai');
+assert.equal($('voice-analysis-meta').textContent,'Caller audio');
 assert.equal($('messages').children[0],firstRow);
 assert.equal(audio.loads,loads);assert.equal(audio.currentTime,18);assert.equal(audio.paused,false);
-state.snapshot=withDetection(detection({label:'non-synthetic',reason:'confident_non_synthetic',confidence:.995}));render();
-assert.equal($('voice-analysis-status').textContent,'Non-synthetic speech detected');
+state.snapshot=withDetection(detection({label:'non-synthetic',reason:'confident_non_synthetic',confidence:.995,
+ analysis:analysis({alert:'none'})}));render();
+assert.equal($('voice-analysis-status').textContent,'No AI speech flagged');
 assert.equal($('voice-analysis-status').dataset.tone,'neutral');
-assert.equal($('voice-analysis-meta').textContent,'Modulate · 25s analyzed · Provider verdict confidence: 100%');
+assert.equal($('voice-analysis-meta').textContent,'Caller audio');
 """)
 
 
@@ -77,19 +81,21 @@ state.snapshot=snapshot([]);
 state.snapshot.detection={calls:[detection()]};render();openCall();
 assert.equal(state.selected,SID);
 assert.equal($('voice-analysis').hidden,false);
-assert.equal($('voice-analysis-status').textContent,'Synthetic speech detected');
+assert.equal($('voice-analysis-status').textContent,'AI caller');
 assert.equal($('messages').hidden,true);
 """)
 
 
 def test_session_detection_fallback_and_limited_coverage_are_visible(tmp_path):
     run_browser_logic(tmp_path, DETECTION + r"""
-const call=session();call.detection=detection({submitted_audio_ms:120000,coverage_limited:true});
+const call=session();call.detection=detection({submitted_audio_ms:120000,coverage_limited:true,
+ analysis:analysis({source:'recording',complete:false})});
 state.snapshot=snapshot([call]);render();openCall();
-assert.equal($('voice-analysis-meta').textContent,'Modulate · 2m 0s analyzed · Provider verdict confidence: 97%');
+assert.equal($('voice-analysis-meta').textContent,'Recorded caller audio · provisional');
 assert.equal($('voice-analysis-note').hidden,false);
 assert.equal($('voice-analysis-note').textContent,'Limited coverage: only part of this call was analyzed.');
-state.snapshot.detection={calls:[detection({status:'unknown',reason:'provider_timeout',confidence:null})]};render();
+state.snapshot.detection={calls:[detection({status:'unknown',reason:'provider_timeout',confidence:null,
+ analysis:analysis({alert:'inconclusive',complete:false})})]};render();
 assert.equal($('voice-analysis-status').textContent,'Inconclusive');
 assert.equal($('voice-analysis-note').textContent,'The voice analysis service timed out.');
 assert.equal($('voice-analysis-status').dataset.tone,'neutral');
@@ -107,9 +113,10 @@ for (const [reason,expected] of [
  ['__proto__','Voice analysis could not be completed.'],
  [{toString:null},'Voice analysis could not be completed.']
 ]) {
- state.snapshot=withDetection(detection({status:'unknown',label:'synthetic',reason,confidence:.99}));render();openCall();
+ state.snapshot=withDetection(detection({status:'unknown',label:'synthetic',reason,confidence:.99,
+ analysis:analysis({alert:'inconclusive',complete:false})}));render();openCall();
  assert.equal($('voice-analysis-status').textContent,'Inconclusive');
- assert.equal($('voice-analysis-meta').textContent,'Modulate · 25s analyzed');
+ assert.equal($('voice-analysis-meta').textContent,'Caller audio · provisional');
  assert.equal($('voice-analysis-note').textContent,expected);
 }
 """)
@@ -126,14 +133,68 @@ for (const value of [null,[],{}, {provider:'<img src=x onerror=alert(1)>'}]) {
 }
 for (const confidence of [null,'0.98',-1,2,Infinity,NaN]) {
  state.snapshot=withDetection(detection({confidence,submitted_audio_ms:-100}));render();openCall();
- assert.equal($('voice-analysis-meta').textContent,'Modulate');
+ assert.equal($('voice-analysis-meta').textContent,'Caller audio');
 }
-for (const overrides of [{status:'<img>',label:'synthetic'}, {status:'complete',label:'human'},
- {status:'complete',label:'<script>alert(1)</script>'}]) {
+for (const overrides of [{status:'<img>',label:'synthetic'}, {analysis:analysis({track:'outbound'})},
+ {analysis:analysis({alert:'<script>alert(1)</script>'})}, {analysis:analysis({version:2})},
+ {analysis:analysis({complete:'true'})}, {analysis:analysis({source:'<img>'})}]) {
  state.snapshot=withDetection(detection(overrides));render();
  assert.equal($('voice-analysis-status').textContent,'Inconclusive');
- assert.equal($('voice-analysis-meta').textContent,'Modulate · 25s analyzed');
+ assert.equal($('voice-analysis-meta').textContent,'Caller audio');
 }
+""")
+
+
+def test_threshold_labels_use_backend_alert_without_exposing_percentages(tmp_path):
+    run_browser_logic(tmp_path, DETECTION + r"""
+// Inconsistent fixture counters intentionally prove that the browser does not
+// derive an AI percentage from confidence, transcripts, or provider windows.
+for (const [alert,label,tone] of [['ai_caller','AI caller','ai'],
+ ['potential_ai','Potential AI caller','potential'],['none','No AI speech flagged','neutral']]) {
+ state.snapshot=withDetection(detection({label:'unknown',confidence:.999,
+  analysis:analysis({alert,synthetic_share:0,synthetic_ms:1,non_synthetic_ms:999999})}));render();openCall();
+ assert.equal($('voice-analysis-status').textContent,label);
+ assert.equal($('voice-analysis-status').dataset.tone,tone);
+ for (const id of ['voice-analysis-status','voice-analysis-meta','voice-analysis-note']) {
+  assert.ok(!/[0-9%]/.test($(id).textContent));
+ }
+}
+""")
+
+
+@pytest.mark.parametrize("status", ["analyzing", "unknown"])
+def test_partial_analysis_preserves_backend_alert_with_provisional_caption(tmp_path, status):
+    run_browser_logic(tmp_path, DETECTION + f"const providerStatus={status!r};\n" + r"""
+state.snapshot=withDetection(detection({status:providerStatus,label:'unknown',confidence:null,
+ coverage_limited:true,analysis:analysis({alert:'potential_ai',complete:false})}));render();openCall();
+assert.equal($('voice-analysis-status').textContent,'Potential AI caller');
+assert.equal($('voice-analysis-status').dataset.tone,'potential');
+assert.ok($('voice-analysis-meta').textContent.endsWith(' · provisional'));
+assert.equal($('voice-analysis-note').textContent,'Limited coverage: only part of this call was analyzed.');
+""")
+
+
+def test_legacy_verdict_does_not_claim_new_caller_thresholds(tmp_path):
+    run_browser_logic(tmp_path, DETECTION + r"""
+for (const label of ['synthetic','non-synthetic']) {
+ const previous=detection({label,confidence:1});delete previous.analysis;
+ state.snapshot=withDetection(previous);render();openCall();
+ assert.equal($('voice-analysis-status').textContent,'Inconclusive');
+ assert.equal($('voice-analysis-status').dataset.tone,'neutral');
+ assert.equal($('voice-analysis-meta').textContent,'Caller audio');
+ assert.equal($('voice-analysis-note').textContent,'This earlier result has no caller speech breakdown.');
+}
+""")
+
+
+def test_transcription_confidence_is_explicitly_distinct_from_caller_analysis(tmp_path):
+    run_browser_logic(tmp_path, DETECTION + r"""
+state.snapshot=withDetection(detection());render();openCall();
+const confidence=$('messages').children[0].children[1].children[0].children[1];
+assert.equal(confidence.textContent,'90% confidence');
+assert.equal(confidence.attributes['aria-label'],'Transcription confidence: 90%');
+assert.equal(confidence.attributes.title,'Transcription confidence');
+assert.ok(!$('voice-analysis-meta').textContent.includes('%'));
 """)
 
 

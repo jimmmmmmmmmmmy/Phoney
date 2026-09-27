@@ -2,7 +2,7 @@
 
 Open [BUILD_3.md](BUILD_3.md) to use the live transcript dashboard. Partners can start with [DEEPFAKE_DETECTION.md](DEEPFAKE_DETECTION.md) for detection or [VOICE_STACK.md](VOICE_STACK.md) for Gemini + ElevenLabs.
 
-**Implemented through Build 3:** Twilio conference, optional unanswered-call voicemail, passive WAV recording, live Deepgram transcription, public HTML/JSON/text viewing, finalized local WAV playback/downloads, and offline PCM replay. Anyone with the public ngrok URL can read/download transcript text and play/download finalized local recordings without signing in. Synthetic audio passed real Deepgram and local transport/browser checks; actual phone capture/transcription remains pending. No detector, Gemini dialogue, ElevenLabs voice, or keypad agent is installed. See the root [verification status](../README.md) for test and deployment evidence.
+**Implemented through Build 3:** Twilio conference, optional unanswered-call voicemail, passive WAV recording, live Deepgram transcription, public HTML/JSON/text viewing, finalized local WAV playback/downloads, and offline PCM replay. Anyone with the public ngrok URL can read/download transcript text and play/download finalized local recordings without signing in. Synthetic audio passed real Deepgram and local transport/browser checks; actual phone capture/transcription remains pending. Optional Modulate caller analysis is integrated; see its setup and duration-based alert policy below. See the root [verification status](../README.md) for test and deployment evidence.
 
 | Work | Start here | Concrete outcome |
 | --- | --- | --- |
@@ -27,3 +27,5 @@ Open [BUILD_3.md](BUILD_3.md) to use the live transcript dashboard. Partners can
 The selected partner stack uses Google Gemini for conversation and ElevenLabs for voice generation. Those are the two relevant sponsor categories listed on the [ShellHacks prize page](https://www.mlh.com/events/shellhacks-b9/prizes); [Gemini resources](https://www.mlh.com/partners/gemini) and [ElevenLabs resources](https://www.mlh.com/partners/elevenlabs) explain account setup. A plan in a README is not a working API integration: demonstrate actual provider usage when that partner milestone is implemented.
 
 - [Modulate integration audit and configuration](MODULATE_INTEGRATION.md) — imported collaborator work, lifecycle fixes, saved results, and dashboard display.
+
+- [Caller AI alerts and historical WAV analysis](CALLER_AI_ALERTS.md) — caller-only audio, duration thresholds, persisted intervals, and opt-in background processing.

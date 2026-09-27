@@ -6,6 +6,7 @@ import asyncio
 from collections import OrderedDict, deque
 from dataclasses import dataclass, replace
 import math
+import time
 from typing import AsyncIterator, Callable
 
 from integrations.contracts import AudioFrame
@@ -13,6 +14,7 @@ from media_capture.capture import decode_mulaw
 from .modulate import (Connector, DEFAULT_DEADLINE_SECONDS, DetectionReport,
                        MAX_AUDIO_SECONDS, stream_inbound_pcm)
 from .policy import DetectionDecision, decide_call_detection
+from .analysis import MAX_WINDOWS, build_analysis
 
 
 _END = object()
@@ -33,7 +35,7 @@ class LiveDetectionWorker:
     def __init__(self, *, api_key: str, queue_frames: int,
                  deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
                  max_audio_seconds: int = MAX_AUDIO_SECONDS,
-                 connector: Connector | None = None) -> None:
+                 connector: Connector | None = None, on_observation=None) -> None:
         if not api_key:
             raise ValueError("api_key is required")
         if type(queue_frames) is not int or queue_frames < 1:
@@ -43,6 +45,7 @@ class LiveDetectionWorker:
         self._deadline_seconds = deadline_seconds
         self._max_audio_seconds = max_audio_seconds
         self._connector = connector
+        self._on_observation = on_observation
         self._accepted_frames = 0
         self._dropped_frames = 0
         self._finished = False
@@ -109,6 +112,7 @@ class LiveDetectionWorker:
                 deadline_seconds=self._deadline_seconds,
                 collection_seconds=self._max_audio_seconds + 15,
                 on_input_complete=self._stop_input,
+                on_observation=self._on_observation,
                 max_audio_seconds=self._max_audio_seconds,
                 connector=self._connector,
             )
@@ -159,11 +163,27 @@ class LiveDetectionManager:
         self.decisions: dict[str, DetectionDecision] = {}
         self._stream_counts: dict[str, int] = {}
         self._budget_samples: dict[str, int] = {}
+        self._windows: dict[str, list[dict]] = {}
+        self._last_publication: dict[str, float] = {}
         self.closed = False
 
     @property
     def active_count(self) -> int:
         return len(self._tasks)
+
+    @property
+    def active_call_ids(self) -> set[str]:
+        return set(self._pending_by_call)
+
+    def _observe(self, call_sid, observation):
+        windows = self._windows.setdefault(call_sid, [])
+        if len(windows) >= MAX_WINDOWS:
+            return
+        windows.append({"stream_id": observation.stream_id, "start_ms": observation.start_ms,
+                        "end_ms": observation.end_ms, "verdict": observation.provider_verdict,
+                        "confidence": observation.confidence})
+        if time.monotonic() - self._last_publication.get(call_sid, 0) >= 2:
+            self._publish(call_sid)
 
     def _publish(self, call_sid: str, decision: DetectionDecision | None = None,
                  *, reason: str | None = None) -> None:
@@ -184,6 +204,16 @@ class LiveDetectionManager:
             payload["status"] = "unknown"
         if reason:
             payload["reason"] = reason
+        outcomes = self._completed_by_call.get(call_sid, ())
+        complete = bool(decision and not self._pending_by_call.get(call_sid)
+                        and not decision.coverage_limited and not decision.dropped_frames
+                        and all(item.report.reason in {None, "no_usable_content"} for item in outcomes))
+        payload["analysis"] = build_analysis(self._windows.get(call_sid, []),
+                          min_confidence=getattr(self._settings, "modulate_detection_min_confidence", .8),
+                          source="live", complete=complete)
+        if not decision:
+            payload["observations"] = len(self._windows.get(call_sid, []))
+        self._last_publication[call_sid] = time.monotonic()
         try:
             self._on_update(call_sid, payload)
         except Exception:
@@ -214,6 +244,7 @@ class LiveDetectionManager:
             deadline_seconds=self._settings.modulate_detection_deadline_seconds,
             max_audio_seconds=math.ceil(remaining_samples / 8000),
             connector=self._connector,
+            on_observation=lambda observation: self._observe(call_sid, observation),
         )
         self._stream_counts[call_sid] = self._stream_counts.get(call_sid, 0) + 1
         task = asyncio.create_task(worker.run(), name="live-modulate-detection")
@@ -277,6 +308,14 @@ class LiveDetectionManager:
                 DetectionReport(call_sid, session.stream_id,
                                 reason="cancelled" if isinstance(exc, asyncio.CancelledError) else "internal_error"),
                 session.worker._accepted_frames, session.worker.dropped_frames)
+        invalid_evidence = outcome.report.reason in {"invalid_provider_response", "audio_discontinuity",
+                            "mixed_sessions", "incomplete_audio", "internal_error"}
+        if invalid_evidence:
+            self._windows[call_sid] = [window for window in self._windows.get(call_sid, [])
+                                      if window["stream_id"] != session.stream_id]
+        elif outcome.report.reason == "no_usable_content":
+            self._windows[call_sid] = [window for window in self._windows.get(call_sid, [])
+                                      if window["stream_id"] != session.stream_id or window["verdict"] == "no-content"]
         self.completed.append(outcome)
         call_outcomes = self._completed_by_call.setdefault(call_sid, [])
         if len(call_outcomes) < self.MAX_STREAMS_PER_CALL:
@@ -297,6 +336,8 @@ class LiveDetectionManager:
             self.decisions.pop(expired, None)
             self._stream_counts.pop(expired, None)
             self._budget_samples.pop(expired, None)
+            self._windows.pop(expired, None)
+            self._last_publication.pop(expired, None)
 
     async def wait_idle(self) -> None:
         if self._tasks:

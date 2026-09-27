@@ -111,7 +111,6 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
         snapshot["voicemail"] = voicemail_snapshot()
         snapshot["recordings"] = await asyncio.to_thread(recording_snapshot)
         snapshot["detection"] = await asyncio.to_thread(detection_snapshot)
-        detections = {result["call_sid"]: result for result in snapshot["detection"]["calls"]}
         sessions = snapshot["sessions"]
         snapshot["call_details"] = (await asyncio.to_thread(call_details_store.snapshot, sessions)
                                     if call_details_store is not None else
@@ -121,6 +120,21 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
         if selected is None:
             selected = (active or sessions or [None])[0]
         snapshot["selected_call_sid"] = selected["call_sid"] if selected else None
+        # The list stays compact; only the selected call includes timed evidence.
+        # Recording-only calls also need evidence even without a transcript session.
+        evidence_sid = (call_sid if call_sid and SID.fullmatch(call_sid)
+                        else snapshot["selected_call_sid"])
+        if evidence_sid:
+            evidence = await asyncio.to_thread(detection_result, evidence_sid)
+            if evidence:
+                catalog = snapshot["detection"]["calls"]
+                existing = next((i for i, item in enumerate(catalog)
+                                 if item["call_sid"] == evidence_sid), None)
+                if existing is None:
+                    catalog.append(evidence)
+                else:
+                    catalog[existing] = evidence
+        detections = {result["call_sid"]: result for result in snapshot["detection"]["calls"]}
         for session in sessions:
             if session["call_sid"] in detections:
                 session["detection"] = deepcopy(detections[session["call_sid"]])

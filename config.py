@@ -46,6 +46,7 @@ class Settings:
     max_call_seconds: int = 1800
     voice_agent_enabled: bool = False
     modulate_detection_enabled: bool = False
+    modulate_backfill_enabled: bool = False
     modulate_api_key: str = field(default="", repr=False)
     detection_storage_dir: str = ""
     modulate_detection_max_audio_seconds: int = 120
@@ -130,6 +131,10 @@ class Settings:
             raise ValueError("VOICE_AGENT_ENABLED must be true or false.")
         if type(self.modulate_detection_enabled) is not bool:
             raise ValueError("MODULATE_DETECTION_ENABLED must be true or false.")
+        if type(self.modulate_backfill_enabled) is not bool:
+            raise ValueError("MODULATE_BACKFILL_ENABLED must be true or false.")
+        if self.modulate_backfill_enabled and not self.modulate_detection_enabled:
+            raise ValueError("Enable MODULATE_DETECTION_ENABLED before recorded caller analysis.")
         if (type(self.modulate_detection_max_audio_seconds) is not int
                 or not 4 <= self.modulate_detection_max_audio_seconds <= 120):
             raise ValueError("MODULATE_DETECTION_MAX_AUDIO_SECONDS must be between 4 and 120.")
@@ -193,6 +198,9 @@ class Settings:
         detection_flag = os.getenv("MODULATE_DETECTION_ENABLED", "false").strip().lower()
         if detection_flag not in {"true", "false"}:
             raise ValueError("MODULATE_DETECTION_ENABLED must be true or false.")
+        backfill_flag = os.getenv("MODULATE_BACKFILL_ENABLED", "false").strip().lower()
+        if backfill_flag not in {"true", "false"}:
+            raise ValueError("MODULATE_BACKFILL_ENABLED must be true or false.")
         return cls(
             account_sid=os.getenv("TWILIO_ACCOUNT_SID", "").strip(),
             auth_token=os.getenv("TWILIO_AUTH_TOKEN", "").strip(),
@@ -228,6 +236,7 @@ class Settings:
             max_call_seconds=int(os.getenv("MAX_CALL_SECONDS", "1800")),
             voice_agent_enabled=voice_flag == "true",
             modulate_detection_enabled=detection_flag == "true",
+            modulate_backfill_enabled=backfill_flag == "true",
             modulate_api_key=os.getenv("MODULATE_API_KEY", "").strip(),
             detection_storage_dir=os.getenv("DETECTION_STORAGE_DIR", "").strip(),
             modulate_detection_max_audio_seconds=int(os.getenv("MODULATE_DETECTION_MAX_AUDIO_SECONDS", "120")),

@@ -6,12 +6,14 @@ from dataclasses import asdict, dataclass
 import math
 from typing import Iterable, Literal, TYPE_CHECKING
 
+from .analysis import MIN_RELIABLE_MS, build_analysis
+
 if TYPE_CHECKING:
     from .live import LiveDetectionOutcome
 
 
 DecisionLabel = Literal["non-synthetic", "synthetic", "unknown"]
-MIN_QUALIFIED_AUDIO_MS = 4_000  # Project policy, not a calibrated provider guarantee.
+MIN_QUALIFIED_AUDIO_MS = MIN_RELIABLE_MS  # Project policy, not a provider guarantee.
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,17 +51,10 @@ def decide_call_detection(
                       and observation.confidence >= min_confidence)
     decisive_observations = tuple(observation for observation in observations
                                   if observation.verdict in {"synthetic", "non-synthetic"})
-    verdicts = {observation.verdict for observation in qualified}
-    # Overlapping provider windows must not multiply the amount of evidence.
-    qualified_ms = 0
-    intervals: dict[str, list[tuple[int, int]]] = {}
-    for observation in qualified:
-        intervals.setdefault(observation.stream_id, []).append((observation.start_ms, observation.end_ms))
-    for stream_intervals in intervals.values():
-        previous_end = -1
-        for start, end in sorted(stream_intervals):
-            qualified_ms += max(0, end - max(start, previous_end))
-            previous_end = max(previous_end, end)
+    analysis = build_analysis([{
+        "stream_id": item.stream_id, "start_ms": item.start_ms, "end_ms": item.end_ms,
+        "verdict": item.provider_verdict, "confidence": item.confidence,
+    } for item in observations], min_confidence=min_confidence)
     dropped_frames = sum(item.dropped_frames for item in completed)
     provider_incomplete = any(item.report.reason not in {None, "no_usable_content"}
                               for item in completed)
@@ -72,13 +67,14 @@ def decide_call_detection(
         reason = "provider_incomplete"
     elif dropped_frames:
         reason = "dropped_audio"
-    elif len(verdicts) > 1:
+    elif analysis["alert"] in {"ai_caller", "none"}:
+        label = "synthetic" if analysis["alert"] == "ai_caller" else "non-synthetic"
+        reason = "confident_synthetic" if label == "synthetic" else "confident_non_synthetic"
+        confidence = min(item.confidence for item in qualified if item.verdict == label)
+    elif analysis["alert"] == "potential_ai":
         reason = "conflicting_evidence"
-    elif len(verdicts) == 1 and qualified_ms >= MIN_QUALIFIED_AUDIO_MS:
-        provider_verdict = next(iter(verdicts))
-        label = provider_verdict
-        reason = "confident_non_synthetic" if label == "non-synthetic" else "confident_synthetic"
-        confidence = min(observation.confidence for observation in qualified)
+    elif len({item.verdict for item in qualified}) > 1:
+        reason = "conflicting_evidence"
     elif qualified:
         reason = "insufficient_evidence"
     elif decisive_observations:

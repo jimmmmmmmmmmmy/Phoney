@@ -195,7 +195,7 @@ def test_live_manager_publishes_analyzing_then_safe_final_result():
     assert result["coverage_limited"] is False
     assert set(result) == {"provider", "status", "label", "confidence", "reason", "streams",
                            "observations", "accepted_frames", "dropped_frames", "submitted_audio_ms",
-                           "coverage_limited"}
+                           "coverage_limited", "analysis"}
     assert "private-test-key" not in json.dumps(result)
 
 
@@ -322,7 +322,8 @@ def test_call_budget_is_shared_by_reconnected_streams_and_clips_final_frame():
     manager = asyncio.run(scenario())
     assert len(sockets) == 2
     assert sum(len(data) for socket in sockets for data in socket.sent if isinstance(data, bytes)) == 5 * 16000
-    assert updates[-1]["status"] == "complete"
+    assert updates[-1]["status"] == "unknown"  # Unmapped reconnect epochs remain conservative.
+    assert updates[-1]["analysis"]["alert"] == "inconclusive"
     assert updates[-1]["coverage_limited"] is True
     assert updates[-1]["submitted_audio_ms"] == 5000
     assert manager.active_count == 0
@@ -381,3 +382,79 @@ def test_history_eviction_preserves_older_streams_still_finalizing():
     assert manager.decisions["CA-overlap"].streams == 2
     assert manager.decisions["CA-overlap"].label == "unknown"
     assert len(manager._completed_by_call) == 1
+
+
+def test_live_windows_publish_throttled_alert_before_call_finishes(monkeypatch):
+    from partner_detection import live
+    clock = [100.0]
+    monkeypatch.setattr(live.time, "monotonic", lambda: clock[0])
+    updates = []
+    class LiveSocket(ProviderSocket):
+        def __init__(self):
+            super().__init__()
+            self.audio_ready = asyncio.Event()
+            self.observed = asyncio.Event()
+        async def send(self, message):
+            await super().send(message)
+            if isinstance(message, bytes):
+                self.audio_ready.set()
+        async def messages(self):
+            await self.audio_ready.wait()
+            for start, end in ((0, 4000), (4000, 8000)):
+                yield json.dumps({"type": "frame", "frame": {
+                    "start_time_ms": start, "end_time_ms": end,
+                    "verdict": "synthetic", "confidence": .95}})
+            self.observed.set()
+            await self.ended.wait()
+            yield json.dumps({"type": "done", "duration_ms": 8000, "frame_count": 2})
+    async def scenario():
+        socket = LiveSocket()
+        manager = LiveDetectionManager(settings(), connector=lambda url: socket,
+                    on_update=lambda sid, payload: updates.append(payload))
+        manager.start("CA-progress", "MZ-progress")
+        clock[0] += 3
+        manager.offer("CA-progress", "inbound", 100, b"\0" * 64000)
+        await socket.observed.wait()
+        assert manager.active_call_ids == {"CA-progress"}
+        assert len(updates) == 2  # Initial state plus one throttled progress publication.
+        progress = updates[-1]
+        assert progress["status"] == "analyzing"
+        assert progress["analysis"]["alert"] == "ai_caller"
+        assert progress["analysis"]["complete"] is False
+        assert progress["analysis"]["windows"][0]["start_ms"] == 100
+        manager.finish("CA-progress")
+        await manager.wait_idle()
+        assert not manager.active_call_ids
+    asyncio.run(scenario())
+    assert len(updates) == 3
+    assert updates[-1]["status"] == "complete"
+    assert updates[-1]["analysis"]["complete"] is True
+    assert updates[-1]["analysis"]["synthetic_ms"] == 8000
+
+
+def test_transport_failure_retains_partial_windows_but_invalid_response_discards_them():
+    async def scenario(invalid):
+        updates = []
+        class FailingSocket(ProviderSocket):
+            async def messages(self):
+                await self.ended.wait()
+                yield json.dumps({"type": "frame", "frame": {
+                    "start_time_ms": 0, "end_time_ms": 4000,
+                    "verdict": "synthetic", "confidence": .95}})
+                yield json.dumps({"type": "unexpected"} if invalid else {"type": "error"})
+        manager = LiveDetectionManager(settings(), connector=lambda url: FailingSocket(),
+                    on_update=lambda sid, payload: updates.append(payload))
+        manager.start("CA-failed", "MZ-failed")
+        manager.offer("CA-failed", "inbound", 0, b"\0" * 32000)
+        manager.finish("CA-failed")
+        await manager.wait_idle()
+        return updates[-1]
+    transport = asyncio.run(scenario(False))
+    assert transport["status"] == "unknown"
+    assert transport["analysis"]["complete"] is False
+    assert transport["analysis"]["alert"] == "ai_caller"
+    assert len(transport["analysis"]["windows"]) == 1
+    invalid = asyncio.run(scenario(True))
+    assert invalid["status"] == "unknown"
+    assert invalid["analysis"]["alert"] == "inconclusive"
+    assert invalid["analysis"]["windows"] == []

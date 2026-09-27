@@ -16,9 +16,18 @@ def configured(tmp_path):
 
 def test_detection_is_opt_in_and_key_is_redacted(tmp_path):
     assert not Settings(**BASE).modulate_detection_enabled
+    assert not Settings(**BASE).modulate_backfill_enabled
     settings = configured(tmp_path)
     assert settings.modulate_api_key not in repr(settings)
     assert settings.modulate_detection_enabled
+
+
+def test_recorded_analysis_requires_explicit_detection_configuration(tmp_path):
+    with pytest.raises(ValueError, match="MODULATE_DETECTION_ENABLED"):
+        Settings(**BASE, modulate_backfill_enabled=True)
+    with pytest.raises(ValueError, match="MODULATE_BACKFILL_ENABLED"):
+        replace(configured(tmp_path), modulate_backfill_enabled="true")
+    assert replace(configured(tmp_path), modulate_backfill_enabled=True).modulate_backfill_enabled
 
 
 @pytest.mark.parametrize("field,value", [
@@ -51,9 +60,14 @@ def test_env_reads_detection_key_without_enabling_by_key_alone(monkeypatch, tmp_
     monkeypatch.setenv("PUBLIC_BASE_URL", BASE["public_base_url"])
     monkeypatch.setenv("MODULATE_API_KEY", "private-env-key")
     monkeypatch.setenv("MODULATE_DETECTION_ENABLED", "false")
+    monkeypatch.setenv("MODULATE_BACKFILL_ENABLED", "false")
     settings = Settings.from_env()
     assert not settings.modulate_detection_enabled
     assert settings.modulate_api_key == "private-env-key"
+    monkeypatch.setenv("MODULATE_BACKFILL_ENABLED", "maybe")
+    with pytest.raises(ValueError, match="MODULATE_BACKFILL_ENABLED"):
+        Settings.from_env()
+    monkeypatch.setenv("MODULATE_BACKFILL_ENABLED", "false")
     monkeypatch.setenv("MODULATE_DETECTION_ENABLED", "maybe")
     with pytest.raises(ValueError):
         Settings.from_env()

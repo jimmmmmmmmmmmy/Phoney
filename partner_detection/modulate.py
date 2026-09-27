@@ -242,6 +242,7 @@ async def stream_inbound_pcm(
     max_audio_seconds: int = MAX_AUDIO_SECONDS,
     collection_seconds: float | None = None,
     on_input_complete: Callable[[], None] | None = None,
+    on_observation: Callable[[DetectionObservation], None] | None = None,
     connector: Connector | None = None,
 ) -> DetectionReport:
     """Collect bounded inbound audio, then allow a separate finalization deadline.
@@ -349,9 +350,20 @@ async def stream_inbound_pcm(
                             except ValueError as exc:
                                 raise _DetectionFailure("invalid_provider_response") from exc
                             if (observations and observation.start_ms < observations[-1].start_ms
+                                    or observation.end_ms > submitted_bytes // 16
                                     or len(observations) >= MAX_OBSERVATIONS):
                                 raise _DetectionFailure("invalid_provider_response")
                             observations.append(observation)
+                            if on_observation is not None and (saw_non_silent_audio
+                                    or observation.provider_verdict == "no-content"):
+                                translated = DetectionObservation(
+                                    observation.session_id, observation.stream_id, observation.track,
+                                    observation.start_ms + source_start_ms, observation.end_ms + source_start_ms,
+                                    observation.verdict, observation.provider_verdict, observation.confidence)
+                                try:
+                                    on_observation(translated)
+                                except Exception:
+                                    pass  # An observer must never stop provider or telephony processing.
                         elif kind == "done":
                             count, duration = message.get("frame_count"), message.get("duration_ms")
                             if (not sender_finished or type(count) is not int or count != len(observations)
@@ -387,16 +399,18 @@ async def stream_inbound_pcm(
 
     elapsed_ms = round((time.monotonic() - started) * 1000)
     submitted_audio_ms = submitted_bytes // 16
-    if reason or not done:
-        return DetectionReport(session_id=session_id, stream_id=stream_id,
-                               reason=reason or "provider_incomplete",
-                               submitted_audio_ms=submitted_audio_ms, elapsed_ms=elapsed_ms,
-                               source_start_ms=source_start_ms, coverage_limited=coverage_limited)
     translated = tuple(DetectionObservation(
         item.session_id, item.stream_id, item.track,
         item.start_ms + source_start_ms, item.end_ms + source_start_ms,
         item.verdict, item.provider_verdict, item.confidence,
     ) for item in observations)
+    if reason or not done:
+        retained = translated if reason in {"provider_timeout", "provider_transport_failed",
+            "provider_reported_error", "provider_incomplete", "audio_collection_timeout"} else ()
+        return DetectionReport(session_id=session_id, stream_id=stream_id,
+                               reason=reason or "provider_incomplete", observations=retained,
+                               submitted_audio_ms=submitted_audio_ms, elapsed_ms=elapsed_ms,
+                               source_start_ms=source_start_ms, coverage_limited=coverage_limited)
     usable = saw_non_silent_audio and any(item.verdict != "unknown" for item in translated)
     verdicts = {item.verdict for item in translated if item.verdict != "unknown"}
     status: Verdict = next(iter(verdicts)) if usable and len(verdicts) == 1 else "unknown"

@@ -1,5 +1,6 @@
 """Private, bounded advisory results; no audio, credentials, or call controls."""
 
+from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime, timezone
 from itertools import islice
@@ -13,10 +14,13 @@ import stat
 import threading
 import time
 
+from .analysis import validate_analysis
+
 SID = re.compile(r"CA[0-9a-fA-F]{32}\Z")
 MAX_FILES = 1000
 MAX_PUBLIC_RESULTS = 20
-MAX_FILE_BYTES = 4096
+MAX_FILE_BYTES = 1024 * 1024
+MAX_DETAIL_RECORDS = 8
 MAX_COUNTER = 1_000_000
 REFRESH_SECONDS = 2.0
 REASONS = frozenset({
@@ -66,7 +70,8 @@ def _root(path, create=False):
 
 
 def _result(value):
-    if not isinstance(value, dict) or set(value) != RESULT_FIELDS:
+    if (not isinstance(value, dict) or not RESULT_FIELDS.issubset(value)
+            or set(value) - RESULT_FIELDS - {"analysis"}):
         raise ValueError("Invalid detection result")
     if (value["provider"] != "modulate" or value["status"] not in {"analyzing", "complete", "unknown"}
             or value["label"] not in {"synthetic", "non-synthetic", "unknown"}
@@ -84,12 +89,17 @@ def _result(value):
         raise ValueError("Incomplete detection cannot establish a verdict")
     if value["label"] != "unknown" and confidence is None:
         raise ValueError("A detection verdict requires confidence")
-    return deepcopy(value)
+    normalized = {field: deepcopy(value[field]) for field in RESULT_FIELDS}
+    if "analysis" in value:
+        normalized["analysis"] = validate_analysis(value["analysis"])
+    return normalized
 
 
 def _document(value, call_sid):
-    if (not isinstance(value, dict) or set(value) != RESULT_FIELDS | {"schema_version", "call_sid", "updated_at"}
-            or type(value["schema_version"]) is not int or value["schema_version"] != 1
+    if (not isinstance(value, dict)
+            or type(value.get("schema_version")) is not int or value["schema_version"] not in {1, 2}
+            or set(value) != RESULT_FIELDS | {"schema_version", "call_sid", "updated_at"}
+                | ({"analysis"} if value["schema_version"] == 2 else set())
             or value["call_sid"] != call_sid or not _sid(call_sid)):
         raise ValueError("Invalid detection document")
     stamp = value["updated_at"]
@@ -98,8 +108,9 @@ def _document(value, call_sid):
     updated = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
     if updated.tzinfo is None:
         raise ValueError("Detection timestamp requires a timezone")
-    result = _result({field: value[field] for field in RESULT_FIELDS})
-    return {**result, "schema_version": 1, "call_sid": call_sid,
+    result = _result({field: item for field, item in value.items()
+                      if field not in {"schema_version", "call_sid", "updated_at"}})
+    return {**result, "schema_version": value["schema_version"], "call_sid": call_sid,
             "updated_at": updated.astimezone(timezone.utc).isoformat()}
 
 
@@ -110,6 +121,8 @@ class DetectionStore:
         self.path = Path(storage_dir)
         self.enabled = bool(storage_dir)
         self._records = {}
+        self._details = OrderedDict()
+        self._seen_versions = {}
         self._failed_writes = set()
         self._load_failed = False
         self._last_refresh = -float("inf")
@@ -135,15 +148,37 @@ class DetectionStore:
         finally:
             os.close(fd)
 
+    @staticmethod
+    def _summary(record):
+        result = {key: value for key, value in record.items() if key != "analysis"}
+        if "analysis" in record:
+            result["analysis"] = {key: value for key, value in record["analysis"].items() if key != "windows"}
+        return result
+
+    def _cache_detail(self, record):
+        sid = record["call_sid"]
+        self._details[sid] = record
+        self._details.move_to_end(sid)
+        while len(self._details) > MAX_DETAIL_RECORDS:
+            self._details.popitem(last=False)
+
     def _merge(self, record):
         sid = record["call_sid"]
         current = self._records.get(sid)
-        if sid in self._failed_writes or (current and current["updated_at"] >= record["updated_at"]):
+        if sid in self._failed_writes or (current and current["updated_at"] > record["updated_at"]):
             return
-        if record["status"] == "analyzing":
-            # A stream owned by another/previous process is not still live here.
+        if current and current["updated_at"] == record["updated_at"]:
+            # Retain live ownership/recovery state when reloading evicted detail.
+            windows = record.get("analysis", {}).get("windows")
+            record = deepcopy(current)
+            if windows is not None:
+                record["analysis"]["windows"] = windows
+        elif record["status"] == "analyzing":
             record.update(status="unknown", label="unknown", confidence=None, reason="interrupted")
-        self._records[sid] = record
+            if "analysis" in record:
+                record["analysis"]["complete"] = False
+        self._records[sid] = self._summary(record)
+        self._cache_detail(record)
         self._bound()
 
     def _bound(self):
@@ -153,6 +188,8 @@ class DetectionStore:
                 break
             oldest = min(removable, key=lambda record: record["updated_at"])
             self._records.pop(oldest["call_sid"])
+            self._details.pop(oldest["call_sid"], None)
+            self._seen_versions.pop(oldest["call_sid"], None)
 
     def _refresh(self):
         if not self.enabled or time.monotonic() - self._last_refresh < REFRESH_SECONDS:
@@ -166,7 +203,13 @@ class DetectionStore:
                         if not entry.name.endswith(".json") or not _sid(entry.name[:-5]):
                             continue
                         try:
-                            self._merge(self._read(root, entry.name[:-5]))
+                            info = entry.stat(follow_symlinks=False)
+                            signature = (info.st_ino, info.st_mtime_ns, info.st_size)
+                            sid = entry.name[:-5]
+                            if self._seen_versions.get(sid) == signature:
+                                continue
+                            self._merge(self._read(root, sid))
+                            self._seen_versions[sid] = signature
                         except (OSError, ValueError, TypeError, OverflowError, RecursionError):
                             continue
             finally:
@@ -181,7 +224,7 @@ class DetectionStore:
         if not self.enabled or not _sid(call_sid):
             return False
         try:
-            record = {**_result(result), "schema_version": 1, "call_sid": call_sid,
+            record = {**_result(result), "schema_version": 2 if "analysis" in result else 1, "call_sid": call_sid,
                       "updated_at": datetime.now(timezone.utc).isoformat()}
         except (ValueError, TypeError, OverflowError):
             return False
@@ -194,7 +237,8 @@ class DetectionStore:
                 return True
             if call_sid not in self._records and len(self._failed_writes) >= MAX_FILES:
                 return False
-            self._records[call_sid] = record
+            self._records[call_sid] = self._summary(record)
+            self._cache_detail(record)
             root = temporary = None
             try:
                 raw = json.dumps(record, ensure_ascii=True, allow_nan=False).encode()
@@ -248,7 +292,7 @@ class DetectionStore:
                     os.close(root)
             except (OSError, ValueError, TypeError, OverflowError, RecursionError):
                 pass
-            record = self._records.get(call_sid)
+            record = self._details.get(call_sid, self._records.get(call_sid))
             return self._public(record) if record is not None else None
 
     def snapshot(self) -> dict:

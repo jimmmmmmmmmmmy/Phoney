@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from dashboard import register_dashboard
 from partner_detection.storage import DetectionStore
+from partner_detection.analysis import build_analysis
 from tests.test_dashboard import Manager, SAMPLE, SETTINGS, SID, OTHER
 
 
@@ -80,3 +81,24 @@ def test_detector_result_has_no_public_write_or_provider_trigger(tmp_path):
             assert client.request(method, f"/api/transcripts/{SID}/export", json=result()).status_code == 405
         assert client.post("/api/detection", json=result()).status_code == 404
         assert client.get("/api/detection/../secret").status_code == 404
+
+
+def test_polling_limits_timed_evidence_to_selected_call(tmp_path):
+    store = DetectionStore(str(tmp_path))
+    evidence = result() | {"analysis": build_analysis([
+        {"stream_id": "MZ" + "1" * 32, "start_ms": 0, "end_ms": 6000,
+         "verdict": "non-synthetic", "confidence": .91}])}
+    assert store.save(SID, evidence)
+    assert store.save(OTHER, evidence)
+    with client_for(store) as client:
+        first = client.get("/api/transcripts", params={"call_sid": SID}).json()
+        rows = {item["call_sid"]: item for item in first["detection"]["calls"]}
+        assert rows[SID]["analysis"]["windows"]
+        assert "windows" not in rows[OTHER]["analysis"]
+        second = client.get("/api/transcripts", params={"call_sid": OTHER}).json()
+        rows = {item["call_sid"]: item for item in second["detection"]["calls"]}
+        assert rows[OTHER]["analysis"]["windows"]
+        assert "windows" not in rows[SID]["analysis"]
+        exported = client.get(f"/api/transcripts/{SID}/export").json()
+        assert exported["detection"]["analysis"]["windows"]
+        assert store.get(OTHER)["analysis"]["windows"]

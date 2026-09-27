@@ -171,3 +171,70 @@ def test_get_refreshes_a_completed_result_from_another_process(tmp_path):
     other = DetectionStore(str(tmp_path))
     assert other.save(CALL, result())
     assert store.get(CALL)["label"] == "synthetic"
+
+
+def analysis(start=0, *, complete=True):
+    from partner_detection.analysis import build_analysis
+    return build_analysis([dict(stream_id="MZ-one", start_ms=start, end_ms=start + 4000,
+                                verdict="synthetic", confidence=.94)], complete=complete)
+
+
+def test_version_two_windows_survive_restart_and_catalog_remains_compact(tmp_path):
+    store = DetectionStore(str(tmp_path))
+    evidence = analysis()
+    assert store.save(CALL, result(analysis=evidence))
+    stored = json.loads((tmp_path / (CALL + ".json")).read_text())
+    assert stored["schema_version"] == 2
+    assert stored["analysis"]["windows"] == evidence["windows"]
+    restarted = DetectionStore(str(tmp_path))
+    assert restarted.get(CALL)["analysis"] == evidence
+    catalog = restarted.snapshot()["calls"][0]
+    assert "windows" not in catalog["analysis"]
+    assert catalog["analysis"]["alert"] == "ai_caller"
+    catalog["analysis"]["alert"] = "none"
+    assert restarted.get(CALL)["analysis"]["alert"] == "ai_caller"
+
+
+def test_interrupted_live_windows_remain_partial_evidence_after_restart(tmp_path):
+    store = DetectionStore(str(tmp_path))
+    pending = result(status="analyzing", label="unknown", confidence=None, reason="analyzing",
+                     analysis=analysis(complete=False))
+    assert store.save(CALL, pending)
+    restored = DetectionStore(str(tmp_path)).get(CALL)
+    assert restored["status"] == "unknown"
+    assert restored["reason"] == "interrupted"
+    assert restored["analysis"]["complete"] is False
+    assert restored["analysis"]["alert"] == "ai_caller"
+    assert len(restored["analysis"]["windows"]) == 1
+
+
+def test_full_window_cache_is_bounded_and_evicted_details_reload_on_demand(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "MAX_DETAIL_RECORDS", 2)
+    store = DetectionStore(str(tmp_path))
+    for index in range(6):
+        assert store.save("CA" + str(index) * 32, result(analysis=analysis()))
+    assert len(store._details) == 2
+    assert all("windows" not in value["analysis"] for value in store._records.values())
+    assert len(store.get("CA" + "0" * 32)["analysis"]["windows"]) == 1
+    assert len(store._details) == 2
+    restarted = DetectionStore(str(tmp_path))
+    assert len(restarted._details) == 2
+    assert len(restarted._records) == 6
+
+
+def test_analysis_tampering_and_extra_payloads_are_rejected(tmp_path):
+    store = DetectionStore(str(tmp_path))
+    for evidence in (analysis() | {"synthetic_share": .93}, analysis() | {"secret": "private"}):
+        assert not store.save(CALL, result(analysis=evidence))
+    assert not list(tmp_path.iterdir())
+
+
+def test_unchanged_large_documents_are_not_reparsed_on_catalog_poll(tmp_path, monkeypatch):
+    store = DetectionStore(str(tmp_path))
+    assert store.save(CALL, result(analysis=analysis()))
+    restarted = DetectionStore(str(tmp_path))
+    def unexpected_read(*args, **kwargs):
+        raise AssertionError("Unchanged catalog entry was reparsed")
+    monkeypatch.setattr(restarted, "_read", unexpected_read)
+    restarted._last_refresh -= 3
+    assert restarted.snapshot()["calls"][0]["call_sid"] == CALL

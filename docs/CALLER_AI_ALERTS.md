@@ -14,7 +14,7 @@ The backend also returns merged `synthetic_intervals`, containing only strongly 
 
 ## Transcript highlights
 
-A finalized **Caller** paragraph receives a light-red background and a red robot SVG in its speaker metadata when its audio timestamps overlap a strong synthetic interval. The interval must belong to the same `stream_sid` as the transcript session. Operator speech, interim text, invalid timings, and mismatched stream epochs are not highlighted. Intervals that only touch a paragraph's start or end do not overlap it.
+A finalized **Caller** message receives a pale-red background across the whole row, rounded corners, and a red robot SVG in its speaker metadata when its audio timestamps overlap a strong synthetic interval. The interval must belong to the same `stream_sid` as the transcript session. Operator speech, interim text, invalid timings, and mismatched stream epochs are not highlighted. Intervals that only touch a paragraph's start or end do not overlap it.
 
 The whole paragraph marks an overlapping audio segment; it is not word-level classification. The robot's accessible label and tooltip explain that relationship. Deepgram transcript timestamps preserve the same initial silence and stream clock used by recordings, while batch evidence retains the trimmed capture-padding offset. No guessed timing adjustment is applied.
 

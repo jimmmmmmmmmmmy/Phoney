@@ -92,7 +92,9 @@ def test_internal_team_view_is_public_with_the_requested_member_and_download_ord
     assert "New College" in response.text and "The Hacking Banyons" in response.text
     downloads = [link for link in document.links if link["attrs"].get("href", "").startswith("/resumes/")]
     assert [link["attrs"]["href"] for link in downloads] == [f"/resumes/{filename}" for _, filename in MEMBERS]
-    assert all("Resume PDF" in link["text"] for link in downloads)
+    assert [" ".join(link["text"].split()) for link in downloads] == [name for name, _ in MEMBERS]
+    assert [link["attrs"].get("download") for link in downloads] == [filename for _, filename in MEMBERS]
+    assert 'class="team-heading"' not in response.text
 
 
 def test_team_page_has_security_headers_and_csp_allows_its_inline_styles(client):
@@ -158,6 +160,22 @@ def test_logo_is_local_svg_without_executable_or_external_resources(client):
             if local_name in {"href", "src"}:
                 assert value.startswith("#")
     assert not re.search(r"(?:url\(|@import)[^;}]*https?://", response.text, re.I)
+
+
+def test_team_background_serves_exact_png_bytes_with_get_and_head(client):
+    original = (ROOT / "public" / "branding" / "shellhacks-2026.png").read_bytes()
+    response = client.get("/assets/shellhacks-2026.png")
+    assert response.status_code == 200
+    assert original.startswith(b"\x89PNG\r\n\x1a\n") and response.content == original
+    assert response.headers["content-type"] == "image/png"
+    assert int(response.headers["content-length"]) == len(original)
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert "set-cookie" not in response.headers
+    head = client.head("/assets/shellhacks-2026.png")
+    assert head.status_code == 200 and head.content == b""
+    assert head.headers["content-type"] == response.headers["content-type"]
+    assert head.headers["content-length"] == response.headers["content-length"]
 
 
 def test_dashboard_brand_and_footer_use_internal_team_links(client):

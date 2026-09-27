@@ -204,6 +204,7 @@ for(const id of ['team-brand','team-brand-mobile','team-footer']){
  $(id).events.click({preventDefault(){prevented=true;}});
  assert.equal(prevented,true);assert.equal(state.page,'team');assert.equal(location.hash,'#team');
  assert.equal($('team-view').hidden,false);assert.equal($('dashboard-view').hidden,true);
+ assert.equal($('page-heading').hidden,true);assert.equal(document.activeElement,$('team-view'));
  assert.equal($('page-title').textContent,'New College');
  assert.equal($('call-audio'),audio);assert.equal(audio.src,src);assert.equal(audio.currentTime,37);
  assert.equal(audio.paused,false);assert.equal($('audio-panel').hidden,false);
@@ -212,6 +213,7 @@ for(const id of ['team-brand','team-brand-mobile','team-footer']){
  assert.equal(state.page,'calls');assert.equal(state.detail,false);assert.equal(state.selected,SID);
  assert.equal(location.hash,'#calls/recent');
  assert.equal($('team-view').hidden,true);assert.equal($('calls-detail').hidden,true);
+ assert.equal($('page-heading').hidden,false);assert.equal(document.activeElement,$('page-title'));
  assert.equal($('call-audio'),audio);assert.equal(audio.src,src);assert.equal(audio.currentTime,37);
  assert.equal(audio.paused,false);assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
  assert.equal(audio.plays,plays);
@@ -275,7 +277,7 @@ state.snapshot=snapshot([session(),session(OTHER)],[recording(),recording(OTHER)
 const audio=$('call-audio');audio.play();audio.currentTime=17;
 const src=audio.src,loads=audio.loads,plays=audio.plays;
 showPage('team');$('audio-close').events.click();
-assert.equal(document.activeElement,$('page-title'));assert.equal(state.page,'team');
+assert.equal(document.activeElement,$('team-view'));assert.equal(state.page,'team');
 // A delayed native play event cannot start audio after the panel was dismissed.
 audio.paused=false;audio.events.play();assert.equal(audio.paused,true);
 showPage('calls');backToCalls();state.paused=true;

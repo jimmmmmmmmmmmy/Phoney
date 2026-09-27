@@ -167,6 +167,7 @@ class OperatorSession:
     turns: list[dict] = field(default_factory=list, repr=False)
     summary: str = ""
     canonical_call_sid: str = ""
+    duration_seconds: int | None = None
     agent_name: str = ""
     agent_snapshot: object = field(default=None, repr=False)
     legs: dict[str, SessionLeg] = field(default_factory=dict, repr=False)
@@ -618,6 +619,9 @@ class OperatorSessions:
             if raw in TERMINAL_STATUSES:
                 leg.ended = True
                 leg.state = LEG_ENDED
+                if (sid == session.canonical_call_sid and isinstance(duration, int)
+                        and not isinstance(duration, bool) and 0 <= duration <= 999999):
+                    session.duration_seconds = duration
                 return {"action": "terminal", "reason": raw, "duration_seconds": duration}
             return {"action": "accepted", "status": raw}
 

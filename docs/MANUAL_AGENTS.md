@@ -36,7 +36,7 @@ Agents, revisions, and voice mappings survive server restarts, deployments, and 
 
 ## Use a manually enabled call
 
-1. Call the Twilio number from a different phone. The caller hears **New College Data Science** and the recording/transcription disclosure while `OWNER_NUMBER` rings. Answer normally: both microphones connect as soon as both signed audio streams are ready, with no acceptance digit. This starts a human conversation, not AI. Outbound API calls retain their separate press-1 acceptance step.
+1. Call the Twilio number from a different phone. The caller hears exactly **New College Data Science** while `OWNER_NUMBER` rings. Answer normally: both microphones connect as soon as both signed audio streams are ready, with no acceptance digit. This starts a human conversation, not AI. Outbound API calls retain their separate press-1 acceptance step.
 2. Talk normally, then press **#N** on the owner phone for the saved shortcut (for example, **#1** for Voice Clone). Remote-party keypad commands cannot activate agents.
 3. Humans continue talking during preparation. The caller alone hears “An AI assistant is joining this call.” The controller waits for Twilio's playback acknowledgement before agent speech starts. The owner remains connected and can hear the dialogue.
 4. Press **#0** at any point to cancel generation and queued playback and restore the owner microphone. Caller speech interrupts an agent answer and a finalized turn drives the next response.
@@ -56,3 +56,24 @@ When the agent decides the conversation should end, it can say a brief farewell 
 Offline tests use fake Twilio legs, Deepgram, Gemini, ElevenLabs, and Modulate. They cover inbound answer-to-connect in either stream order, privacy before both streams authenticate, outbound acceptance, manual-only activation, nine slots, immutable context/prompt/voice snapshots, announcement acknowledgements, realistic-length audio backpressure, interruption, `#0` races, failed transcription/provider recovery, explicit end-call parsing, farewell playback ordering, both-leg hangup, and late-dial/hangup cleanup. They do not establish real-phone audio quality, provider voice permissions, or production latency.
 
 Before wider use, run one controlled phone call to verify caller-only cue, voice/context, repeated dialogue, interruption, `#0`, hangup, recording, and post-call summaries. Provider/STT failures restore human relay while the router remains healthy. A process/network failure cannot guarantee uninterrupted audio: this opt-in transport carries both microphones through Python. Deployment drains active calls; disabling inbound routing restores the original conference path for subsequent calls after restart/deploy.
+
+### Handoff timing diagnostics
+
+The installed `.runtime/app.log` retains `operator_trace` JSON events keyed by
+`call_sid`. Each includes session-relative `elapsed_ms` and generation `epoch`.
+The events distinguish shortcut receipt, preparation, Gemini's first text,
+ElevenLabs' first audio, announcement playback, agent activation, caller
+interruptions, and Twilio playback acknowledgments. Prompt text, transcript
+text, audio, and provider credentials are excluded. Historical calls made
+before these events were added cannot provide precise provider latency.
+
+Human speech during preparation updates the context without repeatedly
+canceling the handoff. Changed context is refreshed after the announcement.
+The announcement and first reply synthesize concurrently; the fixed
+announcement is cached by voice and model after a manual activation.
+Repeated selection of the active shortcut is a no-op. `#0`, a different
+shortcut, and hangup still cancel the current generation.
+
+If the tunnel drops and a terminal callback is missed, a bounded provider
+status check reconciles an ended call. A socket disconnect alone never counts
+as a hangup, and a reconnected stream invalidates the old check.

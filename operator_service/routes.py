@@ -21,6 +21,7 @@ import logging
 import threading
 import time
 import inspect
+import json
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, Response
@@ -45,6 +46,8 @@ TERMINAL_STATUSES = frozenset({"completed", "busy", "no-answer", "failed", "canc
 # Twilio's per-leg ringing timeout. The store's owner-ringing guard adds a
 # buffer for the callback that reports the timeout.
 RING_TIMEOUT_SECONDS = 25
+DISCONNECT_STATUS_DELAYS = (5.0, 15.0, 30.0, 60.0)
+STATUS_FETCH_SECONDS = 12.0
 ACCEPT_DIGIT = "1"
 ACCEPT_PROMPT = "Press 1 to connect."
 def leg_twiml(public_base: str, session_id: str, role: str, generation: int, token: str,
@@ -130,6 +133,17 @@ class TwilioLegs:
 
         await asyncio.to_thread(end)
 
+    async def read_status(self, call_sid: str) -> dict:
+        """Read provider state without changing a call when callbacks were lost."""
+        def fetch():
+            call = self._client().calls(call_sid).fetch()
+            raw = str(call.duration or "")
+            duration = (int(raw) if raw.isascii() and raw.isdecimal() and len(raw) <= 6
+                        else None)
+            return {"status": call.status, "duration_seconds": duration}
+
+        return await asyncio.to_thread(fetch)
+
 
 class OperatorController:
     """Owns the Twilio legs, the per-session router, and the phase deadlines."""
@@ -157,6 +171,8 @@ class OperatorController:
         self._context_revisions = {}
         self._output_clocks = {}
         self._agent_frames_sent = {}
+        self.announcement_cache = {}
+        self._disconnect_checks: dict[tuple[str, str], asyncio.Task] = {}
         self.voice_id = voice_id or (voice.elevenlabs_voice_id if voice is not None else "")
         self.keypad_factory = keypad_factory
         self.keypads: dict[str, Keypad] = {}
@@ -184,6 +200,21 @@ class OperatorController:
     def elapsed_ms(self, session_id):
         session = self.store.sessions.get(session_id)
         return max(0, int((time.monotonic() - session.created) * 1000)) if session else 0
+
+    def trace(self, session_id, event, **fields):
+        """Persist timing and control evidence without prompts, audio, or secrets."""
+        session = self.store.find(session_id)
+        if session is None:
+            return
+        log.info("operator_trace %s", json.dumps({"call_sid": session.canonical_call_sid,
+            "session": session_id, "event": event, "elapsed_ms": self.elapsed_ms(session_id),
+            "epoch": session.reply_epoch, "mode": session.mode, **fields}, separators=(",", ":")))
+
+    def _same_takeover(self, session_id, slot):
+        session = self.store.find(session_id)
+        return bool(session and session.active and session.profile == slot
+                    and session.agent_snapshot is not None
+                    and session.mode in (PREPARING, ANNOUNCING, AGENT))
 
     def relay_ready(self, session_id):
         session = self.store.sessions.get(session_id)
@@ -283,17 +314,8 @@ class OperatorController:
 
     def inbound_twiml(self, session):
         leg = session.legs[REMOTE]
-        notice = "New College Data Science."
-        if self.settings.media_capture_enabled:
-            disclosure = ("This demo call records and transcribes audio for testing."
-                      if self.settings.transcription_enabled else "This demo call records audio for testing.")
-            if self.settings.modulate_detection_enabled:
-                disclosure = ("This demo call records, transcribes, and analyzes audio for testing."
-                          if self.settings.transcription_enabled
-                          else "This demo call records and analyzes audio for testing.")
-            notice += " " + disclosure
         return leg_twiml(self.settings.public_base_url, session.id, REMOTE,
-                         leg.generation, leg.token, prompt=notice)
+                         leg.generation, leg.token, prompt="New College Data Science")
 
     async def _dial_owner(self, session_id: str):
         if not await self.store.begin_owner_dial(session_id):
@@ -345,6 +367,7 @@ class OperatorController:
             await self.store.dial_failed(session_id, role)
 
     async def stream_started(self, session_id: str, role: str, stream_sid: str):
+        self._cancel_disconnect_check(session_id, role)
         session = self.store.sessions.get(session_id)
         if session is None or not session.active:
             return
@@ -381,6 +404,58 @@ class OperatorController:
         session = self.store.sessions.get(session_id)
         if session is not None and session.mode != HUMAN:
             await self._release(session_id)
+        if session is not None and session.active and hasattr(self.dialer, "read_status"):
+            leg = session.legs[role]
+            if not leg.attached and leg.call_sid:
+                self._cancel_disconnect_check(session_id, role)
+                self._disconnect_checks[(session_id, role)] = self.store.spawn(
+                    self._recover_disconnected_leg(session_id, role, leg.generation, leg.call_sid))
+
+    def _cancel_disconnect_check(self, session_id: str, role: str):
+        task = self._disconnect_checks.pop((session_id, role), None)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    def _still_disconnected(self, session_id, role, generation, call_sid):
+        session = self.store.find(session_id)
+        leg = session.legs.get(role) if session is not None else None
+        return bool(session and session.active and leg and not leg.attached
+                    and not leg.ended and leg.generation == generation and leg.call_sid == call_sid)
+
+    async def _recover_disconnected_leg(self, session_id, role, generation, call_sid):
+        """Recover missed terminal callbacks, never infer hangup from a lost socket.
+
+        The recovery redirect gets a grace period. Every result is checked
+        against the original stream generation so an old read cannot end a
+        reconnected call. REST timeouts and live statuses leave the call alone.
+        """
+        key = (session_id, role)
+        try:
+            for delay in DISCONNECT_STATUS_DELAYS:
+                await asyncio.sleep(delay)
+                if not self._still_disconnected(session_id, role, generation, call_sid):
+                    return
+                try:
+                    status = await asyncio.wait_for(self.dialer.read_status(call_sid),
+                                                    timeout=STATUS_FETCH_SECONDS)
+                except Exception as exc:
+                    log.warning("operator_disconnect_status_failed session=%s role=%s type=%s",
+                                session_id, role, type(exc).__name__)
+                    continue
+                if not self._still_disconnected(session_id, role, generation, call_sid):
+                    return
+                if status.get("status") not in TERMINAL_STATUSES:
+                    continue
+                result = await self.store.record_status(session_id, role, call_sid,
+                    status["status"], duration=status.get("duration_seconds"))
+                if result["action"] == "terminal":
+                    log.info("operator_missed_status_recovered session=%s role=%s status=%s",
+                             session_id, role, status["status"])
+                    await self.end(session_id, f"{role}-{result['reason']}")
+                return
+        finally:
+            if self._disconnect_checks.get(key) is asyncio.current_task():
+                self._disconnect_checks.pop(key, None)
 
     async def dtmf(self, session_id: str, digit: str):
         session = self.store.sessions.get(session_id)
@@ -451,12 +526,17 @@ class OperatorController:
 
     async def _run_command(self, session_id: str, command: Command):
         if command.kind == PROFILE:
+            self.trace(session_id, "shortcut", slot=command.value)
+            if self._same_takeover(session_id, command.value):
+                self.trace(session_id, "shortcut-already-active", slot=command.value)
+                return
             # A published-slot lookup may wait on SQLite. Keep that work off
             # the phone's media reader, including while its result is awaited.
             request_id = self._takeover_requests.get(session_id, 0) + 1
             self._takeover_requests[session_id] = request_id
             self.store.spawn(self._take_over(session_id, command.value, request_id=request_id))
         elif command.kind == RELEASE:
+            self.trace(session_id, "release-shortcut")
             await self._release(session_id)
         elif command.kind in (DIGITS, HASH):
             await self._queue_ivr(session_id, command.value)
@@ -480,6 +560,8 @@ class OperatorController:
             raise OperatorRejected("voice-not-ready")
         if not isinstance(slot, str) or slot not in tuple(str(i) for i in range(1, 10)):
             raise OperatorRejected("invalid-slot")
+        if self._same_takeover(session_id, slot):
+            return False
         router = self.router(session_id)
         if session.phase != CONNECTED or not all(router.attached(role) for role in ROLES):
             raise OperatorRejected("call-not-connected")
@@ -521,6 +603,7 @@ class OperatorController:
         session.agent_snapshot = snapshot
         session.agent_name = snapshot.name
         session.voice_id = snapshot.voice_id
+        self.trace(session_id, "takeover-preparing", slot=slot)
         self._start_dialogue(session, announce=True)
         return True
 
@@ -551,16 +634,13 @@ class OperatorController:
         if final:
             self._context_revisions[session_id] = self._context_revisions.get(session_id, 0) + 1
             await self.store.add_turn(session_id, speaker, text)
-            if session.mode == PREPARING and session.agent_snapshot is not None:
-                # A real turn arriving during preparation supersedes the old
-                # answer while both humans continue hearing each other.
-                await self.store.invalidate_reply(session_id)
-                self._stop_playback(session_id)
-                self._start_dialogue(session, announce=True)
-                return
+            # Keep the manual handoff moving while humans continue talking.
+            # DialogueRun refreshes changed context once after the announcement;
+            # canceling preparation for every STT segment can starve takeover.
         if speaker == REMOTE and session.mode == AGENT:
             # Interim remote speech clears queued agent audio immediately.
             if self.playing(session_id):
+                self.trace(session_id, "caller-interruption")
                 await self.store.invalidate_reply(session_id)
                 self._stop_playback(session_id)
                 self._note_cleared(session_id, self.router(session_id).clear(*ROLES))
@@ -584,6 +664,7 @@ class OperatorController:
 
     async def _release(self, session_id: str):
         """``#0`` returns control immediately and never waits on a provider."""
+        self.trace(session_id, "return-to-human")
         self._takeover_requests[session_id] = self._takeover_requests.get(session_id, 0) + 1
         self._stop_playback(session_id)
         timer = self._reply_timers.pop(session_id, None)
@@ -604,6 +685,7 @@ class OperatorController:
         log.info("operator_release session=%s", session_id)
 
     async def _abandon(self, session_id, reason):
+        self.trace(session_id, "takeover-failed", reason=reason)
         log.warning("operator_takeover_abandoned session=%s reason=%s", session_id, reason)
         await self._release(session_id)
 
@@ -653,6 +735,8 @@ class OperatorController:
 
     def _stop_session_tasks(self, session_id: str):
         """Drop a session's keypad state and cancel its playback work."""
+        for role in ROLES:
+            self._cancel_disconnect_check(session_id, role)
         for table in (self.keys, self._reply_timers):
             task = table.pop(session_id, None)
             if task is not None and not task.done() and task is not asyncio.current_task():

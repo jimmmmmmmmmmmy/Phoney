@@ -177,7 +177,7 @@ def test_signed_inbound_joins_on_answer_without_keypad_or_ai(manual_app, first_r
     assert stream_parameter(first.text, "token") == session.legs[REMOTE].token
     assert f"/media/{session.id}/remote/" in first.text
     assert ET.fromstring(first.text).find("Say").text == (
-        "New College Data Science. This demo call records, transcribes, and analyzes audio for testing.")
+        "New College Data Science")
     assert ET.fromstring(dialer.created[0]["twiml"]).find("Say") is None
     repeated = inbound(client, settings)
     assert repeated.text == first.text

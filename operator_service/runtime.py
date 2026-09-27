@@ -68,6 +68,13 @@ class DialogueRun:
         self.takeover_request = controller._takeover_requests.get(session.id, 0)
         self.open_audio = None
         self.end_requested = False
+        self.cue_task = None
+        self.stage = "context"
+        self.started = time.monotonic()
+
+    def trace(self, event, **fields):
+        self.controller.trace(self.session.id, event, run_epoch=self.epoch,
+            run_ms=int((time.monotonic() - self.started) * 1000), **fields)
 
     def current(self):
         return (self.session.active and self.session.reply_epoch == self.epoch
@@ -75,6 +82,7 @@ class DialogueRun:
 
     async def run(self):
         reply_exhausted = False
+        self.trace("generation-started", announce=self.announce)
         try:
             async with asyncio.timeout(PREPARATION_SECONDS):
                 turns = (await maybe_await(self.controller.context_getter(self.session))
@@ -89,37 +97,42 @@ class DialogueRun:
                 self.producer = asyncio.create_task(self._produce(http, conversation))
                 if self.announce:
                     async with asyncio.timeout(PREPARATION_SECONDS):
-                        cue = await speech(http, self.voice.elevenlabs_api_key,
-                            self.snapshot.voice_id, ANNOUNCEMENT,
-                            model=self.voice.elevenlabs_model, output_format="ulaw_8000",
-                            timeout=min(self.voice.request_timeout, PREPARATION_SECONDS))
-                        if not cue or len(cue) > MAX_AUDIO_BYTES:
-                            raise ValueError("Invalid announcement audio")
+                        # Synthesize the fixed cue and first response in parallel.
+                        # Human relay remains live until both are usable.
+                        self.cue_task = asyncio.create_task(self._announcement(http))
+                        self.stage = "first-phrase"
                         first = await self._next_phrase()
                         reply_exhausted = first is None
                         if first is None and not self.end_requested:
                             raise ValueError("Empty agent reply")
                         audio = None
                         if first is not None:
+                            self.stage = "first-audio"
                             audio = self._speech(http, first)
                             self.open_audio = audio
                             # The first usable response must exist before muting the owner.
                             first_chunk = await anext(audio)
                             if not first_chunk:
                                 raise ValueError("Empty agent audio")
+                        self.stage = "announcement-audio"
+                        cue = await self.cue_task
                     if not self.current():
                         return
                     await self.controller.store.transition(self.session.id, self.epoch, ANNOUNCING)
+                    self.trace("announcement-started")
+                    self.stage = "announcement-playback"
                     self.controller.router(self.session.id).set_mode(ANNOUNCING)
                     await self._play_chunks(_bytes(cue), kind="announcement")
                     await self._ack("announcement")
                     if not self.current():
                         return
                     await self.controller.store.transition(self.session.id, self.epoch, AGENT)
+                    self.trace("agent-active")
                     self.controller.router(self.session.id).set_mode(AGENT)
                     if self.context_revision != self.controller._context_revisions.get(self.session.id, 0):
                         # Speech during the announcement is new evidence too;
                         # preserve the cue but replace the now-stale first reply.
+                        self.trace("context-refreshed-after-announcement")
                         await self.controller.store.invalidate_reply(self.session.id)
                         self.controller._start_dialogue(self.session)
                         return
@@ -136,13 +149,20 @@ class DialogueRun:
                 # revokes this action even while its registry lookup is pending.
                 if (self.end_requested and self.current()
                         and self.takeover_request == self.controller._takeover_requests.get(self.session.id, 0)):
+                    self.trace("agent-end-call")
                     await self.controller.end(self.session.id, "agent-end-call")
         except asyncio.CancelledError:
+            self.trace("generation-canceled", stage=self.stage)
             raise
         except Exception as exc:
+            self.trace("generation-failed", stage=self.stage, error=type(exc).__name__)
             if self.current():
                 await self.controller._abandon(self.session.id, "dialogue-" + type(exc).__name__)
         finally:
+            if self.cue_task is not None:
+                if not self.cue_task.done():
+                    self.cue_task.cancel()
+                await asyncio.gather(self.cue_task, return_exceptions=True)
             if self.producer is not None and not self.producer.done():
                 self.producer.cancel()
             if self.producer is not None:
@@ -154,15 +174,37 @@ class DialogueRun:
                 await self._record(self.pending, "interrupted")
                 self.pending = None
 
+    async def _announcement(self, http):
+        key = (self.snapshot.voice_id, self.voice.elevenlabs_model, ANNOUNCEMENT)
+        cache = self.controller.announcement_cache
+        if key in cache:
+            self.trace("announcement-cache-hit")
+            return cache[key]
+        started = time.monotonic()
+        audio = await speech(http, self.voice.elevenlabs_api_key, self.snapshot.voice_id,
+            ANNOUNCEMENT, model=self.voice.elevenlabs_model, output_format="ulaw_8000",
+            timeout=min(self.voice.request_timeout, PREPARATION_SECONDS))
+        if not audio or len(audio) > MAX_AUDIO_BYTES:
+            raise ValueError("Invalid announcement audio")
+        if len(cache) >= 16:
+            cache.pop(next(iter(cache)))
+        cache[key] = audio
+        self.trace("announcement-audio-ready", duration_ms=int((time.monotonic()-started)*1000))
+        return audio
+
     async def _produce(self, http, conversation):
         buffer = SentenceBuffer()
         commands = ReplyCommandBuffer()
         chars = 0
+        first_token = True
         async for event in reply_events(http, self.voice.gemini_api_key,
                 conversation.system, deepcopy(conversation.contents),
                 model=self.voice.gemini_model, max_output_tokens=self.voice.max_reply_tokens,
                 timeout=self.voice.request_timeout):
             if event["kind"] == "text":
+                if first_token:
+                    self.trace("gemini-first-text")
+                    first_token = False
                 chars += len(event["text"])
                 if chars > MAX_REPLY_CHARS:
                     raise ValueError("Reply too long")
@@ -174,6 +216,7 @@ class DialogueRun:
         if trailing:
             await self.phrases.put(trailing)
         await self.phrases.put(None)
+        self.trace("gemini-complete", end_requested=self.end_requested)
 
     async def _next_phrase(self):
         # A producer exception must wake a consumer waiting on an empty queue.
@@ -189,12 +232,24 @@ class DialogueRun:
                 get.cancel()
             await asyncio.gather(get, return_exceptions=True)
 
-    def _speech(self, http, phrase):
-        return speech_bytes(http, self.voice.elevenlabs_api_key, self.snapshot.voice_id,
+    async def _speech(self, http, phrase):
+        started = time.monotonic()
+        first = True
+        stream = speech_bytes(http, self.voice.elevenlabs_api_key, self.snapshot.voice_id,
             phrase, model=self.voice.elevenlabs_model, output_format="ulaw_8000",
             timeout=self.voice.request_timeout)
+        try:
+            async for chunk in stream:
+                if first and chunk:
+                    self.trace("elevenlabs-first-audio", duration_ms=int((time.monotonic()-started)*1000))
+                    first = False
+                yield chunk
+        finally:
+            await stream.aclose()
 
     async def _phrase(self, phrase, chunks):
+        self.stage = "reply-playback"
+        self.trace("reply-started")
         self.pending = {"text": phrase, "start": self.controller.elapsed_ms(self.session.id),
                         "frames": 0, "sent_before": self.controller._agent_frames_sent.get(self.session.id, 0)}
         await self._play_chunks(chunks, kind="agent")
@@ -203,6 +258,7 @@ class DialogueRun:
             await self._record(self.pending, "played")
             self.confirmed.append(phrase)
             self.pending = None
+            self.trace("reply-played")
 
     async def _play_chunks(self, chunks, *, kind):
         # A stream that keeps returning tiny chunks must not evade the timeout.
@@ -255,6 +311,7 @@ class DialogueRun:
         name = f"{kind}-{self.epoch}-{self.sequence}"
         await self.controller.wait_for_mark(self.session.id, name,
             timeout=PLAYBACK_ACK_SECONDS + 1.0)
+        self.trace("playback-acknowledged", kind=kind)
         if not self.current():
             raise asyncio.CancelledError
 

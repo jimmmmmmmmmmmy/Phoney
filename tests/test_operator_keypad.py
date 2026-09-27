@@ -437,15 +437,15 @@ def test_later_context_failure_returns_agent_control_to_the_owner(tmp_path):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("capture,transcription,detection,notice", [
-    (False,False,False,None),
-    (True,False,False,"This demo call records audio for testing."),
-    (True,True,False,"This demo call records and transcribes audio for testing."),
-    (True,False,True,"This demo call records and analyzes audio for testing."),
-    (True,True,True,"This demo call records, transcribes, and analyzes audio for testing."),
+@pytest.mark.parametrize("capture,transcription,detection", [
+    (False,False,False),
+    (True,False,False),
+    (True,True,False),
+    (True,False,True),
+    (True,True,True),
 ])
-def test_inbound_notice_matches_enabled_observers_before_streaming(
-        tmp_path,capture,transcription,detection,notice):
+def test_inbound_greeting_is_exact_before_streaming(
+        tmp_path,capture,transcription,detection):
     async def run():
         h=Harness(tmp_path); s=await h.joined()
         h.controller.settings=replace(SETTINGS,media_capture_enabled=capture,
@@ -453,8 +453,8 @@ def test_inbound_notice_matches_enabled_observers_before_streaming(
             media_storage_dir=str(tmp_path/"capture"),transcript_storage_dir=str(tmp_path/"transcripts"),
             detection_storage_dir=str(tmp_path/"detection"),deepgram_api_key="test",modulate_api_key="test")
         response=ET.fromstring(h.controller.inbound_twiml(s))
-        greeting = "New College Data Science." + (" " + notice if notice else "")
-        assert response[0].tag=="Say" and response[0].text==greeting
+        assert response[0].tag=="Say" and response[0].text=="New College Data Science"
+        assert len(response.findall("Say")) == 1
         assert response[1].tag=="Connect"
         assert response.find("Connect/Stream") is not None
         await h.close()
@@ -512,5 +512,137 @@ def test_output_timestamps_are_sample_monotonic_even_with_a_frozen_clock(tmp_pat
         h.controller.elapsed_ms=lambda sid:17
         for _ in range(3): h.controller.output_audio(s.id,OWNER_FRAME,"human")
         assert [row[2] for row in h.output]==[17,37,57]
+        await h.close()
+    asyncio.run(run())
+
+
+def test_continuous_transcript_does_not_starve_manual_handoff(tmp_path):
+    async def run():
+        h = Harness(tmp_path, provider=Provider(delay=.15))
+        s = await h.joined()
+        await h.press('#1')
+        await until(lambda: s.mode == PREPARING)
+        epoch = s.reply_epoch
+        # Every update used to cancel synthesis and start the same cue again.
+        for i in range(30):
+            if s.mode != PREPARING:
+                break
+            await h.controller.transcript(s.id, OWNER, f'Updated detail {i}.', segment_id=f'turn-{i}')
+            assert s.reply_epoch == epoch
+            assert h.router.forward(OWNER, OWNER_FRAME)
+            await asyncio.sleep(.03)
+        assert s.mode in (ANNOUNCING, AGENT)
+        await h.complete()
+        cues = [b for u, b in h.provider.requests if 'elevenlabs' in u and b['text'] == 'An AI assistant is joining this call.']
+        assert len(cues) == 1
+        requests = [b for u, b in h.provider.requests if 'generativelanguage' in u]
+        assert len(requests) == 2
+        assert 'Updated detail' in json.dumps(requests[-1]['contents'])
+        await h.close()
+    asyncio.run(run())
+
+
+def test_repeated_active_shortcut_does_not_revoke_end_call_or_restart(tmp_path):
+    async def run():
+        h = Harness(tmp_path, provider=Provider(delay=.1))
+        s = await h.joined()
+        await h.press('#1')
+        await until(lambda: s.mode == PREPARING)
+        request = h.controller._takeover_requests[s.id]
+        epoch = s.reply_epoch
+        await h.press('#1#1')
+        assert h.controller._takeover_requests[s.id] == request
+        assert s.reply_epoch == epoch
+        await h.complete()
+        assert len([u for u, b in h.provider.requests if 'generativelanguage' in u]) == 1
+        await h.close()
+    asyncio.run(run())
+
+
+def test_first_reply_synthesis_runs_while_announcement_is_pending(tmp_path, monkeypatch):
+    async def run():
+        cue_started, reply_started, release_cue = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        async def cue(*args, **kwargs):
+            cue_started.set()
+            await release_cue.wait()
+            return bytes([0x10]) * FRAME_BYTES * 3
+        async def reply(*args, **kwargs):
+            reply_started.set()
+            yield bytes([0x2A]) * FRAME_BYTES * 3
+        monkeypatch.setattr('operator_service.runtime.speech', cue)
+        monkeypatch.setattr('operator_service.runtime.speech_bytes', reply)
+        h = Harness(tmp_path)
+        s = await h.joined()
+        await h.press('#1')
+        async with asyncio.timeout(1):
+            await cue_started.wait()
+            await reply_started.wait()
+        assert s.mode == PREPARING
+        assert h.router.forward(OWNER, OWNER_FRAME)
+        release_cue.set()
+        await h.complete()
+        await h.close()
+    asyncio.run(run())
+
+
+def test_cached_announcement_and_private_timing_trace(tmp_path, caplog):
+    caplog.set_level('INFO', logger='uvicorn.error')
+    async def run():
+        h = Harness(tmp_path)
+        s = await h.joined()
+        await h.press('#1'); await h.complete()
+        await h.press('#0#1'); await h.complete()
+        cues = [b for u, b in h.provider.requests if 'elevenlabs' in u and b['text'] == 'An AI assistant is joining this call.']
+        assert len(cues) == 1
+        traces = [json.loads(r.message.split('operator_trace ', 1)[1]) for r in caplog.records if r.message.startswith('operator_trace ')]
+        events = {r['event'] for r in traces}
+        assert {'shortcut','gemini-first-text','elevenlabs-first-audio','announcement-cache-hit','playback-acknowledged','reply-played'} <= events
+        assert all(r['call_sid'] == REMOTE_SID and r['elapsed_ms'] >= 0 for r in traces)
+        assert all('text' not in r and 'prompt' not in r and 'voice_id' not in r for r in traces)
+        await h.close()
+    asyncio.run(run())
+
+
+def test_disconnect_recovers_terminal_provider_status_and_duration(tmp_path, monkeypatch):
+    monkeypatch.setattr('operator_service.routes.DISCONNECT_STATUS_DELAYS', (.01,))
+    async def run():
+        h = Harness(tmp_path); s = await h.joined()
+        async def read_status(sid):
+            assert sid == REMOTE_SID
+            return {'status': 'completed', 'duration_seconds': 35}
+        h.dialer.read_status = read_status
+        s.legs[REMOTE].attached = False
+        h.router.channels[REMOTE].detach()
+        await h.controller.stream_stopped(s.id, REMOTE, 'socket-disconnected')
+        await until(lambda: not s.active)
+        await h.store.wait_idle()
+        assert s.duration_seconds == 35 and s.ended_reason == 'remote-completed'
+        assert not h.controller._disconnect_checks
+        await h.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('reconnect', [False, True])
+def test_disconnect_live_status_or_new_stream_never_ends_call(tmp_path, monkeypatch, reconnect):
+    monkeypatch.setattr('operator_service.routes.DISCONNECT_STATUS_DELAYS', (.01,))
+    async def run():
+        h = Harness(tmp_path); s = await h.joined()
+        started, finish = asyncio.Event(), asyncio.Event()
+        async def read_status(sid):
+            started.set()
+            await finish.wait()
+            return {'status': 'completed' if reconnect else 'in-progress', 'duration_seconds': 35}
+        h.dialer.read_status = read_status
+        s.legs[REMOTE].attached = False
+        await h.controller.stream_stopped(s.id, REMOTE, 'socket-disconnected')
+        await started.wait()
+        if reconnect:
+            s.legs[REMOTE].attached = True
+            s.legs[REMOTE].generation += 1
+            await h.controller.stream_started(s.id, REMOTE, REMOTE_STREAM)
+        finish.set()
+        await h.store.wait_idle()
+        assert s.active and h.dialer.ended == []
+        assert not h.controller._disconnect_checks
         await h.close()
     asyncio.run(run())

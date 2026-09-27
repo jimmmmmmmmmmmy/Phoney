@@ -169,7 +169,8 @@ class BridgePipeline:
             try:
                 await self.capture.finish(sid)
             finally:
-                await asyncio.to_thread(self.details.finish, sid)
+                await asyncio.to_thread(self.details.finish, sid,
+                                        duration_seconds=getattr(session, "duration_seconds", None))
         finally:
             self.calls.pop(sid, None)
             self.started.discard(sid)

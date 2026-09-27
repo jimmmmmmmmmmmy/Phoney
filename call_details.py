@@ -109,7 +109,15 @@ is a content identity, not a claim that its speech recognition is accurate.
             characters += len(text)
             if characters > 100_000:
                 return None
-            rows.append([track, start, end, text])
+            row = [track, start, end, text]
+            if segment.get("source") == "agent":
+                speaker, delivery = segment.get("speaker"), segment.get("delivery")
+                if (track != "outbound" or not isinstance(speaker, str)
+                        or not 1 <= len(speaker) <= 80 or CONTROL.search(speaker)
+                        or delivery not in {"played", "interrupted"}):
+                    return None
+                row.extend(["agent", speaker, delivery])
+            rows.append(row)
         rows.sort(key=lambda row: (row[1], row[2], row[0], row[3]))
         payload = json.dumps([document["call_sid"], stream, rows], ensure_ascii=True,
                              separators=(",", ":"), allow_nan=False).encode()

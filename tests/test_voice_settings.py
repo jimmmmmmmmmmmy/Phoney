@@ -50,10 +50,11 @@ def test_invalid_voice_configuration_fails(fields):
 def test_live_settings_require_every_credential_and_an_absolute_directory():
     assert VoiceSettings(enabled=True, **LIVE).configured
     assert not VoiceSettings(enabled=True, **LIVE).missing
-    for key, value in (("gemini_api_key", ""), ("elevenlabs_api_key", ""),
-                       ("elevenlabs_voice_id", ""), ("output_dir", "")):
+    for key, value in (("gemini_api_key", ""), ("elevenlabs_api_key", ""), ("output_dir", "")):
         with pytest.raises(ValueError):
             VoiceSettings(enabled=True, **{**LIVE, key: value})
+    # Published agents select their own voice; the global legacy voice is optional.
+    assert VoiceSettings(enabled=True, **{**LIVE, "elevenlabs_voice_id": ""}).enabled
 
 
 def test_settings_keep_credentials_out_of_repr():

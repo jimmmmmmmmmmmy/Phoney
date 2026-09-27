@@ -108,6 +108,9 @@ class Controller:
     def on_audio(self, session_id, role, frame):
         self.audio.append((role, frame))
 
+    def relay_ready(self, session_id):
+        return True
+
 
 async def until(predicate, timeout=2.0):
     async with asyncio.timeout(timeout):
@@ -379,6 +382,25 @@ def test_dropped_audio_is_counted_when_a_leg_has_no_stream_yet():
         # peer leg loses it, and the loss is what "dropped" measures.
         assert controller.audio == [(REMOTE, REMOTE_FRAME)]
 
+    asyncio.run(run())
+
+
+def test_waiting_caller_audio_is_captured_without_relaying_either_microphone():
+    async def run():
+        controller = Controller()
+        controller.relay_ready = lambda session_id: False
+        router = CallRouter("session", controller)
+        owner, remote = FakeSocket(), FakeSocket()
+        router.channels[OWNER].attach(owner, OWNER_STREAM, 1, counters())
+        router.channels[REMOTE].attach(remote, REMOTE_STREAM, 1, counters())
+        assert router.forward(OWNER, OWNER_FRAME) is False
+        assert router.forward(REMOTE, REMOTE_FRAME) is False
+        assert controller.audio == [(REMOTE, REMOTE_FRAME)]
+        assert not router.channels[OWNER].media and not router.channels[REMOTE].media
+        controller.relay_ready = lambda session_id: True
+        assert router.forward(OWNER, OWNER_FRAME) is True
+        assert router.forward(REMOTE, REMOTE_FRAME) is True
+        router.close()
     asyncio.run(run())
 
 

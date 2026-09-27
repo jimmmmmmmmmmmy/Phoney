@@ -203,6 +203,7 @@
   }
 
   function renderDrafts() {
+    if (!draftList) return;
     draftList.replaceChildren();
     storageNotice.textContent = workspaceNotice;
     storageNotice.hidden = !workspaceNotice;
@@ -228,6 +229,7 @@
   }
 
   function renderAgents() {
+    if (agentsView.getAttribute("data-agent-workspace") === "managed") return;
     const top = node("div", "agent-workspace-heading");
     const intro = node("div");
     intro.append(node("h2", "", "Rotary agents"), node("p", "", "Prepare the agents and prompts for your conversations."));
@@ -282,7 +284,7 @@
     const close = iconButton("Close create agent", "close", "create-agent-close");
     close.addEventListener("click", () => { if (!draftSaving) draftDialog.close(); });
     heading.append(title, close);
-    const description = node("p", "toolbar-dialog-description", "Save an agent draft to the shared workspace. Connect its voice provider later.");
+    const description = node("p", "toolbar-dialog-description", "Save a draft, then choose a voice and call shortcut in Agents.");
     description.id = "create-agent-description";
     const nameLabel = node("label", "toolbar-field", "Agent name");
     draftName = node("input");
@@ -362,7 +364,8 @@
       document.getElementById("nav-agents").click();
       document.getElementById("page-title").focus({preventScroll: true});
       previousFocus = null;
-      liveNotice.textContent = "Agent draft saved to the workspace. Provider connection is pending.";
+      liveNotice.textContent = "Agent draft saved to the workspace.";
+      window.DashboardAgents?.editAgent(draftIdentity.id);
     });
   }
 
@@ -395,7 +398,7 @@
     settingsPopup.id = "settings-popover";
     settingsPopup.hidden = true;
     settingsPopup.setAttribute("aria-label", "Settings");
-    settingsPopup.append(node("h2", "", "Workspace settings"), node("p", "", "Voice provider connections and workspace preferences will be available here later."));
+    settingsPopup.append(node("h2", "", "Workspace settings"), node("p", "", "Manage voices and manual call shortcuts from the Agents tab."));
     const createPopup = node("div", "toolbar-popover toolbar-create-menu");
     createPopup.id = "create-menu";
     createPopup.hidden = true;

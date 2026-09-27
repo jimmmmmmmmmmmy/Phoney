@@ -54,8 +54,10 @@ LEG_RECONNECTING = "reconnecting"
 LEG_ENDED = "ended"
 
 HUMAN = "human"
+PREPARING = "preparing"
+ANNOUNCING = "announcing"
 AGENT = "agent"
-MODES = (HUMAN, AGENT)
+MODES = (HUMAN, PREPARING, ANNOUNCING, AGENT)
 
 SPEAKERS = ("owner", "remote", "agent")
 
@@ -164,6 +166,9 @@ class OperatorSession:
     ended_reason: str = ""
     turns: list[dict] = field(default_factory=list, repr=False)
     summary: str = ""
+    canonical_call_sid: str = ""
+    agent_name: str = ""
+    agent_snapshot: object = field(default=None, repr=False)
     legs: dict[str, SessionLeg] = field(default_factory=dict, repr=False)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
@@ -181,6 +186,7 @@ class OperatorSession:
         return {"id": self.id, "direction": self.direction, "to": _redacted(self.to),
                 "goal": self.goal[:MAX_GOAL_CHARS], "phase": self.phase, "mode": self.mode,
                 "profile": self.profile, "reply_epoch": self.reply_epoch,
+                "canonical_call_sid": self.canonical_call_sid, "agent_name": self.agent_name,
                 "created_at": self.created_at, "elapsed_ms": int((now - self.created) * 1000),
                 "setup_deadline_ms": (int((self.deadline - self.created) * 1000)
                                       if self.deadline is not None else None),
@@ -222,7 +228,8 @@ class OperatorSessions:
     def ready(self) -> bool:
         """Whether an outbound session could be reserved at all."""
         return bool(self.settings.owner_number and self.settings.twilio_number
-                    and self.settings.operator_admin_token and self.settings.allowed_destinations)
+                    and self.settings.operator_admin_token and (self.settings.allowed_destinations
+                    or getattr(self.settings, "operator_inbound_enabled", False)))
 
     @property
     def allowed(self) -> frozenset[str]:
@@ -352,6 +359,32 @@ class OperatorSessions:
             session.legs[REMOTE] = self._new_leg(REMOTE, destination)
             self.sessions[session.id] = session
             self._idempotency[key] = session.id
+            session.deadline = session.created + self._arm(session.id, "setup", "setup-timeout")
+            return session, False
+
+    async def reserve_inbound(self, call_sid: str, caller: str):
+        """Bind an existing inbound remote call without dialing it again."""
+        if not CALL_SID.fullmatch(str(call_sid)) or not E164.fullmatch(str(caller)):
+            raise OperatorRejected("invalid-inbound-call")
+        async with self._lock:
+            for session in self.sessions.values():
+                if session.canonical_call_sid == call_sid:
+                    return session, True
+            if self.closed or self.draining:
+                raise OperatorRejected("draining")
+            if not (getattr(self.settings, "operator_inbound_enabled", False)
+                    and self.settings.owner_number and self.settings.twilio_number
+                    and self.settings.operator_admin_token):
+                raise OperatorRejected("not-configured")
+            self._prune()
+            if len(self.sessions) >= self.MAX_SESSIONS or self.active_count >= self.max_active:
+                raise OperatorRejected("capacity")
+            session = OperatorSession(id=uuid.uuid4().hex, direction="inbound", to=caller,
+                                      canonical_call_sid=call_sid)
+            session.legs[OWNER] = self._new_leg(OWNER, self.settings.owner_number)
+            session.legs[REMOTE] = self._new_leg(REMOTE, caller)
+            session.legs[REMOTE].call_sid = call_sid
+            self.sessions[session.id] = session
             session.deadline = session.created + self._arm(session.id, "setup", "setup-timeout")
             return session, False
 
@@ -602,7 +635,7 @@ class OperatorSessions:
             session.reply_epoch += 1
             return True
 
-    async def select_profile(self, session_id, profile) -> bool:
+    async def select_profile(self, session_id, profile, *, mode=AGENT) -> bool:
         """Select one saved profile and delegate the conversation to it.
 
         An already-active profile is a no-op, so holding ``#1`` does not restart
@@ -617,12 +650,29 @@ class OperatorSessions:
             session = self._require(session_id)
             if not session.active:
                 raise OperatorRejected("session-ended")
-            if session.profile == profile and session.mode == AGENT:
+            if session.profile == profile and session.mode in (PREPARING, ANNOUNCING, AGENT):
                 return False
             session.profile = profile
-            session.mode = AGENT
+            session.mode = mode
             session.reply_epoch += 1
             return True
+
+    async def transition(self, session_id, epoch: int, mode: str) -> bool:
+        """Advance one takeover without invalidating its generation."""
+        if mode not in MODES:
+            raise OperatorRejected("invalid-mode")
+        async with self._lock:
+            session = self._require(session_id)
+            if not session.active or session.reply_epoch != epoch or session.mode == HUMAN:
+                return False
+            session.mode = mode
+            return True
+
+    async def invalidate_reply(self, session_id) -> int:
+        async with self._lock:
+            session = self._require(session_id)
+            session.reply_epoch += 1
+            return session.reply_epoch
 
     def note_mark(self, session_id, role, name, state) -> bool:
         """Record playback-mark state without awaiting: readers must not block."""

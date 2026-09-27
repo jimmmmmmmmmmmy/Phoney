@@ -49,6 +49,7 @@
   </style>
   <link rel="stylesheet" href="/assets/dashboard-crm.css">
   <link rel="stylesheet" href="/assets/dashboard-toolbar.css">
+  <link rel="stylesheet" href="/assets/dashboard-agents.css">
 </head>
 <body>
   <aside class="app-nav" aria-label="Workspace navigation">
@@ -104,8 +105,8 @@
     <section id="contacts-view" class="workspace-page" aria-label="Contacts" hidden>
       <div class="placeholder-panel"><div class="placeholder-heading"><h2>Contact list</h2><span class="planned">Planned</span></div><p>A shared place for caller names, phone numbers, and outbound contacts. Contacts aren’t connected yet.</p></div>
     </section>
-    <section id="agents-view" class="workspace-page" aria-label="Agents" hidden>
-      <div class="placeholder-panel"><div class="placeholder-heading"><h2>Rotary agents</h2><span class="planned">Planned</span></div><p>Connect agents and save the prompts they use during calls.</p><dl class="shortcut-list" aria-label="Proposed keypad controls"><div><dt><kbd>#1</kbd></dt><dd>Add an agent to the conversation</dd></div><div><dt><kbd>#2</kbd></dt><dd>Transfer the conversation to an agent</dd></div></dl><p>These are proposed controls. Keypad routing, agent connections, and outbound prompts aren’t connected yet.</p></div>
+    <section id="agents-view" class="workspace-page" aria-label="Agents" data-agent-workspace="managed" hidden>
+      <p class="agent-loading" role="status">Loading agents…</p>
     </section>
     <section id="team-view" class="workspace-page" aria-label="Team résumés" hidden>
       <div class="team-content">
@@ -556,9 +557,11 @@
       row.append(node("div", "timestamp", timestamp(segment.start_ms)));
       const content = node("div", "message-content");
       const meta = node("div", "message-meta");
-      meta.append(node("span", "speaker", trackNames[track]));
+      const generated = segment.source === "agent";
+      meta.append(node("span", "speaker", generated ? `${text(segment.speaker).trim() || "Agent"} · Agent` : trackNames[track]));
+      if (generated && segment.delivery === "interrupted") meta.append(node("span", "interim-label", "Interrupted"));
       if (interim) meta.append(node("span", "interim-label", segment.unconfirmed ? "Awaiting confirmation" : "In progress"));
-      else if (Number.isFinite(segment.confidence) && segment.confidence >= 0 && segment.confidence <= 1) {
+      else if (!generated && Number.isFinite(segment.confidence) && segment.confidence >= 0 && segment.confidence <= 1) {
         const confidence = node("span", "confidence", `${Math.round(segment.confidence * 100)}% confidence`);
         confidence.setAttribute("aria-label", `Transcription confidence: ${Math.round(segment.confidence * 100)}%`);
         confidence.setAttribute("title", "Transcription confidence");
@@ -1085,5 +1088,6 @@
   <script src="/assets/dashboard-workspace.js" defer></script>
   <script src="/assets/dashboard-crm.js" defer></script>
   <script src="/assets/dashboard-toolbar.js" defer></script>
+  <script src="/assets/dashboard-agents.js" defer></script>
 </body>
 </html>

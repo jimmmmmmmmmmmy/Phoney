@@ -46,6 +46,8 @@ class Settings:
     operator_admin_token: str = field(default="", repr=False)
     max_call_seconds: int = 1800
     voice_agent_enabled: bool = False
+    agent_management_enabled: bool = False
+    operator_inbound_enabled: bool = False
     modulate_detection_enabled: bool = False
     modulate_backfill_enabled: bool = False
     modulate_api_key: str = field(default="", repr=False)
@@ -135,6 +137,17 @@ class Settings:
             raise ValueError("MAX_CALL_SECONDS must be between 30 and 14400 seconds.")
         if type(self.voice_agent_enabled) is not bool:
             raise ValueError("VOICE_AGENT_ENABLED must be true or false.")
+        if type(self.agent_management_enabled) is not bool:
+            raise ValueError("AGENT_MANAGEMENT_ENABLED must be true or false.")
+        if type(self.operator_inbound_enabled) is not bool:
+            raise ValueError("OPERATOR_INBOUND_ENABLED must be true or false.")
+        if self.agent_management_enabled and not self.workspace_storage_dir:
+            raise ValueError("Set WORKSPACE_STORAGE_DIR before enabling agent management.")
+        if self.operator_inbound_enabled:
+            if not self.operator_ready or not self.voice_agent_enabled:
+                raise ValueError("Configure the operator bridge and VOICE_AGENT_ENABLED before inbound routing.")
+            if not self.agent_management_enabled or not self.transcription_enabled:
+                raise ValueError("Inbound operator calls require agent management and transcription.")
         if type(self.modulate_detection_enabled) is not bool:
             raise ValueError("MODULATE_DETECTION_ENABLED must be true or false.")
         if type(self.modulate_backfill_enabled) is not bool:
@@ -178,13 +191,14 @@ class Settings:
 
     @property
     def operator_ready(self):
-        """Whether the two-leg bridge has everything an outbound call needs.
+        """Whether an explicitly configured bridge can reserve call sessions.
 
-        Keep this in step with ``OperatorSessions.ready``: the same four values
-        decide whether a session can be reserved.
+        Outbound destinations still require the allowlist; inbound routing is
+        independently opted in. Keep this in step with OperatorSessions.ready.
         """
         return bool(self.owner_number and self.twilio_number
-                    and self.operator_admin_token and self.allowed_destinations)
+                    and self.operator_admin_token
+                    and (self.allowed_destinations or self.operator_inbound_enabled))
 
     @classmethod
     def from_env(cls):
@@ -201,6 +215,12 @@ class Settings:
         voice_flag = os.getenv("VOICE_AGENT_ENABLED", "false").strip().lower()
         if voice_flag not in {"true", "false"}:
             raise ValueError("VOICE_AGENT_ENABLED must be true or false.")
+        management_flag = os.getenv("AGENT_MANAGEMENT_ENABLED", "false").strip().lower()
+        if management_flag not in {"true", "false"}:
+            raise ValueError("AGENT_MANAGEMENT_ENABLED must be true or false.")
+        inbound_flag = os.getenv("OPERATOR_INBOUND_ENABLED", "false").strip().lower()
+        if inbound_flag not in {"true", "false"}:
+            raise ValueError("OPERATOR_INBOUND_ENABLED must be true or false.")
         detection_flag = os.getenv("MODULATE_DETECTION_ENABLED", "false").strip().lower()
         if detection_flag not in {"true", "false"}:
             raise ValueError("MODULATE_DETECTION_ENABLED must be true or false.")
@@ -242,6 +262,8 @@ class Settings:
             operator_admin_token=os.getenv("OPERATOR_ADMIN_TOKEN", "").strip(),
             max_call_seconds=int(os.getenv("MAX_CALL_SECONDS", "1800")),
             voice_agent_enabled=voice_flag == "true",
+            agent_management_enabled=management_flag == "true",
+            operator_inbound_enabled=inbound_flag == "true",
             modulate_detection_enabled=detection_flag == "true",
             modulate_backfill_enabled=backfill_flag == "true",
             modulate_api_key=os.getenv("MODULATE_API_KEY", "").strip(),

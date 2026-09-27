@@ -87,11 +87,13 @@ class _Session:
 
 
 class TranscriptionManager:
-    def __init__(self, settings, connector=None):
+    def __init__(self, settings, connector=None, on_segment=None, on_failure=None):
         self.settings = settings
         self.enabled = bool(getattr(settings, "transcription_enabled", False))
         self.model = getattr(settings, "deepgram_model", "nova-3")
         self.connector = connector or websockets.connect
+        self.on_segment = on_segment
+        self.on_failure = on_failure
         self.sessions: dict[str, _Session] = {}
         self.tasks: set[asyncio.Task] = set()
         self.storage_tasks: set[asyncio.Task] = set()
@@ -116,6 +118,46 @@ class TranscriptionManager:
 
     def _touch(self):
         self.revision += 1
+
+    def _notify_segment(self, call_sid, segment, final):
+        # Observers enqueue bounded work; provider/control I/O never runs here.
+        if self.on_segment is not None:
+            try:
+                self.on_segment(call_sid, dict(segment), final)
+            except Exception:
+                pass
+
+    def call_segments(self, call_sid):
+        session = self.sessions.get(call_sid)
+        if session is not None:
+            segments = session.segments
+        else:
+            document = next((item for item in self.history if item["call_sid"] == call_sid), None)
+            segments = document["segments"] if document else []
+        return copy.deepcopy(sorted(segments, key=lambda item: (item["start_ms"], item["id"])))
+
+    def add_agent_segment(self, call_sid, text, start_ms, end_ms, *, name="Agent", delivery="played"):
+        """Record delivered agent text, never re-transcribe our synthesized voice."""
+        session = self.sessions.get(call_sid)
+        if (session is None or session.finishing or not isinstance(text, str)
+                or not text.strip() or len(text) > MAX_TEXT
+                or type(start_ms) is not int or type(end_ms) is not int
+                or not 0 <= start_ms <= end_ms <= self.settings.media_max_seconds * 1000
+                or delivery not in {"played", "interrupted"}
+                or not isinstance(name, str) or not 1 <= len(name.strip()) <= 80
+                or any(ord(c) < 32 for c in name)):
+            return False
+        if (len(session.segments) >= MAX_SEGMENTS
+                or session.text_chars + len(text) > MAX_SESSION_TEXT):
+            return False
+        segment = {"id": f"agent-{len(session.segments)}", "track": "outbound",
+                   "start_ms": start_ms, "end_ms": end_ms, "text": text.strip(),
+                   "confidence": 1.0, "source": "agent", "speaker": name.strip(),
+                   "delivery": delivery}
+        session.segments.append(segment)
+        session.text_chars += len(segment["text"])
+        self._touch()
+        return True
 
     def start(self, call_sid: str, stream_sid: str) -> None:
         if (not self.enabled or self.closed or call_sid in self.seen or call_sid in self.sessions
@@ -153,6 +195,12 @@ class TranscriptionManager:
             track.stop.set()
             track.wake.set()
             self._touch()
+            callback = self.on_failure
+            if callback is not None:
+                try:
+                    callback(session.call_sid, track.name)
+                except Exception:
+                    pass
 
     def offer(self, call_sid: str, track: str, timestamp_ms: int, payload: bytes) -> None:
         session = self.sessions.get(call_sid)
@@ -418,9 +466,12 @@ class TranscriptionManager:
                         session.segments[existing] = segment
                     session.text_chars = total
                     self._touch()
+                    self._notify_segment(session.call_sid, segment, True)
             elif track.interim != text:
                 track.interim = text
                 self._touch()
+                self._notify_segment(session.call_sid, {"track": track.name,
+                    "text": text, "start_ms": start_ms, "end_ms": end_ms}, False)
         if not track.close_sent:
             raise TrackFailure("provider-disconnected")
 
@@ -471,6 +522,13 @@ class TranscriptionManager:
                         or not math.isfinite(segment["confidence"])
                         or not 0 <= segment["confidence"] <= 1):
                     return False
+                if segment.get("source") == "agent":
+                    if (segment["track"] != "outbound"
+                            or not isinstance(segment.get("speaker"), str)
+                            or not 1 <= len(segment["speaker"]) <= 80
+                            or any(ord(c) < 32 for c in segment["speaker"])
+                            or segment.get("delivery") not in {"played", "interrupted"}):
+                        return False
                 chars += len(segment["text"])
             return chars <= MAX_SESSION_TEXT
         except (KeyError, TypeError, ValueError, OverflowError):

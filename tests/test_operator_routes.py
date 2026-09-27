@@ -352,7 +352,8 @@ def test_owner_presses_one_and_both_people_hear_each_other():
                 assert status["legs"][OWNER]["counters"]["dtmf"] == 3
                 assert status["legs"][REMOTE]["counters"]["frames_in"] == 1
                 body = client.get(f"/api/sessions/{session_id}", headers=HEADERS).text
-                assert owner_sid not in body and remote_sid not in body
+                assert owner_sid not in body and remote_sid in body
+                assert status["canonical_call_sid"] == remote_sid
                 ended = signed_post(client, settings, f"/twilio/status/{session_id}/owner",
                                     {"AccountSid": ACCOUNT, "CallSid": owner_sid,
                                      "CallStatus": "completed", "CallDuration": "62"})
@@ -398,7 +399,8 @@ def test_a_signed_start_that_arrives_before_the_rest_result_still_binds():
                     # The eventual REST result disagreed, so nothing is dialed twice.
                     assert session_of(client, session_id).phase == ENDED
                     assert session_of(client, session_id).ended_reason == expected_reason
-                    assert dialer.ended == [OTHER_SID]
+                    assert set(dialer.ended) == {OTHER_SID, OWNER_SID}
+                    assert len(dialer.ended) == 2
 
     asyncio.run(run_case(OTHER_SID))
     asyncio.run(run_case(OWNER_SID, expected_reason="owner-dial-mismatch"))
@@ -419,6 +421,23 @@ def test_an_uncertain_dial_is_reconciled_and_never_repeated():
         assert len(dialer.created) == 1        # no blind retry
         assert dialer.ended == []
         assert client.get(f"/api/sessions/{session_id}", headers=HEADERS).json()["phase"] == ENDED
+
+
+def test_late_rest_result_does_not_repeat_cleanup_for_an_already_bound_call():
+    with bridge_client() as (client, dialer, settings):
+        dialer.hold = asyncio.Event()
+        session_id = start_call(client).json()["session_id"]
+        until(client, lambda: len(dialer.created) == 1)
+        sid = dialer.created[0]["sid"]
+        assert signed_post(client, settings, f"/twilio/status/{session_id}/owner",
+                           {"AccountSid": ACCOUNT, "CallSid": sid,
+                            "CallStatus": "ringing"}).status_code == 204
+        assert client.post(f"/api/sessions/{session_id}/end", headers=HEADERS).status_code == 200
+        until(client, lambda: dialer.ended == [sid])
+        client.portal.call(dialer.hold.set)
+        settle(client)
+        assert dialer.ended == [sid]
+        assert len(dialer.created) == 1 and session_of(client, session_id).phase == ENDED
 
 
 def test_callbacks_and_recovery_check_session_role_and_sid():
@@ -495,15 +514,14 @@ class Speech:
         return httpx.MockTransport(handle)
 
 
-def test_the_owner_keypad_plays_the_cloned_phrase_and_returns_control(tmp_path):
-    """The Stage 2 demo end to end: ``#1`` speaks, ``#0`` hands control back."""
+def test_a_connected_bridge_never_autorenders_or_uses_unpublished_default_profiles(tmp_path):
     speech = Speech()
     voice = VoiceSettings(enabled=True, gemini_api_key="gemini-key",
                           elevenlabs_api_key="elevenlabs-key", elevenlabs_voice_id=VOICE_ID,
                           output_dir=str(tmp_path / "voice"))
     with bridge_client(voice=voice) as (client, dialer, settings):
         controller = client.app.state.operator_controller
-        controller.clips.transport = speech.transport()
+        controller.provider_transport = speech.transport()
         session_id = start_call(client).json()["session_id"]
         settle(client)
         with connect(client, settings, session_id, OWNER) as owner:
@@ -514,34 +532,14 @@ def test_the_owner_keypad_plays_the_cloned_phrase_and_returns_control(tmp_path):
                 remote.send_json(connected())
                 remote.send_json(start_message(client, session_id, REMOTE))
                 until(client, lambda: session_of(client, session_id).phase == CONNECTED)
-                # The phrase is rendered once, while the two people are talking.
-                until(client, lambda: not controller.prefetch)
-                assert len(speech.requests) == 1
                 owner.send_json(keypad("#", 3))
                 owner.send_json(keypad("1", 4))
-                until(client, lambda: session_of(client, session_id).mode == "agent")
-                await_frame(client, remote, CLIP_FRAME)
-                status = client.get(f"/api/sessions/{session_id}", headers=HEADERS).json()
-                assert status["profile"] == "1" and status["reply_epoch"] == 1
-                assert status["mode"] == "agent"
-                assert speech.requests[0]["text"] == load_profiles()["1"].demo_phrase
-                assert len(speech.requests) == 1        # the press used the cached clip
-                # A remote keypad cannot select a profile, mid-takeover included.
-                remote.send_json({"event": "dtmf", "sequenceNumber": "9",
-                                  "streamSid": REMOTE_STREAM,
-                                  "dtmf": {"track": "inbound_track", "digit": "#"}})
                 settle(client)
-                assert session_of(client, session_id).mode == "agent"
-                assert len(dialer.created) == 2
-                owner.send_json(keypad("#", 5))
-                owner.send_json(keypad("0", 6))
-                until(client, lambda: session_of(client, session_id).mode == "human")
-                owner.send_json(media_message(OWNER_FRAME, sequence="7"))
-                await_frame(client, remote, OWNER_FRAME)
-                status = client.get(f"/api/sessions/{session_id}", headers=HEADERS).json()
-                assert status["reply_epoch"] == 2
-                settle(client)
-                assert dialer.ended == []
+                assert session_of(client, session_id).mode == "human"
+                assert speech.requests == []
+                assert client.get("/api/operator/sessions", headers=HEADERS).json()["sessions"][0]["id"] == session_id
+                assert client.post(f"/api/sessions/{session_id}/takeover", headers=HEADERS,
+                                   json={"slot": "1"}).status_code == 409
 
 
 def test_mode_and_end_routes_require_the_admin_token_and_stay_in_scope():
@@ -552,15 +550,15 @@ def test_mode_and_end_routes_require_the_admin_token_and_stay_in_scope():
         assert client.get(f"/api/sessions/{session_id}").status_code == 403
         assert client.get(f"/api/sessions/{'0' * 32}", headers=HEADERS).status_code == 404
         assert client.post(f"/api/sessions/{session_id}/mode", headers=HEADERS,
-                           json={"mode": "agent"}).json()["changed"] is True
-        assert session_of(client, session_id).mode == "agent"
-        assert session_of(client, session_id).reply_epoch == 1
+                           json={"mode": "agent"}).status_code == 400
         assert client.post(f"/api/sessions/{session_id}/mode", headers=HEADERS,
-                           json={"mode": "agent"}).json()["changed"] is False
+                           json={"mode": "agent", "slot": "1"}).status_code == 409
+        assert session_of(client, session_id).mode == "human"
+        assert session_of(client, session_id).reply_epoch == 0
         assert client.post(f"/api/sessions/{session_id}/mode", headers=HEADERS,
                            json={"mode": "1", "extra": 1}).status_code == 400
         assert client.post(f"/api/sessions/{session_id}/mode", headers=HEADERS,
-                           json={"mode": "human"}).json()["changed"] is True
+                           json={"mode": "human"}).json()["changed"] is False
         ended = client.post(f"/api/sessions/{session_id}/end", headers=HEADERS)
         assert ended.status_code == 200 and ended.json()["phase"] == ENDED
         owner_sid = dialer.created[0]["sid"]
@@ -570,7 +568,7 @@ def test_mode_and_end_routes_require_the_admin_token_and_stay_in_scope():
         settle(client)
         assert dialer.ended == [owner_sid]
         assert client.post(f"/api/sessions/{session_id}/mode", headers=HEADERS,
-                           json={"mode": "agent"}).status_code == 409
+                           json={"mode": "human"}).status_code == 409
 
 
 # ------------------------------------------------------- the real REST contract

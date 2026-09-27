@@ -1,598 +1,518 @@
-"""Keypad takeover over the real controller: fake sockets, fake provider, no phone.
-
-The controller is driven exactly as the media reader drives it, so these tests
-cover the doc's Stage 2 list: remote-key isolation, incomplete prefixes, repeated
-commands, stale-audio cancellation, and a provider failure that still returns
-control to the owner.
-"""
-
+"""Manual dialogue over real routing with mocked Gemini, TTS, and phone sockets."""
 import asyncio
 import base64
+from dataclasses import replace
 import json
-import time
+from types import SimpleNamespace
 import uuid
+import xml.etree.ElementTree as ET
 
 import httpx
+import pytest
 
 from config import Settings
 from operator_service import OperatorSessions
-from operator_service.codecs import is_silence
-from operator_service.controls import Keypad, load_profiles
+from operator_service.controls import Keypad
 from operator_service.routes import OperatorController
-from operator_service.sessions import AGENT, HUMAN, OWNER, REMOTE
+from operator_service.sessions import AGENT, ANNOUNCING, CONNECTED, HUMAN, OWNER, PREPARING, REMOTE, OperatorRejected
 from voice_stack.audio import FRAME_BYTES
 from voice_stack.settings import VoiceSettings
 
-ACCOUNT = "AC" + "a" * 32
-OWNER_NUMBER = "+12025550101"
-CALLEE = "+12025550102"
-DESTINATION = "+12025550103"
-ADMIN_TOKEN = "operator-admin-token-32-characters-long"
-OWNER_SID = "CA" + "1" * 32
-REMOTE_SID = "CA" + "2" * 32
-OWNER_STREAM = "MZ" + "3" * 32
-REMOTE_STREAM = "MZ" + "4" * 32
+OWNER_SID, REMOTE_SID = "CA" + "1" * 32, "CA" + "2" * 32
+OWNER_STREAM, REMOTE_STREAM = "MZ" + "3" * 32, "MZ" + "4" * 32
 OWNER_FRAME = bytes([0x11]) * FRAME_BYTES
-SETTINGS = Settings(
-    account_sid=ACCOUNT, auth_token="operator-keypad-test-token",
-    public_base_url="https://operator.example", twilio_number=CALLEE,
-    owner_number=OWNER_NUMBER, allowed_destinations=(DESTINATION,),
-    operator_admin_token=ADMIN_TOKEN, max_call_seconds=1800,
-)
-PROFILES = load_profiles()
-CLIP_FRAMES = 3
-CLIP = bytes([0x2A]) * (FRAME_BYTES * CLIP_FRAMES)
-OTHER_CLIP = bytes([0x5A]) * (FRAME_BYTES * CLIP_FRAMES)
-# The documented preparation deadline is three seconds; tests shorten it so a
-# stalled provider does not add three seconds of real sleeping to every run.
-PREPARE_DEADLINE = 0.05
+SETTINGS = Settings(account_sid="AC" + "a" * 32, auth_token="test-token",
+    public_base_url="https://operator.example", twilio_number="+12025550102",
+    owner_number="+12025550101", allowed_destinations=("+12025550103",),
+    operator_admin_token="operator-admin-token-32-characters-long", voice_agent_enabled=True)
 
 
-def frames(audio):
-    return [audio[index:index + FRAME_BYTES] for index in range(0, len(audio), FRAME_BYTES)]
+class Registry:
+    def __init__(self):
+        self.slots = {str(i): SimpleNamespace(id=f"agent-{i}", name=f"Agent {i}",
+            prompt=f"Selected trusted instructions {i}", revision=1,
+            voice_profile_id=f"profile-{i}", voice_id=f"voice{i}", slot=str(i)) for i in range(1,10)}
+    def resolve_slot(self, slot):
+        return self.slots.get(slot)
 
 
 class Provider:
-    """A fake ElevenLabs surface: one marker byte per phrase, or a failure."""
-
-    def __init__(self, frames=CLIP_FRAMES, status=200, delay=0.0):
-        self.frames = frames
-        self.status = status
-        self.delay = delay
+    def __init__(self, *, frames=3, status=200, delay=0, reply="Ready to help."):
+        self.frames, self.status, self.delay, self.reply = frames, status, delay, reply
         self.requests = []
-
-    def wave(self, text):
-        """Audio that identifies which phrase was asked for."""
-        marker = 0x2A if text == PROFILES["1"].demo_phrase else 0x5A
-        return bytes([marker]) * (FRAME_BYTES * self.frames)
-
     def transport(self):
-        provider = self
+        async def handle(request):
+            body = json.loads(request.content)
+            self.requests.append((str(request.url), body))
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            if self.status != 200:
+                return httpx.Response(self.status, text="Provider unavailable")
+            if "generativelanguage" in request.url.host:
+                obj = {"candidates": [{"content": {"parts": [{"text": self.reply}]}, "finishReason": "STOP"}]}
+                return httpx.Response(200, text="data: " + json.dumps(obj) + "\n\n",
+                                      headers={"content-type": "text/event-stream"})
+            cue = body["text"] == "An AI assistant is joining this call."
+            return httpx.Response(200, content=bytes([0x10 if cue else 0x2A]) * FRAME_BYTES * (3 if cue else self.frames))
+        return httpx.MockTransport(handle)
 
-        class Delayed(httpx.MockTransport):
-            async def handle_async_request(self, request):
-                if provider.delay:
-                    await asyncio.sleep(provider.delay)
-                return await super().handle_async_request(request)
 
-        def handle(request):
-            body = json.loads(request.content.decode("utf-8"))
-            provider.requests.append(body)
-            if provider.status != 200:
-                return httpx.Response(provider.status, text="provider unavailable")
-            return httpx.Response(200, content=provider.wave(body["text"]))
-
-        return Delayed(handle)
+class Socket:
+    def __init__(self, controller, session_id, role, *, acknowledge=True, block=False):
+        self.controller, self.session_id, self.role = controller, session_id, role
+        self.sent, self.acknowledge, self.block = [], acknowledge, block
+    async def send_json(self, message):
+        if self.block:
+            await asyncio.Event().wait()
+        self.sent.append(message)
+        if message["event"] == "mark" and self.acknowledge:
+            await self.controller.mark(self.session_id, self.role, message["mark"]["name"], "played")
+    def frames(self, marker):
+        return [base64.b64decode(m["media"]["payload"]) for m in self.sent
+                if m["event"] == "media" and base64.b64decode(m["media"]["payload"])[0] == marker]
+    def marks(self):
+        return [m["mark"]["name"] for m in self.sent if m["event"] == "mark"]
 
 
 class Dialer:
-    """A fake Twilio REST surface: records hang-ups, never places a call."""
-
     def __init__(self):
-        self.ended = []
-
-    async def create_leg(self, *, to, twiml, status_callback):
-        return "CA" + format(len(self.ended) + 8, "032x")
-
-    async def end_call(self, call_sid):
-        self.ended.append(call_sid)
-
-
-class FakeSocket:
-    """One output channel's sink: it only records what the writer sent."""
-
-    def __init__(self):
-        self.sent = []
-
-    async def send_json(self, message):
-        self.sent.append(message)
-
-
-class BlockedSocket(FakeSocket):
-    """A socket whose writes never land, so its writer cannot drain the queue."""
-
-    async def send_json(self, message):
-        await asyncio.Event().wait()
+        self.created, self.ended = [], []
+    async def create_leg(self, **kwargs):
+        self.created.append(kwargs)
+        return OWNER_SID if len(self.created) == 1 else REMOTE_SID
+    async def end_call(self, sid):
+        self.ended.append(sid)
 
 
 class Harness:
-    """A store, a controller, and the fake provider one takeover needs."""
-
-    def __init__(self, tmp_path, *, provider=None, voice=True):
+    def __init__(self, tmp_path, *, provider=None, voice=True, acknowledge=True):
+        self.provider = provider or Provider()
+        self.registry, self.dialer = Registry(), Dialer()
         self.store = OperatorSessions(SETTINGS)
-        self.provider = provider if provider is not None else Provider()
-        self.voice = VoiceSettings(
-            enabled=True, gemini_api_key="gemini-key", elevenlabs_api_key="elevenlabs-key",
-            elevenlabs_voice_id="voiceid123", output_dir=str(tmp_path / "voice"),
-        ) if voice else None
-        self.controller = OperatorController(
-            SETTINGS, self.store, Dialer(), voice=self.voice,
-            keypad_factory=lambda: Keypad(prefix_seconds=0.05, coalesce_seconds=0.05))
-        if self.controller.clips is not None:
-            self.controller.clips.transport = self.provider.transport()
-        self.digits = []
-        self.owner = FakeSocket()
-        self.remote = FakeSocket()
-
+        self.voice = VoiceSettings(enabled=True, gemini_api_key="test", elevenlabs_api_key="test",
+            output_dir=str(tmp_path), elevenlabs_voice_id="") if voice else None
+        self.delivered, self.output, self.starts, self.ends = [], [], [], []
+        self.controller = OperatorController(SETTINGS, self.store, self.dialer, voice=self.voice,
+            registry=self.registry, provider_transport=self.provider.transport(),
+            on_call_start=lambda s: self.starts.append(s.canonical_call_sid),
+            on_call_end=lambda s: self.ends.append(s.id),
+            on_agent_turn=lambda *a, **kw: self.delivered.append((a,kw)),
+            on_output_audio=lambda *a: self.output.append(a),
+            keypad_factory=lambda: Keypad(prefix_seconds=.05, coalesce_seconds=.05))
+        self.acknowledge = acknowledge
     async def joined(self):
-        """A connected session: both legs bound, both output channels attached."""
-        session, _ = await self.store.reserve_outbound(DESTINATION, "Ask for an itemised quote",
-                                                       str(uuid.uuid4()))
-        await self.store.bind_call_sid(session.id, OWNER, OWNER_SID)
-        await self.store.bind_call_sid(session.id, REMOTE, REMOTE_SID)
-        await self.store.mark_owner_prompt(session.id)
-        await self.store.begin_remote_dial(session.id)
-        await self.controller.stream_started(session.id, REMOTE, REMOTE_STREAM)
-        router = self.controller.router(session.id)
-        router.channels[OWNER].attach(self.owner, OWNER_STREAM, session.legs[OWNER].generation,
-                                      session.legs[OWNER].counters)
-        router.channels[REMOTE].attach(self.remote, REMOTE_STREAM, session.legs[REMOTE].generation,
-                                       session.legs[REMOTE].counters)
-        return session
-
-    async def press(self, session_id, keys):
-        """Send one key at a time, exactly as the media reader does."""
+        self.session, _ = await self.store.reserve_outbound("+12025550103", "Get an itemised quote", str(uuid.uuid4()))
+        s = self.session
+        await self.store.bind_call_sid(s.id, OWNER, OWNER_SID)
+        await self.store.bind_call_sid(s.id, REMOTE, REMOTE_SID)
+        await self.store.mark_owner_prompt(s.id)
+        await self.store.begin_remote_dial(s.id)
+        self.router = self.controller.router(s.id)
+        self.owner = Socket(self.controller, s.id, OWNER)
+        self.remote = Socket(self.controller, s.id, REMOTE, acknowledge=self.acknowledge)
+        for role, socket, sid in ((OWNER,self.owner,OWNER_STREAM),(REMOTE,self.remote,REMOTE_STREAM)):
+            self.router.channels[role].attach(socket, sid, 1, s.legs[role].counters)
+            self.router.generations[role] = 1
+            s.legs[role].stream_sid = sid
+            s.legs[role].attached = True
+        await self.controller.stream_started(s.id, REMOTE, REMOTE_STREAM)
+        return s
+    async def press(self, keys):
         for key in keys:
-            await self.controller.dtmf(session_id, key)
+            await self.controller.dtmf(self.session.id, key)
             await asyncio.sleep(0)
-
-    def record_digits(self):
-        async def recorder(session_id, digits):
-            self.digits.append(digits)
-
-        self.controller.digit_sender = recorder
-
-    @staticmethod
-    def payloads(socket):
-        return [base64.b64decode(message["media"]["payload"])
-                for message in socket.sent if message["event"] == "media"]
-
-    def voiced(self, socket):
-        """Every frame that is not filler silence: the audio actually spoken."""
-        return [frame for frame in self.payloads(socket) if not is_silence(frame)]
-
-    @staticmethod
-    def events(socket):
-        return [message["event"] for message in socket.sent]
-
-    @staticmethod
-    def marks(socket):
-        return [message["mark"]["name"] for message in socket.sent
-                if message["event"] == "mark"]
-
-    @staticmethod
-    def timeline(socket):
-        """Every message this socket received, in order, as (event, value)."""
-        ordered = []
-        for message in socket.sent:
-            if message["event"] == "media":
-                ordered.append(("media", base64.b64decode(message["media"]["payload"])))
-            elif message["event"] == "mark":
-                ordered.append(("mark", message["mark"]["name"]))
-            else:
-                ordered.append((message["event"], ""))
-        return ordered
-
-    async def settle(self, seconds=0.3):
-        """Let the writer drain: its clock paces one frame every 20 ms."""
-        await asyncio.sleep(seconds)
+    async def close(self):
+        await self.store.close()
+    async def complete(self):
+        await until(lambda: self.session.mode == AGENT and not self.controller.playing(self.session.id))
 
 
-async def until(predicate, timeout=2.0):
+async def until(check, timeout=5):
     async with asyncio.timeout(timeout):
-        while not predicate():
-            await asyncio.sleep(0.005)
-
-
-def run(scenario):
-    return asyncio.run(scenario())
-
-
-def dtmf_event(digit, *, role=OWNER, sequence="3"):
-    stream = OWNER_STREAM if role == OWNER else REMOTE_STREAM
-    return {"event": "dtmf", "sequenceNumber": sequence, "streamSid": stream,
-            "dtmf": {"track": "inbound_track", "digit": digit}}
-
-
-# ------------------------------------------------------------------- takeover
-
-
-def test_hash_one_substitutes_the_cloned_phrase(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path)
-        session = await harness.joined()
-        await harness.press(session.id, "#1")
-        assert session.mode == AGENT and session.profile == "1"
-        assert session.reply_epoch == 1
-        await until(lambda: harness.marks(harness.remote) == ["clip-1-1"])
-        assert harness.voiced(harness.remote) == frames(CLIP)
-        # The owner hears the same phrase through the monitor mix.
-        assert harness.voiced(harness.owner) == frames(CLIP)
-        # The phrase was rendered once, from the profile's own text, in the
-        # enrolled voice and at the Twilio-ready model.
-        assert len(harness.provider.requests) == 1
-        request = harness.provider.requests[0]
-        assert request["text"] == PROFILES["1"].demo_phrase
-        assert request["model_id"] == harness.voice.elevenlabs_model
-        assert session.legs[REMOTE].marks["clip-1-1"] == "pending"
-        await harness.settle(0.1)
-
-    run(scenario)
-
-
-def test_the_same_shortcut_twice_is_a_no_op(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path)
-        session = await harness.joined()
-        await harness.press(session.id, "#1")
-        await until(lambda: harness.marks(harness.remote) == ["clip-1-1"])
-        await harness.settle(0.1)
-        spoken = len(harness.voiced(harness.remote))
-        await harness.press(session.id, "#1")
-        await harness.settle(0.1)
-        assert session.reply_epoch == 1 and session.profile == "1"
-        assert len(harness.voiced(harness.remote)) == spoken
-        assert len(harness.provider.requests) == 1
-
-    run(scenario)
-
-
-def test_a_new_profile_cancels_the_phrase_already_queued(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path, provider=Provider(frames=40))
-        session = await harness.joined()
-        await harness.press(session.id, "#1")
-        await until(lambda: len(harness.voiced(harness.remote)) >= 3)
-        await harness.press(session.id, "#2")
-        assert session.profile == "2" and session.reply_epoch == 2
-        # A clear is emitted before the replacement frames, so the old reply is
-        # cut where it is and nothing stale reaches the remote leg afterwards.
-        await until(lambda: OTHER_CLIP[:FRAME_BYTES] in harness.payloads(harness.remote))
-        timeline = harness.timeline(harness.remote)
-        cut = max(index for index, (event, _) in enumerate(timeline) if event == "clear")
-        before = [value for event, value in timeline[:cut] if event == "media"]
-        after = [value for event, value in timeline[cut:] if event == "media"]
-        assert frames(CLIP)[0] in before
-        assert OTHER_CLIP[:FRAME_BYTES] not in before
-        assert OTHER_CLIP[:FRAME_BYTES] in after
-        await harness.settle(0.2)
-        assert not harness.controller.playing(session.id)
-        assert {entry["text"] for entry in harness.provider.requests} == {
-            PROFILES["1"].demo_phrase, PROFILES["2"].demo_phrase}
-
-    run(scenario)
-
-
-def test_zero_interrupts_the_phrase_and_restores_the_microphone(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path, provider=Provider(frames=40))
-        session = await harness.joined()
-        await harness.press(session.id, "#1")
-        await until(lambda: len(harness.voiced(harness.remote)) >= 3)
-        await harness.press(session.id, "#0")
-        assert session.mode == HUMAN and session.reply_epoch == 2
-        assert harness.controller.playing(session.id) is False
-        # The writer sends a clear when it next wakes, on each direction.
-        await until(lambda: "clear" in harness.events(harness.remote))
-        await until(lambda: "clear" in harness.events(harness.owner))
-        spoken = len(harness.voiced(harness.remote))
-        await harness.settle(0.3)
-        assert len(harness.voiced(harness.remote)) == spoken
-        # The owner's microphone is live again, with no provider involved.
-        router = harness.controller.routers[session.id]
-        assert router.forward(OWNER, OWNER_FRAME) is True
-        await until(lambda: OWNER_FRAME in harness.voiced(harness.remote))
-        assert len(harness.provider.requests) == 1
-
-    run(scenario)
-
-
-def test_zero_returns_control_even_when_nothing_was_ever_spoken(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path, voice=False)
-        session = await harness.joined()
-        await harness.press(session.id, "#1")
-        await harness.press(session.id, "#0")
-        assert session.mode == HUMAN and session.reply_epoch == 0
-        assert harness.digits == []
-        # With the voice layer off, a remote menu key is still local menu input.
-        harness.record_digits()
-        await harness.press(session.id, "7")
-        await until(lambda: harness.digits == ["7"])
-
-    run(scenario)
-
-
-def test_a_mark_returned_after_a_clear_does_not_confirm_the_phrase(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path)
-        session = await harness.joined()
-        await harness.press(session.id, "#1")
-        await until(lambda: harness.marks(harness.remote) == ["clip-1-1"])
-        await harness.press(session.id, "#0")
-        # The mark had been queued but not confirmed when the clear happened.
-        assert session.legs[REMOTE].marks["clip-1-1"] == "cleared"
-        await harness.controller.mark(session.id, REMOTE, "clip-1-1", "played")
-        assert session.legs[REMOTE].marks["clip-1-1"] == "played-after-clear"
-
-    run(scenario)
-
-
-def test_an_unavailable_provider_returns_control_to_the_owner(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path, provider=Provider(status=503))
-        session = await harness.joined()
-        await harness.press(session.id, "#1")
-        await until(lambda: session.mode == HUMAN and not harness.controller.playing(session.id))
-        assert session.reply_epoch == 2          # one takeover, one hand-back
-        assert harness.voiced(harness.remote) == []
-        await harness.press(session.id, "#0")
-        assert session.mode == HUMAN and session.reply_epoch == 2
-        assert len(harness.provider.requests) >= 1
-
-    run(scenario)
-
-
-def test_a_stalled_provider_misses_the_preparation_deadline(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path, provider=Provider(delay=0.4))
-        session = await harness.joined()
-        started = time.monotonic()
-        await harness.press(session.id, "#1")
-        await until(lambda: session.mode == HUMAN and not harness.controller.playing(session.id))
-        assert time.monotonic() - started < 0.3
-        assert harness.voiced(harness.remote) == []
-
-    run(scenario)
-
-
-def test_a_remote_leg_without_a_stream_hands_control_back(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path)
-        session = await harness.joined()
-        harness.controller.routers[session.id].channels[REMOTE].detach()
-        await harness.press(session.id, "#1")
-        await until(lambda: session.mode == HUMAN)
-        assert session.reply_epoch == 2
-
-    run(scenario)
-
-
-def test_a_takeover_without_an_enrolled_voice_stays_human(tmp_path):
-    async def scenario():
-        harness = Harness(tmp_path, voice=False)
-        session = await harness.joined()
-        await harness.press(session.id, "#1")
-        assert session.mode == HUMAN and session.reply_epoch == 0
-        assert harness.provider.requests == []
-        assert harness.controller.clips is None
-
-    run(scenario)
-
-
-def test_the_default_phrase_is_rendered_before_the_first_press(tmp_path):
-    async def scenario():
-        harness = Harness(tmp_path)
-        session = await harness.joined()
-        await until(lambda: len(harness.provider.requests) == 1)
-        assert harness.provider.requests[0]["text"] == PROFILES["1"].demo_phrase
-        await until(lambda: not harness.controller.prefetch)
-        cached = harness.controller.clips.path("1", PROFILES["1"].demo_phrase)
-        assert cached.read_bytes() == CLIP
-        await harness.press(session.id, "#1")
-        await until(lambda: harness.marks(harness.remote) == ["clip-1-1"])
-        assert len(harness.provider.requests) == 1        # served from the cache
-        await harness.settle(0.1)
-
-    run(scenario)
-
-
-# ------------------------------------------------------ prefixes and isolation
-
-
-def test_an_incomplete_prefix_expires_without_a_takeover(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path)
-        harness.record_digits()
-        session = await harness.joined()
-        await harness.press(session.id, "#")
-        await asyncio.sleep(0.15)                 # the short prefix window expires
-        assert session.mode == HUMAN and session.reply_epoch == 0
-        await until(lambda: not harness.controller.prefetch)
-        assert len(harness.provider.requests) == 1      # only the one warm-up phrase
-        assert harness.controller.playing(session.id) is False
-        # A digit after an expired prefix is menu input, never a shortcut.
-        await harness.press(session.id, "1")
-        await until(lambda: harness.digits == ["1"])
-        assert session.mode == HUMAN and session.reply_epoch == 0
-
-    run(scenario)
-
-
-def test_a_menu_key_during_agent_mode_is_consumed_locally(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path)
-        harness.record_digits()
-        session = await harness.joined()
-        await harness.press(session.id, "#1")
-        await until(lambda: harness.marks(harness.remote) == ["clip-1-1"])
-        await harness.press(session.id, "5")
-        await asyncio.sleep(0.1)
-        assert harness.digits == []
-        assert session.mode == AGENT and session.reply_epoch == 1
-        await harness.settle(0.1)
-
-    run(scenario)
-
-
-def test_the_remote_keypad_cannot_change_a_profile(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path)
-        session = await harness.joined()
-        router = harness.controller.routers[session.id]
-        router.generations[OWNER] = session.legs[OWNER].generation
-        router.generations[REMOTE] = session.legs[REMOTE].generation
-        for digit in ("#", "1"):
-            await router._queue_dtmf(REMOTE, session.legs[REMOTE],
-                                     dtmf_event(digit, role=REMOTE, sequence=digit))
-        assert session.mode == HUMAN and session.reply_epoch == 0
-        assert session.profile == "1"
-        assert harness.controller.keypads.get(session.id) is None
-        assert router.counters["dtmf_ignored"] == 2
-        # The same keys from the owner leg do take over.
-        for digit in ("#", "1"):
-            await router._queue_dtmf(OWNER, session.legs[OWNER],
-                                     dtmf_event(digit, role=OWNER, sequence=digit))
-        assert session.mode == AGENT and session.reply_epoch == 1
-        await until(lambda: harness.marks(harness.remote) == ["clip-1-1"])
-        await harness.settle(0.1)
-
-    run(scenario)
-
-
-def test_an_old_transport_generation_cannot_send_keys(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path)
-        session = await harness.joined()
-        router = harness.controller.routers[session.id]
-        router.generations[OWNER] = session.legs[OWNER].generation + 1
-        await router._queue_dtmf(OWNER, session.legs[OWNER], dtmf_event("1"))
-        assert session.mode == HUMAN and session.reply_epoch == 0
-        assert router.counters["dtmf_ignored"] == 1
-
-    run(scenario)
-
-
-def test_a_key_before_the_two_legs_are_joined_does_nothing(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path)
-        session, _ = await harness.store.reserve_outbound(DESTINATION, "goal", str(uuid.uuid4()))
-        await harness.store.mark_owner_prompt(session.id)
-        await harness.store.begin_remote_dial(session.id)
-        await harness.press(session.id, "#1")
-        assert session.mode == HUMAN and session.reply_epoch == 0
-        assert harness.controller.keypads == {}
-
-    run(scenario)
-
-
-# ------------------------------------------------------------------ lifecycle
-
-
-def test_ending_a_session_cancels_speech_and_keypad_state(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path, provider=Provider(frames=40))
-        session = await harness.joined()
-        await harness.press(session.id, "#1#")
-        await until(lambda: len(harness.voiced(harness.remote)) >= 3)
-        await harness.controller.end(session.id, "test-end")
-        assert harness.controller.playing(session.id) is False
-        assert harness.controller.players == {} and harness.controller.keys == {}
-        assert harness.controller.keypads == {}
-        assert harness.controller.prefetch == {}
-
-    run(scenario)
-
-
-def test_an_admin_mode_change_interrupts_speech(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-
-    async def scenario():
-        harness = Harness(tmp_path, provider=Provider(frames=40))
-        session = await harness.joined()
-        await harness.press(session.id, "#1")
-        await until(lambda: len(harness.voiced(harness.remote)) >= 3)
-        assert await harness.controller.set_mode(session.id, HUMAN) is True
-        assert harness.controller.playing(session.id) is False
-        assert session.mode == HUMAN and session.reply_epoch == 2
-        spoken = len(harness.voiced(harness.remote))
-        await harness.settle(0.2)
-        assert len(harness.voiced(harness.remote)) == spoken
-
-    run(scenario)
-
-
-def test_a_menu_answer_is_sent_once_after_the_quiet_window(tmp_path):
-    async def scenario():
-        harness = Harness(tmp_path)
-        harness.record_digits()
-        session = await harness.joined()
-        await harness.press(session.id, "4")
-        await asyncio.sleep(0.01)
-        assert harness.digits == []               # still inside the quiet window
-        await until(lambda: harness.digits == ["4"])
-        await harness.press(session.id, "52")
-        await until(lambda: harness.digits == ["4", "52"])
-        assert session.mode == HUMAN
-
-    run(scenario)
-
-
-def test_a_stalled_writer_stops_a_queued_phrase(tmp_path, monkeypatch):
-    monkeypatch.setattr("operator_service.routes.PREPARE_SECONDS", PREPARE_DEADLINE)
-    monkeypatch.setattr("operator_service.routes.CLIP_STALL_SECONDS", 0.05)
-
-    async def scenario():
-        harness = Harness(tmp_path, provider=Provider(frames=20))
-        session = await harness.joined()
-        router = harness.controller.routers[session.id]
-        channel = router.channels[REMOTE]
-        channel.attach(BlockedSocket(), REMOTE_STREAM, session.legs[REMOTE].generation,
-                       session.legs[REMOTE].counters)
-        await harness.press(session.id, "#1")
-        await until(lambda: not harness.controller.playing(session.id))
-        # A stuck socket must not leave a phrase queued for later replay.
-        assert router.pending_agent(REMOTE) <= 4
-        assert session.mode == AGENT
-
-    run(scenario)
+        while not check():
+            await asyncio.sleep(.005)
+
+
+def test_manual_nine_uses_selected_prompt_voice_and_current_transcript(tmp_path):
+    async def run():
+        h=Harness(tmp_path); s=await h.joined()
+        await h.controller.transcript(s.id, OWNER, "Budget is six thousand.", segment_id="one")
+        await h.controller.transcript(s.id, REMOTE, "Can you confirm the budget?", segment_id="two")
+        assert h.provider.requests == []
+        await h.press("#9"); await h.complete()
+        gemini=[body for url,body in h.provider.requests if "generativelanguage" in url][0]
+        assert "Selected trusted instructions 9" in json.dumps(gemini["systemInstruction"])
+        assert "Budget is six thousand" in json.dumps(gemini["contents"])
+        assert all("/voice9/stream" in url for url,_ in h.provider.requests if "elevenlabs" in url)
+        assert s.agent_name == "Agent 9" and s.profile == "9"
+        assert h.delivered[0][1]["delivery"] == "played"
+        assert h.starts == [REMOTE_SID]
+        await h.close()
+    asyncio.run(run())
+
+
+def test_announcement_is_remote_only_and_acknowledged_before_agent(tmp_path):
+    async def run():
+        h=Harness(tmp_path, acknowledge=False); s=await h.joined()
+        await h.press("#1")
+        await until(lambda: bool(h.remote.marks()))
+        assert s.mode == ANNOUNCING
+        assert len(h.remote.frames(0x10)) == 3 and not h.owner.frames(0x10)
+        assert not h.remote.frames(0x2A)
+        h.remote.acknowledge = True
+        await h.controller.mark(s.id, REMOTE, h.remote.marks()[0], "played")
+        await h.complete()
+        assert len(h.remote.frames(0x2A)) == 3 and len(h.owner.frames(0x2A)) == 3
+        await h.close()
+    asyncio.run(run())
+
+
+def test_real_length_reply_preserves_all_audio_and_provenance(tmp_path):
+    async def run():
+        h=Harness(tmp_path,provider=Provider(frames=125)); s=await h.joined()
+        await h.press("#1"); await h.complete()
+        assert len(h.remote.frames(0x2A)) == 125
+        assert h.router.pending_agent(REMOTE) == 0
+        assert s.legs[REMOTE].counters["gaps"] == 0
+        assert len([a for a in h.output if a[-1]=="agent"]) == 125
+        assert len([a for a in h.output if a[-1]=="announcement"]) == 3
+        await h.close()
+    asyncio.run(run())
+
+
+def test_zero_during_preparation_restores_human_without_any_audio(tmp_path):
+    async def run():
+        h=Harness(tmp_path,provider=Provider(delay=.4)); s=await h.joined()
+        await h.press("#1")
+        await until(lambda:s.mode==PREPARING)
+        assert s.mode == PREPARING
+        assert h.router.forward(OWNER, OWNER_FRAME)
+        await h.press("#0")
+        await asyncio.sleep(.5)
+        assert s.mode == HUMAN and not h.remote.frames(0x10) and not h.remote.frames(0x2A)
+        assert h.delivered == []
+        await h.close()
+    asyncio.run(run())
+
+
+def test_zero_during_reply_clears_audio_and_records_interruption(tmp_path):
+    async def run():
+        h=Harness(tmp_path,provider=Provider(frames=100)); s=await h.joined()
+        await h.press("#1")
+        await until(lambda: len(h.remote.frames(0x2A))>=4)
+        await h.press("#0")
+        count=len(h.remote.frames(0x2A)); await asyncio.sleep(.1)
+        assert len(h.remote.frames(0x2A)) == count and s.mode == HUMAN
+        assert h.delivered[-1][1]["delivery"] == "interrupted"
+        assert not any(t["speaker"]=="agent" for t in s.turns)
+        assert h.router.forward(OWNER, OWNER_FRAME)
+        await h.close()
+    asyncio.run(run())
+
+
+def test_remote_barge_in_cancels_reply_then_final_turn_gets_new_reply(tmp_path):
+    async def run():
+        h=Harness(tmp_path,provider=Provider(frames=40)); s=await h.joined()
+        await h.press("#1"); await until(lambda: len(h.remote.frames(0x2A))>=2)
+        await h.controller.transcript(s.id, REMOTE, "Actually", final=False)
+        assert s.mode == AGENT
+        count=len(h.remote.frames(0x2A)); await asyncio.sleep(.1)
+        assert len(h.remote.frames(0x2A)) == count
+        await h.controller.transcript(s.id, REMOTE, "Actually the budget is five thousand.", segment_id="change")
+        await until(lambda: len([u for u,b in h.provider.requests if "generativelanguage" in u])==2)
+        await h.complete()
+        requests=[body for url,body in h.provider.requests if "generativelanguage" in url]
+        assert "five thousand" in json.dumps(requests[-1]["contents"])
+        assert len([u for u,b in h.provider.requests if b.get("text")=="An AI assistant is joining this call."])==1
+        await h.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("status",[403,429,503])
+def test_provider_failure_returns_to_human(tmp_path,status):
+    async def run():
+        h=Harness(tmp_path,provider=Provider(status=status)); s=await h.joined()
+        await h.press("#1"); await until(lambda:s.mode==HUMAN)
+        assert not h.remote.frames(0x2A) and not h.delivered
+        await h.close()
+    asyncio.run(run())
+
+
+def test_missing_slot_or_disabled_voice_does_not_mute_or_call_provider(tmp_path):
+    async def run():
+        h=Harness(tmp_path,voice=False); s=await h.joined()
+        await h.press("#1")
+        assert s.mode==HUMAN and h.provider.requests==[]
+        h.controller.voice=VoiceSettings(enabled=True,gemini_api_key="x",elevenlabs_api_key="x",output_dir=str(tmp_path))
+        h.registry.slots.pop("1")
+        await h.press("#1")
+        assert s.mode==HUMAN and h.provider.requests==[]
+        await h.close()
+    asyncio.run(run())
+
+
+def test_repeated_shortcut_is_idempotent_but_different_slot_cancels_old_voice(tmp_path):
+    async def run():
+        h=Harness(tmp_path,provider=Provider(frames=30)); s=await h.joined()
+        await h.press("#1"); await until(lambda:len(h.remote.frames(0x2A))>=2)
+        epoch=s.reply_epoch
+        await h.press("#1"); assert s.reply_epoch==epoch
+        await h.press("#2"); await until(lambda:s.reply_epoch==epoch+1)
+        assert s.agent_name=="Agent 2"
+        await h.complete()
+        assert any("/voice2/stream" in u for u,b in h.provider.requests)
+        await h.close()
+    asyncio.run(run())
+
+
+def test_remote_keys_and_stale_owner_generation_cannot_take_over(tmp_path):
+    async def run():
+        h=Harness(tmp_path); s=await h.joined()
+        for role in (REMOTE,OWNER):
+            if role==OWNER: h.router.generations[OWNER]=2
+            for i,key in enumerate("#1"):
+                await h.router._queue_dtmf(role,s.legs[role],{"event":"dtmf","sequenceNumber":str(i),
+                    "streamSid":s.legs[role].stream_sid,"dtmf":{"digit":key}})
+        assert s.mode==HUMAN and h.provider.requests==[]
+        await h.close()
+    asyncio.run(run())
+
+
+def test_incomplete_prefix_expires_and_bare_digit_remains_ivr_input(tmp_path):
+    async def run():
+        h=Harness(tmp_path); s=await h.joined(); digits=[]
+        async def record(sid,value): digits.append(value)
+        h.controller.digit_sender=record
+        await h.press("#"); await asyncio.sleep(.1); await h.press("1")
+        await until(lambda:digits==["1"])
+        assert s.mode==HUMAN and h.provider.requests==[]
+        await h.close()
+    asyncio.run(run())
+
+
+def test_hangup_cancels_provider_work_and_notifies_end(tmp_path):
+    async def run():
+        h=Harness(tmp_path,provider=Provider(delay=.4)); s=await h.joined()
+        await h.press("#1")
+        await h.controller.end(s.id,"test-end")
+        await asyncio.sleep(.05)
+        assert not h.controller.playing(s.id) and h.ends==[s.id]
+        assert not h.remote.frames(0x2A)
+        await h.close()
+    asyncio.run(run())
+
+
+def test_snapshot_is_stable_during_current_activation(tmp_path):
+    async def run():
+        h=Harness(tmp_path); s=await h.joined()
+        await h.press("#1"); await h.complete()
+        h.registry.slots["1"]=SimpleNamespace(id="other",name="Changed",prompt="Changed prompt",voice_id="different",slot="1")
+        await h.controller.transcript(s.id,REMOTE,"Please continue",segment_id="next")
+        await until(lambda:len([u for u,b in h.provider.requests if "generativelanguage" in u])==2)
+        await h.complete()
+        assert s.agent_name=="Agent 1" and not any("/different/" in u for u,b in h.provider.requests)
+        await h.close()
+    asyncio.run(run())
+
+
+def test_inbound_bridge_binds_existing_caller_and_dials_only_owner(tmp_path):
+    async def run():
+        settings=replace(SETTINGS,operator_inbound_enabled=True,agent_management_enabled=True,
+                         media_capture_enabled=True,transcription_enabled=True,
+                         deepgram_api_key="test", media_storage_dir=str(tmp_path / "capture"), transcript_storage_dir=str(tmp_path / "transcripts"), workspace_storage_dir=str(tmp_path / "workspace"),
+                         allowed_destinations=())
+        store=OperatorSessions(settings); dialer=Dialer(); starts=[]
+        controller=OperatorController(settings,store,dialer,on_call_start=lambda s:starts.append(s.canonical_call_sid))
+        session=await controller.start_inbound(REMOTE_SID,"+12025550199")
+        await until(lambda:len(dialer.created)==1)
+        assert dialer.created[0]["to"]==SETTINGS.owner_number
+        assert "<Connect>" in controller.inbound_twiml(session)
+        router=controller.router(session.id)
+        for role,sid in ((OWNER,OWNER_STREAM),(REMOTE,REMOTE_STREAM)):
+            router.channels[role].attach(Socket(controller,session.id,role),sid,1,session.legs[role].counters)
+            session.legs[role].stream_sid=sid
+        await controller.stream_started(session.id,REMOTE,REMOTE_STREAM)
+        await controller.stream_started(session.id,OWNER,OWNER_STREAM)
+        await controller.dtmf(session.id,"1")
+        assert session.phase==CONNECTED and session.mode==HUMAN
+        assert len(dialer.created)==1 and starts==[REMOTE_SID]
+        assert await controller.start_inbound(REMOTE_SID,"+12025550199") is session
+        await store.close()
+    asyncio.run(run())
+
+
+def test_missing_announcement_ack_returns_control_without_agent_speech(tmp_path,monkeypatch):
+    monkeypatch.setattr("operator_service.runtime.PLAYBACK_ACK_SECONDS",-0.9)
+    async def run():
+        h=Harness(tmp_path,acknowledge=False); s=await h.joined()
+        await h.press("#1"); await until(lambda:s.mode==HUMAN)
+        assert not h.remote.frames(0x2A) and not h.delivered
+        await h.close()
+    asyncio.run(run())
+
+
+def test_stalled_output_writer_returns_to_human(tmp_path,monkeypatch):
+    monkeypatch.setattr("operator_service.runtime.FRAME_STALL_SECONDS",.08)
+    async def run():
+        h=Harness(tmp_path,provider=Provider(frames=40)); s=await h.joined()
+        await h.press("#1"); await until(lambda:len(h.remote.frames(0x2A))>=2)
+        h.remote.block=True
+        await until(lambda:s.mode==HUMAN and bool(h.delivered))
+        assert h.delivered[-1][1]["delivery"]=="interrupted"
+        await h.close()
+    asyncio.run(run())
+
+
+def test_release_during_registry_lookup_cancels_pending_takeover(tmp_path):
+    async def run():
+        h=Harness(tmp_path); s=await h.joined(); started=asyncio.Event(); finish=asyncio.Event()
+        async def delayed(slot):
+            started.set(); await finish.wait(); return h.registry.slots[slot]
+        h.registry.resolve_slot=delayed
+        # The media reader returns even while the registry lookup is blocked.
+        async with asyncio.timeout(.2):
+            await h.press("#1")
+        await started.wait()
+        assert h.router.forward(OWNER,OWNER_FRAME)
+        await h.press("#0"); finish.set()
+        await h.store.wait_idle()
+        assert s.mode==HUMAN and h.provider.requests==[]
+        await h.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("async_getter", [False, True])
+def test_unhealthy_transcription_refuses_takeover_before_selecting_a_profile(tmp_path, async_getter):
+    async def run():
+        h=Harness(tmp_path); s=await h.joined()
+        def unavailable(session):
+            raise RuntimeError("Transcription stopped")
+        async def unavailable_async(session):
+            await asyncio.sleep(0)
+            unavailable(session)
+        h.controller.context_getter=unavailable_async if async_getter else unavailable
+        with pytest.raises(OperatorRejected) as rejected:
+            await h.controller.takeover(s.id,"1")
+        assert rejected.value.reason=="transcription-unavailable"
+        assert s.mode==HUMAN and s.agent_snapshot is None
+        assert h.router.forward(OWNER,OWNER_FRAME)
+        assert h.provider.requests==[] and not h.remote.marks()
+        await h.close()
+    asyncio.run(run())
+
+
+def test_release_during_context_preflight_cancels_pending_takeover(tmp_path):
+    async def run():
+        h=Harness(tmp_path); s=await h.joined(); started=asyncio.Event(); finish=asyncio.Event()
+        # A synchronous adapter may itself return an awaitable.
+        async def delayed_context():
+            started.set(); await finish.wait(); return []
+        h.controller.context_getter=lambda session:delayed_context()
+        takeover=asyncio.create_task(h.controller.takeover(s.id,"1"))
+        await started.wait()
+        assert h.router.forward(OWNER,OWNER_FRAME)
+        await h.press("#0"); finish.set()
+        with pytest.raises(OperatorRejected) as rejected:
+            await takeover
+        assert rejected.value.reason=="takeover-canceled"
+        assert s.mode==HUMAN and s.agent_snapshot is None and h.provider.requests==[]
+        await h.close()
+    asyncio.run(run())
+
+
+def test_later_context_failure_returns_agent_control_to_the_owner(tmp_path):
+    async def run():
+        h=Harness(tmp_path); s=await h.joined()
+        h.controller.context_getter=lambda session:session.turns
+        await h.controller.takeover(s.id,"1"); await h.complete()
+        requests=len(h.provider.requests)
+        def unavailable(session):
+            raise RuntimeError("Transcription stopped")
+        h.controller.context_getter=unavailable
+        await h.controller.transcript(s.id,REMOTE,"Are you still there?",segment_id="later")
+        await until(lambda:s.mode==HUMAN)
+        assert h.router.forward(OWNER,OWNER_FRAME)
+        assert len(h.provider.requests)==requests
+        await h.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("capture,transcription,detection,notice", [
+    (False,False,False,None),
+    (True,False,False,"This demo call records audio for testing."),
+    (True,True,False,"This demo call records and transcribes audio for testing."),
+    (True,False,True,"This demo call records and analyzes audio for testing."),
+    (True,True,True,"This demo call records, transcribes, and analyzes audio for testing."),
+])
+def test_inbound_notice_matches_enabled_observers_before_streaming(
+        tmp_path,capture,transcription,detection,notice):
+    async def run():
+        h=Harness(tmp_path); s=await h.joined()
+        h.controller.settings=replace(SETTINGS,media_capture_enabled=capture,
+            transcription_enabled=transcription,modulate_detection_enabled=detection,
+            media_storage_dir=str(tmp_path/"capture"),transcript_storage_dir=str(tmp_path/"transcripts"),
+            detection_storage_dir=str(tmp_path/"detection"),deepgram_api_key="test",modulate_api_key="test")
+        response=ET.fromstring(h.controller.inbound_twiml(s))
+        if notice is None:
+            assert response.find("Say") is None and response[0].tag=="Connect"
+        else:
+            assert response[0].tag=="Say" and response[0].text==notice
+            assert response[1].tag=="Connect"
+        assert response.find("Connect/Stream") is not None
+        await h.close()
+    asyncio.run(run())
+
+
+def test_duplicate_final_transcript_does_not_trigger_duplicate_reply(tmp_path):
+    async def run():
+        h=Harness(tmp_path); s=await h.joined()
+        await h.press("#1"); await h.complete()
+        for _ in range(3):
+            await h.controller.transcript(s.id,REMOTE,"Next question",segment_id="same-final")
+        await until(lambda:len([u for u,b in h.provider.requests if "generativelanguage" in u])==2)
+        await h.complete(); await asyncio.sleep(.4)
+        assert len([u for u,b in h.provider.requests if "generativelanguage" in u])==2
+        await h.close()
+    asyncio.run(run())
+
+
+def test_new_final_turn_during_preparation_rebuilds_context(tmp_path):
+    async def run():
+        h=Harness(tmp_path,provider=Provider(delay=.1)); s=await h.joined()
+        await h.press("#1")
+        await until(lambda:len([u for u,b in h.provider.requests if "generativelanguage" in u])==1)
+        assert s.mode==PREPARING
+        await h.controller.transcript(s.id,OWNER,"Actually ask about a red truck instead.",segment_id="latest")
+        await h.complete()
+        requests=[body for url,body in h.provider.requests if "generativelanguage" in url]
+        assert len(requests)==2 and "red truck" in json.dumps(requests[-1]["contents"])
+        assert len(h.remote.frames(0x10))==3
+        await h.close()
+    asyncio.run(run())
+
+
+def test_entire_synthesis_stream_has_a_deadline(tmp_path,monkeypatch):
+    async def slow_stream(*args,**kwargs):
+        for _ in range(50):
+            await asyncio.sleep(.15)
+            yield bytes([0x2A])*FRAME_BYTES
+    monkeypatch.setattr("operator_service.runtime.speech_bytes",slow_stream)
+    async def run():
+        h=Harness(tmp_path); s=await h.joined()
+        h.controller.voice=replace(h.voice,request_timeout=1)
+        await h.press("#1")
+        await until(lambda:s.mode==HUMAN and bool(h.delivered))
+        assert len(h.remote.frames(0x2A))<50
+        assert h.delivered[-1][1]["delivery"]=="interrupted"
+        await h.close()
+    asyncio.run(run())
+
+
+def test_output_timestamps_are_sample_monotonic_even_with_a_frozen_clock(tmp_path):
+    async def run():
+        h=Harness(tmp_path); s=await h.joined()
+        h.controller.elapsed_ms=lambda sid:17
+        for _ in range(3): h.controller.output_audio(s.id,OWNER_FRAME,"human")
+        assert [row[2] for row in h.output]==[17,37,57]
+        await h.close()
+    asyncio.run(run())

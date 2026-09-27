@@ -25,7 +25,7 @@ from voice_stack.audio import iter_frames
 
 from .codecs import (SILENCE_FRAME, clear_message, inbound_frames, mark_message,
                      media_message, mix_ulaw, ringback_pattern)
-from .sessions import HUMAN, OWNER, REMOTE, ROLES, OperatorRejected
+from .sessions import HUMAN, PREPARING, OWNER, REMOTE, ROLES, OperatorRejected
 
 log = logging.getLogger("uvicorn.error")
 
@@ -74,6 +74,14 @@ class _SeenKeys:
         return True
 
 
+class QueuedFrame(bytes):
+    """Keep provenance beside audio without changing its byte representation."""
+    def __new__(cls, frame, kind):
+        value = super().__new__(cls, frame)
+        value.kind = kind
+        return value
+
+
 class OutputChannel:
     """The paced writer for one leg's outgoing Twilio stream."""
 
@@ -90,6 +98,9 @@ class OutputChannel:
         self._socket = None
         self._task: asyncio.Task | None = None
         self._wake = asyncio.Event()
+        self.on_sent = None
+        self._last_frame = None
+        self._last_kind = "silence"
 
     @property
     def attached(self) -> bool:
@@ -127,7 +138,7 @@ class OutputChannel:
             self._count("dropped")
             return False
         cap = AGENT_FRAMES if kind == "agent" else LIVE_FRAMES
-        self._push(self.media, frame, cap)
+        self._push(self.media, QueuedFrame(frame, kind), cap)
         self.underflow = UNDERFLOW_FRAMES
         self._wake.set()
         return True
@@ -137,7 +148,7 @@ class OutputChannel:
         if not self.attached:
             self._count("dropped")
             return False
-        self._push(self.agent, frame, AGENT_FRAMES)
+        self._push(self.agent, QueuedFrame(frame, "agent"), AGENT_FRAMES)
         self.underflow = UNDERFLOW_FRAMES
         self._wake.set()
         return True
@@ -192,6 +203,11 @@ class OutputChannel:
                 await socket.send_json(message)
                 if message["event"] == "media":
                     self._count("frames_out")
+                    if self.on_sent is not None and self._last_frame is not None:
+                        try:
+                            self.on_sent(bytes(self._last_frame), self._last_kind)
+                        except Exception as exc:
+                            log.warning("operator_output_observer_failed type=%s", type(exc).__name__)
                 if deadline is None:
                     deadline = time.monotonic() + JITTER_FRAMES * FRAME_SECONDS
                 deadline += FRAME_SECONDS
@@ -214,17 +230,22 @@ class OutputChannel:
             return clear_message(self.stream_sid)
         if self.media:
             frame = self.media.popleft()
+            kind = getattr(frame, "kind", "live")
             if self.agent:
                 frame = mix_ulaw(frame, self.agent.popleft())
+            self._last_frame, self._last_kind = frame, kind
             return media_message(self.stream_sid, frame)
         if self.agent:
-            return media_message(self.stream_sid, self.agent.popleft())
+            frame = self.agent.popleft()
+            self._last_frame, self._last_kind = frame, "agent"
+            return media_message(self.stream_sid, frame)
         if self.marks:
             # A mark follows every frame queued before it, so playback of that
             # phrase is confirmed only for audio that was actually sent.
             return mark_message(self.stream_sid, self.marks.popleft())
         if self.underflow > 0:
             self.underflow -= 1
+            self._last_frame, self._last_kind = SILENCE_FRAME, "silence"
             return media_message(self.stream_sid, SILENCE_FRAME)
         return None
 
@@ -243,28 +264,45 @@ class CallRouter:
         self.counters = {"routed": 0, "owner_muted": 0, "dtmf_ignored": 0,
                          "rejected_messages": 0, "bad_marks": 0, "marks_played": 0}
         self._dtmf_seen = _SeenKeys()
+        self._source_offsets = {}
+        self._source_last = {}
+        self.channels[REMOTE].on_sent = self._output_sent
+
+    def _output_sent(self, frame, kind):
+        observer = getattr(self.controller, "output_audio", None)
+        if observer is not None:
+            observer(self.session_id, frame, "human" if kind == "live" else kind)
 
     def attached(self, role: str) -> bool:
         return self.channels[role].attached
 
     def pending_agent(self, role: str) -> int:
         """Agent frames queued ahead of the writer: a producer's backpressure."""
-        return len(self.channels[role].agent)
+        channel = self.channels[role]
+        return len(channel.media if role == REMOTE else channel.agent)
 
     # ------------------------------------------------------------------ routing
 
-    def forward(self, source: str, frame: bytes):
+    def forward(self, source: str, frame: bytes, timestamp_ms=None):
         """Send one speaker's frame to the other leg; returns whether it landed."""
-        if source == OWNER and self.mode != HUMAN:
+        relay_ready = self.controller.relay_ready(self.session_id)
+        if source == OWNER and not relay_ready:
+            return False
+        if source == OWNER and self.mode not in (HUMAN, PREPARING):
             # While delegated the owner's microphone is neither forwarded nor
             # transcribed; they keep listening and using the keypad.
             self.counters["owner_muted"] += 1
             return False
         destination = REMOTE if source == OWNER else OWNER
-        delivered = self.channels[destination].send(frame)
+        # The caller can be captured while waiting, but neither microphone is
+        # sent to the other phone until the owner has accepted the call.
+        delivered = relay_ready and self.channels[destination].send(frame)
         if delivered:
             self.counters["routed"] += 1
-        self.controller.on_audio(self.session_id, source, frame)
+        if timestamp_ms is None:
+            self.controller.on_audio(self.session_id, source, frame)
+        else:
+            self.controller.on_audio(self.session_id, source, frame, timestamp_ms)
         return delivered
 
     def send_agent(self, frames):
@@ -277,6 +315,10 @@ class CallRouter:
                 sent += 1
             self.channels[OWNER].send_agent(frame)
         return sent
+
+    def send_announcement(self, frame):
+        """A takeover announcement is audible only to the remote participant."""
+        return self.channels[REMOTE].send(frame, kind="announcement")
 
     def clear(self, *roles):
         """Drop queued speech on the named outputs and record invalidated marks."""
@@ -292,8 +334,11 @@ class CallRouter:
         """Change who is speaking; buffered speech from the old role goes first."""
         if mode == self.mode:
             return None
+        previous = self.mode
         self.mode = mode
-        if mode == HUMAN:
+        if previous == HUMAN and mode == PREPARING:
+            return None  # Provider preparation must not interrupt human relay.
+        if mode in (HUMAN, PREPARING):
             return self.clear(*ROLES)
         return self.clear(REMOTE)
 
@@ -324,7 +369,7 @@ class CallRouter:
                 if not channel.attached:
                     # The owner's stream ended; a cue has nowhere to go.
                     return
-                channel.send(frame)
+                channel.send(frame, kind="announcement")
                 await asyncio.sleep(FRAME_SECONDS)
 
     def close(self):
@@ -425,9 +470,22 @@ class CallRouter:
             except ValueError:
                 leg.counters["rejected"] += 1
                 return 1
-            for frame in frames:
+            raw_ms = event.get("media", {}).get("timestamp", "0")
+            try:
+                raw_ms = max(0, int(raw_ms))
+            except (ValueError, TypeError):
+                return 1
+            clock = getattr(self.controller, "elapsed_ms", None)
+            elapsed = clock(self.session_id) if clock else raw_ms
+            key = (role, leg.generation)
+            if key not in self._source_offsets:
+                self._source_offsets[key] = max(elapsed, self._source_last.get(role, -20) + 20) - raw_ms
+            timestamp_ms = raw_ms + self._source_offsets[key]
+            for index, frame in enumerate(frames):
                 leg.counters["frames_in"] += 1
-                self.forward(role, frame)
+                stamp = max(timestamp_ms + index * FRAME_MS, self._source_last.get(role, -FRAME_MS) + FRAME_MS)
+                self._source_last[role] = stamp
+                self.forward(role, frame, stamp if clock else None)
             return 0
         if kind == "mark":
             await self._mark_played(role, event)

@@ -27,6 +27,8 @@ WORKSPACE_ASSETS = {
     "dashboard-crm.css": "text/css",
     "dashboard-toolbar.js": "text/javascript",
     "dashboard-toolbar.css": "text/css",
+    "dashboard-agents.js": "text/javascript",
+    "dashboard-agents.css": "text/css",
 }
 MAX_WORKSPACE_BODY_BYTES = 2 * 1024 * 1024
 
@@ -283,5 +285,9 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
         for segment in session["segments"]:
             seconds = segment["start_ms"] // 1000
             label = "Caller input" if segment["track"] == "inbound" else "Caller playback"
+            if segment.get("source") == "agent":
+                label = f"Agent ({segment['speaker']})"
+                if segment.get("delivery") == "interrupted":
+                    label += " [interrupted]"
             lines.append(f"[{seconds // 60:02d}:{seconds % 60:02d}] {label}: {segment['text']}")
         return Response("\n".join(lines) + "\n", media_type="text/plain", headers=headers)

@@ -35,7 +35,7 @@ GENERATION_SECONDS = 20.0
 READ_SECONDS = 10.0
 CONNECT_SECONDS = 5.0
 MODEL_ID = re.compile(r"[a-z0-9.-]{1,80}\Z")
-SPEAKERS = ("owner", "remote")
+SPEAKERS = ("owner", "remote", "agent")
 
 # The fixed half of the instruction. A selected mode appends its own goal and
 # boundaries after this text rather than replacing the delegate rules.

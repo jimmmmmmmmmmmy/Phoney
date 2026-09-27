@@ -8,8 +8,7 @@ callback with one bidirectional Media Stream per phone.
 * ``sessions`` reserves legs, authenticates stream bindings, and runs deadlines.
 * ``audio`` reads both sockets and writes both outputs on a 20 ms clock.
 * ``codecs`` frames, decodes, and mixes μ-law audio without ``audioop``.
-* ``controls`` parses the owner keypad, holds the saved profiles, and caches one
-  fixed phrase per profile privately.
+* ``controls`` parses the owner keypad; ``runtime`` streams manual agent dialogue.
 * ``routes`` owns the authenticated API, the TwiML, and the Twilio REST calls.
 """
 

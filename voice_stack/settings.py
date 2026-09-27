@@ -68,8 +68,6 @@ class VoiceSettings:
                 raise ValueError("Set GEMINI_API_KEY before enabling the voice agent.")
             if not self.elevenlabs_api_key:
                 raise ValueError("Set ELEVENLABS_API_KEY before enabling the voice agent.")
-            if not self.elevenlabs_voice_id:
-                raise ValueError("Set ELEVENLABS_VOICE_ID before enabling the voice agent.")
             if not self.output_dir:
                 raise ValueError("Set VOICE_OUTPUT_DIR to an absolute directory before enabling.")
 

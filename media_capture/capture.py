@@ -152,6 +152,8 @@ class _Recorder:
         self.counters = {"media_messages": 0, "rejected_messages": 0, "dropped_messages": 0}
         self.last_chunk = {track: 0 for track in TRACKS}
         self.last_timestamp = {track: -1 for track in TRACKS}
+        # Optional bridge provenance; audio still uses the existing two-track format.
+        self.sources = []
         self.tracks = {
             track: {"file": f"{track}.wav", "meaning": meaning, "frames": 0,
                     "samples": 0, "gap_samples": 0, "first_timestamp_ms": None,
@@ -238,12 +240,15 @@ class _Recorder:
         track["last_chunk"] = frame.chunk
 
     def _manifest(self, status: str) -> dict:
-        return dict(schema_version=1, call_sid=self.ticket.call_sid,
+        manifest = dict(schema_version=1, call_sid=self.ticket.call_sid,
                     stream_sid=self.ticket.stream_sid, account_sid=self.settings.account_sid,
                     started_at=self.started_at, finished_at=_now(), status=status,
                     finish_reason=self.finish_reason, sample_rate=8_000, channels=1,
                     sample_width=2, encoding="pcm_s16le", tracks=self.tracks,
                     counters=self.counters)
+        if self.sources:
+            manifest["sources"] = list(self.sources)
+        return manifest
 
     def _write(self):
         storage_fd = call_fd = None
@@ -416,6 +421,49 @@ class CaptureManager:
         ticket = CaptureTicket(secrets.token_urlsafe(32), f"capture-{call_sid}", call_sid)
         self.tickets[call_sid] = ticket
         return ticket
+
+    def start_external(self, call_sid: str, stream_sid: str, *, started_at=None):
+        """Record an already authenticated bridge without owning its phone socket.
+
+        The bridge separately feeds its observers because generated playback must
+        be recorded but must not be transcribed as a second human microphone.
+        """
+        if not isinstance(stream_sid, str) or not STREAM_SID.fullmatch(stream_sid):
+            raise CaptureRejected("Invalid bridge stream")
+        ticket = self.reserve(call_sid)
+        if ticket.session is not None:
+            return ticket
+        ticket.stream_sid = stream_sid
+        ticket.session = _Recorder(self.settings, ticket, None, observer=())
+        if started_at is not None:
+            ticket.session.started_at = started_at
+        return ticket
+
+    def offer_external(self, call_sid: str, track: str, timestamp_ms: int, payload: bytes):
+        """Bounded, nonblocking intake for the bridge's canonical timeline."""
+        ticket = self.tickets.get(call_sid)
+        if ticket is None or ticket.ended or ticket.session is None or track not in TRACKS:
+            return False
+        recorder = ticket.session
+        reason = recorder.media({"streamSid": ticket.stream_sid, "media": {
+            "track": track, "chunk": recorder.last_chunk[track] + 1,
+            "timestamp": timestamp_ms, "payload": base64.b64encode(payload).decode("ascii")}})
+        if reason is not None and not recorder.closing.is_set():
+            recorder.finish_reason = reason
+            recorder.closing.set()
+        return reason is None
+
+    def note_source(self, call_sid: str, *, role: str, stream_sid: str, generation: int):
+        """Retain real leg stream IDs across reconnects alongside normalized audio."""
+        ticket = self.tickets.get(call_sid)
+        if (ticket is None or ticket.session is None or role not in {"owner", "remote"}
+                or not isinstance(stream_sid, str) or not STREAM_SID.fullmatch(stream_sid)
+                or type(generation) is not int or generation < 1):
+            return
+        record = {"role": role, "stream_sid": stream_sid, "generation": generation}
+        sources = ticket.session.sources
+        if record not in sources and len(sources) < 32:
+            sources.append(record)
 
     def validate_start(self, call_sid: str, start: dict) -> CaptureTicket:
         self._expire()

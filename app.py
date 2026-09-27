@@ -26,10 +26,13 @@ from workspace_store import WorkspaceStore
 from voicemail import VoicemailStore
 from call_details import CallDetailsStore
 from summaries import SummaryManager
-from operator_service import OperatorSessions, register_operator_routes
+from operator_service import OperatorRejected, OperatorSessions, register_operator_routes
 from partner_detection import LiveDetectionManager
 from partner_detection.storage import DetectionStore
 from partner_detection.backfill import BackfillManager
+from agent_registry import (AgentRegistry, owner_authenticated, owner_write_access,
+                            register_agent_routes)
+from bridge_pipeline import BridgePipeline
 
 logger = logging.getLogger("uvicorn.error")
 MAX_GITHUB_BODY_BYTES = 1024 * 1024
@@ -55,7 +58,7 @@ def write_deploy_trigger(path: str, delivery_id: str) -> None:
 
 def create_app(settings: Settings, gateway=None, transcription_connector=None, summary_provider=None,
                operator_dialer=None, operator_voice=None, detection_connector=None,
-               detection_batch_provider=None) -> FastAPI:
+               detection_batch_provider=None, agent_voice=None, agent_voice_provider=None) -> FastAPI:
     transcription = TranscriptionManager(settings, connector=transcription_connector)
     voicemails = VoicemailStore(settings)
     recordings = RecordingLibrary(settings)
@@ -63,6 +66,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     operator = OperatorSessions(settings)
     detection_store = DetectionStore(settings.detection_storage_dir)
     workspace_store = WorkspaceStore(settings.workspace_storage_dir)
+    agent_registry = AgentRegistry(settings.workspace_storage_dir)
     detection_writes: set[asyncio.Task] = set()
     detection_last_write: dict[str, asyncio.Task] = {}
 
@@ -114,13 +118,17 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     live_detection = LiveDetectionManager(settings, connector=detection_connector,
         can_run=provider_worker_active, on_update=persist_detection)
     media_capture = CaptureManager(settings, observer=(transcription, live_detection))
+    bridge_pipeline = BridgePipeline(settings, media_capture, transcription, live_detection, call_details)
+    transcription.on_segment = bridge_pipeline.transcript_event
+    transcription.on_failure = bridge_pipeline.transcription_failed
     summaries = SummaryManager(settings, transcription, call_details,
-        active_call_ids=lambda: {sid for sid, session in switchboard.sessions.items() if session.phase != "ended"},
+        active_call_ids=lambda: ({sid for sid, session in switchboard.sessions.items() if session.phase != "ended"}
+                                | bridge_pipeline.active_call_ids),
         provider=summary_provider, can_run=provider_worker_active)
     detection_backfill = BackfillManager(settings, detection_store,
         active_call_ids=lambda: (
             {sid for sid, session in switchboard.sessions.items() if session.phase != "ended"}
-            | live_detection.active_call_ids | set(detection_last_write)),
+            | bridge_pipeline.active_call_ids | live_detection.active_call_ids | set(detection_last_write)),
         provider=detection_batch_provider, can_run=provider_worker_active)
 
     @asynccontextmanager
@@ -131,6 +139,11 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
         await detection_backfill.close()
         await summaries.close()
         await switchboard.close()
+        for session in list(operator.sessions.values()):
+            if session.active:
+                await controller.end(session.id, "server-shutdown")
+        await operator.close()
+        await bridge_pipeline.close()
         await media_capture.close()
         await live_detection.close()
         if detection_writes:
@@ -144,7 +157,6 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
                 await asyncio.gather(*pending, return_exceptions=True)
         await transcription.close()
         await voicemails.close()
-        await operator.close()
 
     app = FastAPI(title="Passive Operator — Build 3", docs_url=None, redoc_url=None,
                   openapi_url=None, redirect_slashes=False, lifespan=lifespan)
@@ -154,6 +166,8 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     app.state.live_detection = live_detection
     app.state.detection_store = detection_store
     app.state.workspace_store = workspace_store
+    app.state.agent_registry = agent_registry
+    app.state.bridge_pipeline = bridge_pipeline
     app.state.detection_backfill = detection_backfill
     app.state.detection_writes = detection_writes
     app.state.voicemails = voicemails
@@ -163,10 +177,25 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     register_dashboard(app, settings, transcription, voicemail_store=voicemails,
                        recording_library=recordings, call_details_store=call_details,
                        detection_store=detection_store, workspace_store=workspace_store)
+    register_agent_routes(app, settings, agent_registry,
+                          voice_settings=agent_voice or operator_voice, provider=agent_voice_provider)
+
+    def require_owner(request):
+        if request.method in {"GET", "HEAD"}:
+            if not settings.agent_management_enabled or not owner_authenticated(request, agent_registry):
+                raise HTTPException(403, "Unlock owner controls before using call controls.")
+        else:
+            owner_write_access(request, agent_registry, settings)
+        return True
     # ``main`` passes the voice layer's settings when the operator may speak;
     # without them the keypad still parses and the bridge stays human relay.
-    register_operator_routes(app, settings, operator, dialer=operator_dialer,
-                             voice=operator_voice)
+    controller = register_operator_routes(app, settings, operator, dialer=operator_dialer,
+        voice=operator_voice, registry=agent_registry if settings.agent_management_enabled else None,
+        context_getter=bridge_pipeline.context, on_call_start=bridge_pipeline.start,
+        on_call_end=bridge_pipeline.end, on_audio=bridge_pipeline.audio,
+        on_output_audio=bridge_pipeline.output, on_agent_turn=bridge_pipeline.agent_turn,
+        require_owner=require_owner)
+    bridge_pipeline.controller = controller
     validate_twilio = twilio_validator(settings)
 
     @app.get("/health")
@@ -180,6 +209,11 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
                   "operator_enabled": settings.operator_ready}
         if settings.deploy_commit:
             result["commit"] = settings.deploy_commit
+        if settings.agent_management_enabled:
+            result["agent_management_enabled"] = True
+            result["manual_takeover_enabled"] = bool(settings.voice_agent_enabled and operator_voice)
+            result["inbound_operator_enabled"] = settings.operator_inbound_enabled
+            result["automatic_takeover_enabled"] = False
         if summaries.enabled:
             result["summaries_enabled"] = True
         if live_detection.enabled:
@@ -204,7 +238,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
                                              + voicemails.active_count + summaries.active_count
                                              + operator.pending_count + live_detection.active_count
                                              + detection_backfill.active_count
-                                             + len(detection_writes)},
+                                             + len(detection_writes) + bridge_pipeline.pending_count},
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/internal/deploy", dependencies=[Depends(validate_deploy_control)])
@@ -269,6 +303,18 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     async def voice(form=Depends(validate_twilio)):
         call_sid = require_sid(form.get("CallSid"))
         response = VoiceResponse()
+        if settings.operator_inbound_enabled:
+            if form.get("To") != settings.twilio_number:
+                raise HTTPException(400, "Unexpected destination")
+            try:
+                session = await controller.start_inbound(call_sid, str(form.get("From", "")))
+            except OperatorRejected:
+                # A rejected reservation must not create a second call through
+                # the conference path or bypass the bridge's capacity/drain gate.
+                response.say("The team is unavailable right now. Please try again later.")
+                response.hangup()
+                return Response(str(response), media_type="application/xml")
+            return Response(controller.inbound_twiml(session), media_type="application/xml")
         if settings.switchboard_ready:
             if form.get("To") != settings.twilio_number:
                 raise HTTPException(400, "Unexpected destination")
@@ -466,22 +512,30 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
 
     @app.post("/status")
     async def status(form=Depends(validate_twilio)):
-        require_sid(form.get("CallSid"))
-        # Optional callback, kept minimal for the next milestone.
+        call_sid = require_sid(form.get("CallSid"))
         call_status = str(form.get("CallStatus", "unknown"))
         if call_status not in {"queued", "initiated", "ringing", "in-progress", "completed",
                                "busy", "failed", "no-answer", "canceled"}:
             call_status = "unknown"
         if call_status in {"completed", "busy", "failed", "no-answer", "canceled"}:
+            raw_duration = str(form.get("CallDuration", ""))
+            duration = (int(raw_duration) if raw_duration.isascii() and raw_duration.isdecimal()
+                        and len(raw_duration) <= 6 else None)
+            inbound = next((item for item in operator.sessions.values()
+                            if item.direction == "inbound" and item.canonical_call_sid == call_sid), None)
+            if inbound is not None:
+                result = await operator.record_status(inbound.id, "remote", call_sid,
+                                                      call_status, duration=duration)
+                if result["action"] == "terminal":
+                    await controller.end(inbound.id, "remote-" + result["reason"])
+                await asyncio.to_thread(call_details.finish, call_sid, duration_seconds=duration)
+                return Response(status_code=204)
             session = switchboard.sessions.get(form["CallSid"])
             if session and session.phase == "voicemail":
                 await switchboard.voicemail_finished(form["CallSid"], "voicemail_hangup")
             else:
                 await switchboard.finished(form["CallSid"])
             # The signed parent callback supplies the full call duration, including prompts.
-            raw_duration = str(form.get("CallDuration", ""))
-            duration = (int(raw_duration) if raw_duration.isascii() and raw_duration.isdecimal()
-                        and len(raw_duration) <= 6 else None)
             await asyncio.to_thread(call_details.finish, form["CallSid"], duration_seconds=duration)
         logger.info("call_status call_sid=%s status=%s", form["CallSid"], call_status)
         return Response(status_code=204)

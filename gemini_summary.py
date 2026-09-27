@@ -35,6 +35,11 @@ as a personal statement. Avoid repeating cross-track echoes, but do not merge
 different statements or guess their owner. When attribution cannot be resolved,
 explicitly say the attribution is unclear instead of claiming who said it.
 
+An outbound segment explicitly marked source=agent was spoken by our selected
+AI agent. Attribute it to the named Agent, not to Caller or the human New College
+DS operator. A delivery=interrupted segment may not have been fully heard; do
+not infer an agreement from its unconfirmed remainder.
+
 Use only facts supported by the transcript. Speech recognition can be wrong;
 preserve uncertainty and explicitly note incomplete context when completion_status
 is partial or failed. Do not invent agreements, actions, names, or speaker
@@ -72,6 +77,9 @@ def _request_body(document: dict, *, instruction: str = SYSTEM_INSTRUCTION) -> b
     # metadata, provider errors, paths, or credentials from entering the prompt.
     rows = [{key: row[key] for key in ("track", "start_ms", "end_ms", "text")}
             for row in document["segments"]]
+    for source, row in zip(document["segments"], rows):
+        if source.get("source") == "agent":
+            row.update(source="agent", speaker=source["speaker"], delivery=source["delivery"])
     rows.sort(key=lambda row: (row["start_ms"], row["end_ms"], row["track"], row["text"]))
     data = {"completion_status": status, "segments": rows}
     body = {

@@ -48,6 +48,10 @@ BASE = dict(account_sid="AC" + "1" * 32, auth_token="test-auth",
     {"max_call_seconds": 14401},
     {"max_call_seconds": True},
     {"voice_agent_enabled": "true"},
+    {"agent_management_enabled": "true"},
+    {"operator_inbound_enabled": "true"},
+    {"agent_management_enabled": True},
+    {"operator_inbound_enabled": True},
 ])
 def test_invalid_switchboard_configuration_fails(fields):
     with pytest.raises(ValueError):
@@ -64,6 +68,25 @@ def test_configuration_keeps_sensitive_values_out_of_repr():
                   settings.twilio_number, settings.callee_number, settings.deploy_control_token,
                   settings.deepgram_api_key, settings.gemini_api_key):
         assert field not in repr(settings)
+
+
+def test_manual_inbound_configuration_keeps_automatic_behavior_off(tmp_path):
+    fields = dict(owner_number="+15555550100", twilio_number="+15555550101",
+                  operator_admin_token="operator-admin-token-" * 2,
+                  voice_agent_enabled=True, agent_management_enabled=True,
+                  operator_inbound_enabled=True, workspace_storage_dir=str(tmp_path / "workspace"),
+                  media_capture_enabled=True, media_storage_dir=str(tmp_path / "audio"),
+                  transcription_enabled=True, deepgram_api_key="fake-deepgram",
+                  transcript_storage_dir=str(tmp_path / "transcripts"))
+    configured = Settings(**BASE, **fields)
+    assert configured.operator_ready and configured.allowed_destinations == ()
+    for field in ("voice_agent_enabled", "agent_management_enabled", "transcription_enabled"):
+        with pytest.raises(ValueError):
+            Settings(**BASE, **{**fields, field: False})
+    defaults = Settings(**BASE)
+    assert not defaults.voice_agent_enabled
+    assert not defaults.operator_inbound_enabled
+    assert not defaults.agent_management_enabled
 
 
 def test_transcription_requires_provider_key_and_storage_but_no_viewer_code(tmp_path):

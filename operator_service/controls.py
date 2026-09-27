@@ -1,8 +1,8 @@
-"""Owner keypad commands, saved profiles, and the fixed phrases Stage 2 speaks.
+"""Owner keypad commands and legacy offline profile/clip helpers.
 
 The parser is pure: one digit plus a monotonic time in, one command out. That
 keeps the transport's rule (only the bound owner leg may send keys) separate
-from the product rule (``#1``-``#4`` select a profile, ``#0`` returns control),
+from the product rule (``#1``-``#9`` select a published agent, ``#0`` returns control),
 and lets every row of the documented keypad table be pinned without a phone.
 
 Two states are enough. In ``idle`` a ``#`` starts a two-second prefix; in
@@ -44,7 +44,8 @@ PROFILES_FILE = "profiles.json"
 PROFILE_FIELDS = ("name", "system_prompt", "model", "actions", "demo_phrase")
 # The documented shortcuts. ``#0`` and ``##`` are handled separately because
 # they do not select a saved profile.
-PROFILE_KEYS = ("1", "2", "3", "4")
+PROFILE_KEYS = tuple(str(key) for key in range(1, 10))
+DEFAULT_PROFILE_KEYS = ("1", "2", "3", "4")
 RELEASE_KEY = "0"
 DEFAULT_PROFILE = "1"
 # What a profile may be trusted to do. ``reply`` is agent speech on the remote
@@ -103,7 +104,7 @@ class Profile:
 
     def __post_init__(self):
         if self.key not in PROFILE_KEYS:
-            raise ValueError("A profile key must be one of #1-#4.")
+            raise ValueError("A profile key must be one of #1-#9.")
         for label, value in (("name", self.name), ("system_prompt", self.system_prompt),
                              ("demo_phrase", self.demo_phrase), ("model", self.model)):
             if not isinstance(value, str):
@@ -144,10 +145,10 @@ def load_profiles(path=None) -> dict[str, Profile]:
     except (OSError, ValueError) as exc:
         raise ValueError(f"Profiles file must be readable JSON: {source.name}") from exc
     entries = document.get("profiles") if isinstance(document, dict) else None
-    if not isinstance(entries, dict) or set(entries) != set(PROFILE_KEYS):
+    if not isinstance(entries, dict) or set(entries) != set(DEFAULT_PROFILE_KEYS):
         raise ValueError("Profiles file must define exactly #1-#4.")
     profiles = {}
-    for key in PROFILE_KEYS:
+    for key in DEFAULT_PROFILE_KEYS:
         entry = entries[key]
         if not isinstance(entry, dict) or set(entry) != set(PROFILE_FIELDS):
             raise ValueError(f"Profile {key} must define exactly: {', '.join(PROFILE_FIELDS)}.")

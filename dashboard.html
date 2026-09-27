@@ -41,8 +41,8 @@
     .team-brand{display:block;width:160px;max-width:calc(100% - 16px);padding:0;margin:0 8px;line-height:0;border-radius:4px}.team-brand img,.team-brand-mobile img{display:block;width:100%;height:auto}.team-brand-mobile{display:none}.topbar .search-box{min-width:0;flex:0 1 460px}.nav-team{margin-top:auto;flex:none;text-decoration:none;font-size:12px}.nav-team em{font-weight:inherit}.nav-team svg{width:19px;height:19px}
     @media(max-width:700px){.app-nav .team-brand{display:none}.topbar{gap:18px}.team-brand-mobile{display:block;flex:none;width:132px;line-height:0}.topbar .search-box{flex:1 1 auto}.search-box input{padding-right:8px}.app-nav{gap:4px}.nav-team{align-self:flex-start;margin-top:0;width:auto;min-height:34px;padding:6px 12px;font-size:11px}.audio-panel{gap:8px}}
     @media(max-width:360px){.team-brand-mobile{width:120px}.topbar{gap:12px;padding:0 12px}}
-    .team-content{max-width:780px;padding-top:8px}.team-heading{font-size:30px;font-weight:650;letter-spacing:-.7px;line-height:1.25}.team-heading em{font-weight:inherit}.team-list{list-style:none;margin:30px 0 0;padding:0;border-top:1px solid var(--line)}.team-member{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:23px 0;border-bottom:1px solid var(--line)}.team-member h3{font-size:16px;font-weight:600;letter-spacing:-.2px}.resume-link{display:inline-flex;align-items:center;justify-content:center;gap:9px;flex:none;min-height:42px;padding:9px 14px;border:1px solid var(--line);border-radius:7px;font-size:13px;font-weight:550;text-decoration:none}.resume-link:hover{background:#f2f8f7;border-color:#cfe5e2}.resume-link span{font-size:18px;line-height:1}
-    @media(max-width:540px){.team-heading{font-size:27px}.team-list{margin-top:24px}.team-member{align-items:flex-start;flex-direction:column;gap:10px;padding:20px 0}.resume-link{padding:8px 12px}}
+    .team-content{width:100%;max-width:960px;margin:0 auto;padding-top:16px}.team-artwork{width:100%;aspect-ratio:3/2;max-height:calc(100dvh - 230px);min-height:160px;background:url('/assets/shellhacks-2026.png') center/contain no-repeat}.team-list{display:flex;flex-wrap:wrap;justify-content:center;gap:8px 32px;list-style:none;margin:16px 0 0;padding:0}.team-member h3{font-size:17px;font-weight:500}.resume-link{display:inline-flex;align-items:center;min-height:44px;color:#0655d6;text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:1px}.resume-link:hover{color:#003b99}.resume-link:focus-visible{outline-color:#0655d6}
+    @media(max-width:540px){.team-list{column-gap:24px;margin-top:8px}.team-member h3{font-size:16px}}
     @media(prefers-reduced-motion:reduce){.transcript{scroll-behavior:auto}}
     #header-actions{display:flex;align-items:center;flex:none;margin-left:auto}.topbar{position:relative;z-index:30}
     @media(max-width:700px){.topbar{height:auto;min-height:94px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;padding:10px 16px}.team-brand-mobile{grid-column:1;grid-row:1}.topbar .search-box{grid-column:1/-1;grid-row:2;width:100%;max-width:none}.search-box input{height:34px}.search-box svg{top:9px}#header-actions{grid-column:2;grid-row:1}}
@@ -67,7 +67,7 @@
     <div id="connection" class="sr-only" role="status" aria-label="Connecting"></div>
   </header>
   <main>
-    <div class="page-heading"><div class="page-heading-copy"><div class="page-heading-title"><h1 id="page-title" tabindex="-1">Calls</h1><span id="caller-ai-badge" class="caller-ai-badge" role="status" aria-atomic="true" hidden></span></div><p id="page-caption" class="page-caption" hidden></p></div><div id="call-exports" class="exports" hidden aria-label="Export selected call"><a id="export-txt" class="export" aria-disabled="true" tabindex="-1">TXT <span aria-hidden="true">↓</span></a><a id="export-json" class="export" aria-disabled="true" tabindex="-1">JSON <span aria-hidden="true">↓</span></a></div></div>
+    <div id="page-heading" class="page-heading"><div class="page-heading-copy"><div class="page-heading-title"><h1 id="page-title" tabindex="-1">Calls</h1><span id="caller-ai-badge" class="caller-ai-badge" role="status" aria-atomic="true" hidden></span></div><p id="page-caption" class="page-caption" hidden></p></div><div id="call-exports" class="exports" hidden aria-label="Export selected call"><a id="export-txt" class="export" aria-disabled="true" tabindex="-1">TXT <span aria-hidden="true">↓</span></a><a id="export-json" class="export" aria-disabled="true" tabindex="-1">JSON <span aria-hidden="true">↓</span></a></div></div>
     <div id="live-call-notice" class="live-notice" hidden><span id="live-call-text" role="status"></span><button id="live-call-open" class="text-button" type="button">Open live call →</button></div>
     <section id="dashboard-view" aria-labelledby="desk-heading">
       <h2 id="desk-heading" class="sr-only">Call desk</h2>
@@ -107,14 +107,14 @@
     <section id="agents-view" class="workspace-page" aria-label="Agents" hidden>
       <div class="placeholder-panel"><div class="placeholder-heading"><h2>Rotary agents</h2><span class="planned">Planned</span></div><p>Connect agents and save the prompts they use during calls.</p><dl class="shortcut-list" aria-label="Proposed keypad controls"><div><dt><kbd>#1</kbd></dt><dd>Add an agent to the conversation</dd></div><div><dt><kbd>#2</kbd></dt><dd>Transfer the conversation to an agent</dd></div></dl><p>These are proposed controls. Keypad routing, agent connections, and outbound prompts aren’t connected yet.</p></div>
     </section>
-    <section id="team-view" class="workspace-page" aria-label="Team résumés" hidden>
+    <section id="team-view" class="workspace-page" aria-label="Team résumés" tabindex="-1" hidden>
       <div class="team-content">
-        <h2 class="team-heading"><em>The Hacking Banyons</em></h2>
+        <div class="team-artwork" role="img" aria-label="ShellHacks ’26 — Florida’s largest hackathon — The Hacking Banyans"></div>
         <ul class="team-list" aria-label="Team resumes">
-          <li class="team-member"><h3>James Liu</h3><a class="resume-link" href="/resumes/james-liu.pdf" download="james-liu.pdf" aria-label="Download James Liu’s resume PDF">Resume PDF <span aria-hidden="true">↓</span></a></li>
-          <li class="team-member"><h3>Gerry Jones</h3><a class="resume-link" href="/resumes/gerry-jones.pdf" download="gerry-jones.pdf" aria-label="Download Gerry Jones’s resume PDF">Resume PDF <span aria-hidden="true">↓</span></a></li>
-          <li class="team-member"><h3>Muhammed Altindal</h3><a class="resume-link" href="/resumes/muhammed-altindal.pdf" download="muhammed-altindal.pdf" aria-label="Download Muhammed Altindal’s resume PDF">Resume PDF <span aria-hidden="true">↓</span></a></li>
-          <li class="team-member"><h3>Shane McCarthy</h3><a class="resume-link" href="/resumes/shane-mccarthy.pdf" download="shane-mccarthy.pdf" aria-label="Download Shane McCarthy’s resume PDF">Resume PDF <span aria-hidden="true">↓</span></a></li>
+          <li class="team-member"><h3><a class="resume-link" href="/resumes/james-liu.pdf" download="james-liu.pdf" aria-label="Download James Liu’s resume PDF">James Liu</a></h3></li>
+          <li class="team-member"><h3><a class="resume-link" href="/resumes/gerry-jones.pdf" download="gerry-jones.pdf" aria-label="Download Gerry Jones’s resume PDF">Gerry Jones</a></h3></li>
+          <li class="team-member"><h3><a class="resume-link" href="/resumes/muhammed-altindal.pdf" download="muhammed-altindal.pdf" aria-label="Download Muhammed Altindal’s resume PDF">Muhammed Altindal</a></h3></li>
+          <li class="team-member"><h3><a class="resume-link" href="/resumes/shane-mccarthy.pdf" download="shane-mccarthy.pdf" aria-label="Download Shane McCarthy’s resume PDF">Shane McCarthy</a></h3></li>
         </ul>
       </div>
     </section>
@@ -172,6 +172,7 @@
       renderVoicemails(collectionSessions("voicemail"));
     }
     function visibleDetail() { return state.page === "calls" && state.detail; }
+    function pageFocusTarget() { return $(state.page === "team" ? "team-view" : "page-title"); }
     function saveRoute(replace = false) {
       const hash = state.page === "calls"
         ? `#calls/${state.collection}${state.detail && state.selected ? "/" + state.selected : ""}${state.callerFilter ? "?caller=" + encodeURIComponent(state.callerFilter) : ""}` : "#" + state.page;
@@ -201,7 +202,7 @@
       }
       render();
       renderNavigation();
-      $("page-title").focus({preventScroll: true});
+      pageFocusTarget().focus({preventScroll: true});
       if (state.page === "calls" && !state.detail) restoreListPosition();
       refresh();
     }
@@ -228,6 +229,7 @@
         else $(id).removeAttribute("aria-current");
       }
       $("page-title").textContent = state.page === "calls" && state.detail ? "Call details" : pageTitles[state.page];
+      $("page-heading").hidden = state.page === "team";
       $("page-caption").hidden = true;
       $("call-exports").hidden = !visibleDetail();
       renderDetection(state.selectedSession);
@@ -282,7 +284,7 @@
       state.page = page;
       saveRoute();
       renderNavigation();
-      $("page-title").focus({preventScroll: true});
+      pageFocusTarget().focus({preventScroll: true});
       if (visibleDetail()) updatePlaybackHighlight();
       else if (page === "calls") restoreListPosition();
     }
@@ -487,7 +489,7 @@
       state.highlightEnabled = false;
       updatePlaybackHighlight(true);
       renderAudio(state.audioSession);
-      (visibleDetail() ? $("audio-reopen") : $("page-title")).focus({preventScroll: true});
+      (visibleDetail() ? $("audio-reopen") : pageFocusTarget()).focus({preventScroll: true});
     }
     function reopenAudio() {
       state.audioDismissed = false;

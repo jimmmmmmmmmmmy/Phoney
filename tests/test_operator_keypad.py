@@ -638,7 +638,8 @@ def test_new_remote_context_defers_stale_hangup_until_followup_reply(tmp_path):
         await h.controller.transcript(s.id, REMOTE, 'One more question.', segment_id='new')
         await until(lambda: len(h.delivered) == 1)
         assert s.active and h.dialer.ended == []
-        await until(lambda: not s.active)
+        # Session state closes before its two asynchronous provider hangups run.
+        await until(lambda: not s.active and len(h.dialer.ended) == 2)
         assert len(h.delivered) == 2 and len(h.dialer.ended) == 2
         requests = [b for u,b in h.provider.requests if 'generativelanguage' in u]
         assert len(requests) == 2 and 'One more question' in json.dumps(requests[-1]['contents'])

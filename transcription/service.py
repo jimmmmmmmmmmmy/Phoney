@@ -506,6 +506,9 @@ class TranscriptionManager:
                     raise ValueError
             except (ValueError, KeyError, TypeError, IndexError):
                 raise TrackFailure("result-invalid")
+            # A delayed/repeated result still belongs in the transcript, but its
+            # endpoint cannot close speech that started after that audio ended.
+            speech_final = speech_final and end_ms >= track.last_speech_start_ms
             text = text.strip()
             onset_ms = speech_start_ms(alternative, start, start + duration)
             if final:

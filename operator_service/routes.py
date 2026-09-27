@@ -1055,11 +1055,12 @@ class OperatorController:
                 timer = self._reply_timers.pop(session_id, None)
                 if timer is not None:
                     timer.cancel()
-                if not final:
-                    # Speech activity revokes a stale end-call action even before
-                    # STT has finalized the words spoken during preparation.
+                if not final and text:
+                    # Recognized words revoke a stale end-call action before
+                    # finalization. Raw VAD can be noise or playback echo and
+                    # must not by itself revoke a goodbye or clear agent audio.
                     self._remote_revisions[session_id] = self._remote_revisions.get(session_id, 0) + 1
-            if activity and self.playing(session_id):
+            if text and self.playing(session_id):
                 run = self._dialogue_runs.get(session_id)
                 # Barge-in requires actual outgoing speech, not a running HTTP
                 # request. Delayed STT from before playback is not a new interruption.
@@ -1067,9 +1068,11 @@ class OperatorController:
                         or (timestamp_ms is not None and timestamp_ms < run.speaking_started_ms))):
                     vm = self._voicemail_agents.get(session_id)
                     if vm is not None:
-                        vm.transcript(text, final=final, activity=speech_started)
+                        vm.transcript(text, final=final, speech_started=speech_started,
+                                      speech_final=speech_final)
                     return
-                self.trace(session_id, "caller-interruption")
+                self.trace(session_id, "caller-interruption",
+                           source="final-transcript" if final else "interim-transcript")
                 await self.store.invalidate_reply(session_id)
                 self._stop_playback(session_id)
                 self._note_cleared(session_id, self.router(session_id).clear(*ROLES))
@@ -1079,7 +1082,8 @@ class OperatorController:
                     vm.interrupted()
             vm = self._voicemail_agents.get(session_id)
             if vm is not None:
-                vm.transcript(text, final=final, activity=speech_started)
+                vm.transcript(text, final=final, speech_started=speech_started,
+                              speech_final=speech_final)
                 return
             # Production STT separates finalized chunks from an actual endpoint.
             # None retains the contract for direct/legacy callers without this
@@ -1093,7 +1097,8 @@ class OperatorController:
         elif speaker == REMOTE and session.voicemail:
             vm = self._voicemail_agents.get(session_id)
             if vm is not None:
-                vm.transcript(text, final=final, activity=speech_started)
+                vm.transcript(text, final=final, speech_started=speech_started,
+                              speech_final=speech_final)
 
     async def _after_remote_turn(self, session_id, *, delay=0.3):
         try:

@@ -932,6 +932,51 @@ def test_complete_new_caller_turn_during_ordinary_generation_gets_a_reply(tmp_pa
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('evidence', ['vad-only', 'interim', 'final'])
+def test_farewell_is_not_revoked_by_empty_vad_but_fresh_words_still_interrupt(
+        tmp_path, caplog, evidence):
+    caplog.set_level('INFO', logger='uvicorn.error')
+    async def run():
+        h = Harness(tmp_path, provider=Provider(frames=45, reply='Goodbye.\n[/END CALL]'))
+        s = await h.joined()
+        await h.press('#1')
+        await until(lambda: len(h.remote.frames(0x2A)) >= 3)
+        epoch = s.reply_epoch
+        revision = h.controller._remote_revisions.get(s.id, 0)
+        if evidence == 'vad-only':
+            await h.controller.transcript(s.id, REMOTE, '', final=False,
+                speech_final=False, speech_started=True,
+                timestamp_ms=h.controller.elapsed_ms(s.id))
+            assert s.reply_epoch == epoch
+            assert h.controller._remote_revisions.get(s.id, 0) == revision
+            await until(lambda: not s.active)
+            assert h.delivered[-1][1]['delivery'] == 'played'
+            assert len(h.remote.frames(0x2A)) == 45
+        else:
+            await h.controller.transcript(s.id, REMOTE, 'Wait, I have one more question.',
+                final=evidence == 'final', segment_id='new-question' if evidence == 'final' else '',
+                speech_final=False, timestamp_ms=h.controller.elapsed_ms(s.id))
+            await until(lambda: not h.controller.playing(s.id) and h.delivered
+                        and h.delivered[-1][1]['delivery'] == 'interrupted')
+            assert s.reply_epoch > epoch
+            assert h.delivered[-1][1]['delivery'] == 'interrupted'
+            assert s.active and not h.dialer.ended
+            count = len(h.remote.frames(0x2A))
+            await asyncio.sleep(.08)
+            assert len(h.remote.frames(0x2A)) == count < 45
+        traces = [json.loads(r.message.split('operator_trace ', 1)[1])
+                  for r in caplog.records if r.message.startswith('operator_trace ')]
+        interruptions = [t for t in traces if t['event'] == 'caller-interruption']
+        if evidence == 'vad-only':
+            assert not interruptions
+            assert not any(t['event'] == 'end-call-deferred-for-new-speech' for t in traces)
+        else:
+            assert len(interruptions) == 1
+            assert interruptions[0]['source'] == evidence + '-transcript'
+        await h.close()
+    asyncio.run(run())
+
+
 def test_observed_interim_can_finalize_with_original_onset_after_playback(tmp_path, monkeypatch):
     from operator_service import runtime
     original = runtime.reply_events

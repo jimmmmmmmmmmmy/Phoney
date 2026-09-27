@@ -259,3 +259,73 @@ def test_speech_activity_extends_voicemail_pause_without_inventing_text():
         assert replies == ['no_message']
         vm.close()
     asyncio.run(run())
+
+
+def test_explicit_endpoint_waits_for_entire_split_message_before_readback():
+    async def run():
+        vm, replies, ended = policy(pause_seconds=2, capture_seconds=6, total_seconds=8,
+                                    initial_silence_seconds=6)
+        await vm.reply_completed('greeting')
+        vm.transcript('Yeah.', speech_final=False)
+        vm.transcript('Could you tell him', final=False, speech_final=False)
+        # More than the configured quiet period passes between STT updates.
+        # That does not turn the earlier "Yeah" chunk into a complete message.
+        await asyncio.sleep(2.05)
+        assert replies == [] and vm.utterance_open and vm.pending_final
+        vm.transcript('Could you tell him we are selling a Honda Civic.', speech_final=False)
+        await asyncio.sleep(.04)
+        assert replies == []
+        vm.transcript('A used 2005 model.', speech_final=True)
+        await asyncio.sleep(.01)
+        assert replies == []
+        await asyncio.sleep(2.05)
+        assert replies == ['readback'] and ended == []
+        vm.close()
+    asyncio.run(run())
+
+
+def test_empty_endpoint_starts_pause_and_vad_can_reopen_it():
+    async def run():
+        vm, replies, ended = policy()
+        await vm.reply_completed('greeting')
+        vm.transcript('Please call tomorrow.', speech_final=False)
+        await asyncio.sleep(.04)
+        assert replies == []
+        vm.transcript('', final=False, speech_final=True)
+        await asyncio.sleep(.01)
+        vm.transcript('', final=False, speech_started=True, speech_final=False)
+        await asyncio.sleep(.04)
+        assert replies == [] and vm.utterance_open
+        vm.transcript('', final=False, speech_final=True)
+        await until(lambda: replies)
+        assert replies == ['readback'] and ended == []
+        vm.close()
+    asyncio.run(run())
+
+
+def test_vad_without_words_never_creates_message_and_retains_silence_bound():
+    async def run():
+        vm, replies, ended = policy(initial_silence_seconds=.035)
+        await vm.reply_completed('greeting')
+        vm.transcript('', final=False, speech_started=True, speech_final=False)
+        assert vm.utterance_open and not vm.pending_final
+        await until(lambda: replies)
+        assert replies == ['no_message'] and not vm.has_message and not vm.pending_final
+        assert ended == []
+        vm.close()
+    asyncio.run(run())
+
+
+def test_open_message_without_endpoint_is_still_bounded_by_capture_deadline():
+    async def run():
+        vm, replies, ended = policy(capture_seconds=.06, pause_seconds=.01)
+        await vm.reply_completed('greeting')
+        vm.transcript('The first part of my message.', speech_final=False)
+        for _ in range(3):
+            vm.transcript('Still speaking', final=False, speech_final=False)
+            await asyncio.sleep(.012)
+        assert replies == []
+        await until(lambda: replies)
+        assert replies == ['readback'] and ended == []
+        vm.close()
+    asyncio.run(run())

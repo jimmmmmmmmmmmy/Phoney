@@ -6,10 +6,18 @@ Enable `VOICEMAIL_AGENT_ENABLED=true` alongside `OPERATOR_INBOUND_ENABLED=true` 
 
 1. The owner answers before fallback: the call remains a normal human conversation.
 2. The owner does not answer: retire the owner leg and play the fixed ElevenLabs invitation on the existing caller leg. It identifies the AI voicemail assistant and invites a message; it does not require Gemini to generate an opening.
-3. After finalized caller speech and approximately two seconds without new transcription activity, repeat the important details and ask for confirmation.
+3. Save finalized caller chunks as they arrive, but wait for the speech endpoint and approximately two seconds without new transcription activity before repeating the important details and asking for confirmation. A stable chunk alone does not mean the caller finished speaking.
 4. Apply corrections or ask a brief clarification. After confirmation or explicit goodbye, finish the farewell playback and hang up.
 
 The fixed greeting is prepared during ringing, without playing audio or activating an agent. Its cache is keyed by voice, synthesis model, and exact text, with at most 16 entries shared with announcements. Ringing and voicemail share an in-flight synthesis request; unused work is canceled when the caller hangs up or the owner answers. A failed warm-up does not interrupt ringing. Greeting playback uses the same Twilio acknowledgment and transcript path as generated replies, so the first Gemini readback receives the greeting that was actually heard alongside the caller's message.
+
+An empty speech-start/VAD event may postpone listening timers, but cannot clear
+agent playback or revoke a goodbye. Interruptions require a nonempty caller
+transcript, interim or final, whose onset passes the playback timing guard. This
+reduces cutoffs caused by unconfirmed speech activity while keeping actual caller
+corrections interruptible. Interrupted transcript rows retain the intended phrase
+and show **Interrupted**; their full text is not proof the caller heard it all.
+Only a completed Twilio playback acknowledgment marks a phrase as played.
 
 The shared prompt receives an explicit runtime phase for readback, confirmation, empty-message timeout, or unconfirmed-message timeout. It never decides a pause happened from missing text, and silence does not mean confirmation. Initial silence is bounded to 20 seconds, confirmation silence to 15 seconds, each listening period to 60 seconds, and the entire voicemail session to 180 seconds. Failed Gemini, transcription, voice lookup, or ElevenLabs generation switches the same call to native Twilio `Say`/`Record`. The fallback prompts for a name, callback number, and message; a five-second pause, `#`, or `VOICEMAIL_MAX_SECONDS` ends recording. It uses no further AI calls. Late owner answers/callbacks cannot join after voicemail claims the call.
 

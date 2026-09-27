@@ -32,6 +32,7 @@ class VoicemailAgent:
         self.busy = True
         self.closed = False
         self.pending_final = False
+        self.utterance_open = False
         self.has_message = False
         self.activity_version = 0
         self._timers = {}
@@ -114,12 +115,24 @@ class VoicemailAgent:
             self.busy = False
             self._listen()
 
-    def transcript(self, text, *, final=True, activity=False):
-        """Interims extend a pause, but never alone become a recorded message."""
-        if not self._active() or (not str(text or "").strip() and not activity):
+    def transcript(self, text, *, final=True, activity=False, speech_final=None,
+                   speech_started=False):
+        """Collect final chunks, but start the pause only at an actual endpoint.
+
+        ``None`` preserves callers without endpoint metadata. Production STT
+        supplies explicit booleans, including empty end-of-utterance events.
+        VAD activity can extend listening but cannot invent a recorded message.
+        """
+        text = str(text or "").strip()
+        activity = bool(activity or speech_started)
+        if not self._active() or (not text and not activity and speech_final is not True):
             return
         self.activity_version += 1
-        if final and str(text or "").strip():
+        if speech_final is True or (speech_final is None and final and text):
+            self.utterance_open = False
+        elif speech_final is False and (text or activity):
+            self.utterance_open = True
+        if final and text:
             self.pending_final = True
         self._cancel("pause")
         self._cancel("silence")
@@ -131,11 +144,16 @@ class VoicemailAgent:
             return
         if "capture" not in self._timers:
             self._arm("capture", self.capture_seconds, self._capture_expired)
+        if self.pending_final and self.utterance_open:
+            # An older finalized chunk is not proof that the current utterance
+            # ended. The capture/session bounds still prevent an endless wait.
+            return
         if self.pending_final:
             version = self.activity_version
 
             async def quiet():
-                if not self.busy and self.pending_final and self.activity_version == version:
+                if (not self.busy and self.pending_final and not self.utterance_open
+                        and self.activity_version == version):
                     await self._request("confirm" if self.has_message else "readback")
 
             self._arm("pause", self.pause_seconds, quiet)

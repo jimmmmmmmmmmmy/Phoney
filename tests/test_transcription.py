@@ -539,6 +539,48 @@ def test_stale_utterance_end_cannot_close_new_speech(tmp_path):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('ending', ['new-final', 'updated-final', 'repeated-final', 'empty-final'])
+def test_stale_result_endpoint_cannot_close_new_speech(tmp_path, ending):
+    async def run():
+        connector, observed = Connector(), []
+        manager = TranscriptionManager(settings(tmp_path), connector,
+            on_segment=lambda sid, segment, final: observed.append((segment, final)))
+        manager.start(CALL, STREAM)
+        manager.offer(CALL, 'inbound', 5000, b'\xff' * 160)
+        await until(lambda: len(connector.sockets) == 2)
+        sock = connector.sockets[0]
+        first = result('90,000 miles.', start=.1, duration=1)
+        sock.push(first)
+        sock.push({'type': 'SpeechStarted', 'timestamp': 2})
+        if ending == 'new-final':
+            delayed = result('On the odometer.', start=1.1, duration=.5)
+        elif ending == 'updated-final':
+            delayed = result('Ninety thousand miles.', start=.1, duration=1)
+        elif ending == 'repeated-final':
+            delayed = dict(first)
+        else:
+            delayed = result('', start=1.1, duration=.5)
+        sock.push(delayed | {'speech_final': True})
+        # This ordered interim proves the delayed endpoint was processed before
+        # checking that the newer utterance remains open.
+        sock.push(result('And the condition', final=False, start=2, duration=.5))
+        await until(lambda: observed[-1][0]['text'] == 'And the condition' if observed else False)
+        assert not any(row['speech_final'] for row, _ in observed)
+        assert manager.sessions[CALL].tracks['inbound'].pending_utterance
+        assert manager.sessions[CALL].tracks['inbound'].speech_active
+        sock.push(result('And the condition is good.', start=2, duration=1) | {'speech_final': True})
+        await until(lambda: any(row['speech_final'] for row, _ in observed))
+        assert sum(bool(row['speech_final']) for row, _ in observed) == 1
+        assert observed[-1][0]['text'] == 'And the condition is good.'
+        await complete(manager)
+        saved = [row['text'] for row in manager.history[0]['segments']]
+        expected = ['Ninety thousand miles.'] if ending == 'updated-final' else ['90,000 miles.']
+        if ending == 'new-final':
+            expected.append('On the odometer.')
+        assert saved == expected + ['And the condition is good.']
+    asyncio.run(run())
+
+
 def test_empty_endpoint_releases_speech_activity_without_a_new_final(tmp_path):
     async def run():
         connector, observed = Connector(), []

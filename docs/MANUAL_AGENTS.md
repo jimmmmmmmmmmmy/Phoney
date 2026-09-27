@@ -56,7 +56,7 @@ Only the live in-process detector can trigger this action. Recorded-audio backfi
 
 With `VOICEMAIL_AGENT_ENABLED=true`, an unanswered inbound bridge call falls back after `VOICEMAIL_AGENT_RING_SECONDS` (10 by default). Busy/no-answer can fall back sooner. The owner leg is retired, and the existing caller leg stays connected to the private **Voicemail Assistant**. A real owner answer before the fallback claim takes priority; delayed owner callbacks cannot join a voicemail conversation.
 
-The assistant invites a message and waits. The runtime waits for about two seconds without new transcription activity after finalized caller speech before requesting a readback. The agent repeats the important details and asks for confirmation. Corrections update the readback; explicit confirmation or goodbye permits a farewell followed by hangup. Silence is never treated as confirmation. The assistant never claims the owner already heard the message or promises a callback.
+The assistant invites a message and waits. The runtime collects finalized chunks until a speech endpoint, then waits for about two seconds without new transcription activity before requesting a readback. A finalized chunk while the caller's utterance is still open cannot start that pause. The agent repeats the important details and asks for confirmation. Corrections update the readback; explicit confirmation or goodbye permits a farewell followed by hangup. Silence is never treated as confirmation. The assistant never claims the owner already heard the message or promises a callback.
 
 Listening is bounded: the initial silence limit is 20 seconds, the readback confirmation silence limit is 15 seconds, each collection period is capped at 60 seconds, and the voicemail session ends by 180 seconds. Empty or unconfirmed messages receive an appropriate closing response. Gemini, transcription, voice lookup, or speech-generation failure switches the same caller to a native Twilio greeting and recording. It does not retry AI replies or reconnect the absent owner. The saved receipt distinguishes local conversational voicemail from a Twilio fallback message. Existing call recording, transcript, and summary pipelines retain the canonical caller CallSid. See [voicemail behavior](VOICEMAIL.md) for the separate legacy flow and storage details.
 
@@ -97,13 +97,15 @@ before these events were added cannot provide precise provider latency.
 Human speech during preparation updates the history without repeatedly
 canceling the handoff. The first prepared response plays after the announcement;
 the next real caller response uses that updated history.
-Only speech that starts after agent audio is sent can interrupt playback, so
+Only recognized caller words that start after agent audio is sent can interrupt playback, so
 provider generation time and delayed pre-playback STT are not barge-in events.
+An empty VAD speech-start event can reset listening timers but never clears the
+agent's audio. Interruption traces distinguish interim and final transcript input.
 Announcement playback overlaps first-reply generation and synthesis; the fixed
 announcements are cached by voice, model, and text after an activation.
 Repeated selection of the active shortcut is a no-op. `#0`, a different
 shortcut, and hangup still cancel the current generation.
-New caller speech activity defers an old end-call command until a fresh reply,
+New recognized caller speech defers an old end-call command until a fresh reply,
 including the automatic agent's third reply. An unfinished caller utterance must
 reach its endpoint before that replacement reply starts.
 Generation traces include the selected agent revision, model, and reply number,

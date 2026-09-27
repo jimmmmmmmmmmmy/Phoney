@@ -391,3 +391,66 @@ def test_new_caller_speech_during_terminal_preparation_keeps_voicemail_open(
         assert s.active and REMOTE_SID not in h.dialer.ended
         await h.close()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('phase', ['greeting', 'readback'])
+@pytest.mark.parametrize('evidence', ['vad-only', 'interim', 'final'])
+def test_voicemail_playback_only_yields_to_recognized_caller_words(
+        tmp_path, monkeypatch, caplog, phase, evidence):
+    quick_timers(monkeypatch)
+    caplog.set_level('INFO', logger='uvicorn.error')
+    class LongSpeech(Provider):
+        def transport(self):
+            original = super().transport()
+            async def handle(request):
+                if 'elevenlabs' in request.url.host:
+                    return httpx.Response(200, content=bytes([0x2A]) * FRAME_BYTES * 45)
+                return await original.handle_async_request(request)
+            return httpx.MockTransport(handle)
+    async def run():
+        h = Harness(tmp_path, provider=LongSpeech())
+        s = await h.incoming()
+        await h.controller.on_timeout(s, 'owner-no-answer')
+        if phase == 'readback':
+            await h.ready()
+            await h.controller.transcript(s.id, REMOTE, 'Ask Alex to call tomorrow.',
+                segment_id='message', speech_final=True)
+        await until(lambda: s.id in h.controller._dialogue_runs
+            and h.controller._dialogue_runs[s.id].voicemail_phase == phase
+            and h.controller._dialogue_runs[s.id].speaking_started_ms is not None)
+        epoch = s.reply_epoch
+        clear_count = sum(m['event'] == 'clear' for m in h.remote.sent)
+        revision = h.controller._remote_revisions.get(s.id, 0)
+        if evidence == 'vad-only':
+            await h.controller.transcript(s.id, REMOTE, '', final=False,
+                speech_final=False, speech_started=True,
+                timestamp_ms=h.controller.elapsed_ms(s.id))
+            assert s.reply_epoch == epoch
+            assert h.controller._remote_revisions.get(s.id, 0) == revision
+            await h.ready()
+            assert h.delivered[-1][1]['delivery'] == 'played'
+            assert sum(m['event'] == 'clear' for m in h.remote.sent) == clear_count
+        else:
+            await h.controller.transcript(s.id, REMOTE, 'Wait, the meeting is at eleven.',
+                final=evidence == 'final', segment_id='correction' if evidence == 'final' else '',
+                speech_final=False, timestamp_ms=h.controller.elapsed_ms(s.id))
+            await until(lambda: not h.controller.playing(s.id) and h.delivered
+                        and h.delivered[-1][1]['delivery'] == 'interrupted')
+            assert s.reply_epoch > epoch
+            assert h.delivered[-1][1]['delivery'] == 'interrupted'
+            count = len(h.remote.frames(0x2A))
+            await asyncio.sleep(.08)
+            assert len(h.remote.frames(0x2A)) == count
+            assert sum(m['event'] == 'clear' for m in h.remote.sent) > clear_count
+        traces = [json.loads(r.message.split('operator_trace ', 1)[1])
+                  for r in caplog.records if r.message.startswith('operator_trace ')]
+        interruptions = [t for t in traces if t['event'] == 'caller-interruption']
+        if evidence == 'vad-only':
+            assert not interruptions
+        else:
+            assert len(interruptions) == 1
+            assert interruptions[0]['source'] == evidence + '-transcript'
+            assert 'text' not in interruptions[0]
+        assert s.active and REMOTE_SID not in h.dialer.ended
+        await h.close()
+    asyncio.run(run())

@@ -59,6 +59,14 @@ def test_wrong_account_or_call_rejected(client):
 
 
 def test_routes_and_status(client):
+    home = client.get("/", follow_redirects=False)
+    assert home.status_code == 307
+    assert home.headers["location"] == "/dashboard#calls/recent"
+    assert home.headers["cache-control"] == "no-store"
+    dashboard = client.get("/")
+    assert dashboard.status_code == 200
+    assert dashboard.url.path == "/dashboard" and dashboard.url.fragment == "calls/recent"
+    assert dashboard.headers["content-type"].startswith("text/html")
     assert client.get("/health").json() == {"status": "ok", "service": "passive-operator", "build": 3,
                                            "switchboard_ready": False, "media_capture_enabled": False,
                                            "transcription_enabled": False, "voicemail_enabled": False,

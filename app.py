@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from twilio.twiml.voice_response import VoiceResponse
 
 from config import Settings
@@ -208,8 +208,12 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     bridge_pipeline.controller = controller
     validate_twilio = twilio_validator(settings)
 
-    @app.get("/health")
     @app.get("/")
+    async def home():
+        return RedirectResponse("/dashboard#calls/recent", status_code=307,
+                                headers={"Cache-Control": "no-store"})
+
+    @app.get("/health")
     async def health():
         result = {"status": "ok", "service": "passive-operator", "build": 3,
                   "switchboard_ready": settings.switchboard_ready,

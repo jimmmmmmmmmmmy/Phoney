@@ -4,6 +4,7 @@ The relay's contract is one bounded synthesis request per finished phrase, so
 these checks assert the phrase list, the request count and the saved audio all
 describe the same answer. The CLI checks run the real script but assert on
 guards that fire before any configuration or network access.
+<<<<<<< Updated upstream
 
 ``--chat`` is checked the same way, with one extra rule: every turn must append
 to a single conversation, so a later turn is sent the earlier dialogue. Its
@@ -12,6 +13,11 @@ records are read back from standard output, which is one JSON object per line.
 
 import asyncio
 import io
+=======
+"""
+
+import asyncio
+>>>>>>> Stashed changes
 import json
 from pathlib import Path
 import subprocess
@@ -31,7 +37,11 @@ GEMINI_KEY = "unit-test-gemini-key"
 ELEVEN_KEY = "unit-test-elevenlabs-key"
 VOICE = "EXAVITQu4vr4xnSDxMaL"
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+<<<<<<< Updated upstream
 PLAY_GUARD = "--play needs --say, or --ask or --chat without --text-only."
+=======
+PLAY_GUARD = "--play needs --say, or --ask without --text-only."
+>>>>>>> Stashed changes
 
 
 def settings_for(tmp_path, **overrides) -> VoiceSettings:
@@ -198,8 +208,12 @@ def test_cli_allows_play_with_a_speaking_ask(tmp_path):
 @pytest.mark.parametrize("arguments,expected", [
     (["--play"], PLAY_GUARD),
     (["--ask", "hi", "--text-only", "--play"], PLAY_GUARD),
+<<<<<<< Updated upstream
     (["--chat", "--text-only", "--play"], PLAY_GUARD),
     (["--say", "hi", "--text-only"], "--text-only only applies to --ask or --chat."),
+=======
+    (["--say", "hi", "--text-only"], "--text-only only applies to --ask."),
+>>>>>>> Stashed changes
 ])
 def test_cli_rejects_a_conflicting_action_before_reading_configuration(tmp_path, arguments, expected):
     result = run_cli(tmp_path, *arguments)
@@ -217,6 +231,7 @@ def test_cli_no_action_prints_the_resolved_status(tmp_path):
     report = json.loads(result.stdout)
     assert report["configured"] is True and report["missing"] == ["VOICE_OUTPUT_DIR"]
     assert report["twilio_ready"] is True
+<<<<<<< Updated upstream
     assert GEMINI_KEY not in result.stdout and ELEVEN_KEY not in result.stdout
 
 
@@ -363,3 +378,6 @@ def test_chat_refuses_to_play_text_it_never_spoke(tmp_path):
                                 stream=io.StringIO("Hi\n"),
                                 transport=httpx.MockTransport(
                                     lambda request: httpx.Response(200))))
+=======
+    assert GEMINI_KEY not in result.stdout and ELEVEN_KEY not in result.stdout
+>>>>>>> Stashed changes

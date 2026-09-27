@@ -1,5 +1,6 @@
 """Check the Gemini and ElevenLabs credentials without placing a phone call.
 
+<<<<<<< Updated upstream
 Four independent actions keep provider problems separate from Twilio routing:
 ``--list-voices`` proves the ElevenLabs key and voice access for free, ``--say``
 renders one phrase to a file you can listen to, ``--ask`` sends one question to
@@ -7,6 +8,15 @@ Gemini, and ``--chat`` holds a typed conversation so a later turn can rely on
 what an earlier turn said. One synthesis request is made per phrase, matching
 the relay's contract. Use ``--text-only`` to keep ``--ask`` or ``--chat`` to
 text. Run with no action to print the resolved status.
+=======
+Three independent actions keep provider problems separate from Twilio routing:
+``--list-voices`` proves the ElevenLabs key and voice access for free, ``--say``
+renders one phrase to a file you can listen to, and ``--ask`` sends one question
+to Gemini and, by default, speaks each finished phrase in the configured voice.
+One synthesis request is made per phrase, matching the relay's contract. Use
+``--text-only`` to keep ``--ask`` to text. Run with no action to print the
+resolved status.
+>>>>>>> Stashed changes
 """
 
 import argparse
@@ -16,15 +26,24 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+<<<<<<< Updated upstream
+=======
+import time
+>>>>>>> Stashed changes
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import httpx
 
+<<<<<<< Updated upstream
 from voice_stack.agent import Conversation, GeminiError
 from voice_stack.audio import duration_ms, write_ulaw_wav
 from voice_stack.relay import speak_reply
+=======
+from voice_stack.agent import Conversation, GeminiError, SentenceBuffer
+from voice_stack.audio import duration_ms, write_ulaw_wav
+>>>>>>> Stashed changes
 from voice_stack.settings import VoiceSettings
 from voice_stack.tts import TTSError, list_voices, speech
 
@@ -89,6 +108,7 @@ def store_audio(settings, audio: bytes, stem: str) -> tuple[Path, dict]:
                   "note": "Not mu-law: play it with a tool that understands this format."}
 
 
+<<<<<<< Updated upstream
 def relay_options(settings, voice_id: str, speak: bool) -> dict:
     """Arguments for one relayed reply; a text-only run drops the synthesis half."""
     options = {
@@ -113,6 +133,8 @@ def require_providers(settings, voice_id: str, speak: bool) -> None:
         require(settings.output_dir, "VOICE_OUTPUT_DIR")
 
 
+=======
+>>>>>>> Stashed changes
 async def ask(settings, question: str, *, voice_id: str | None = None,
               speak: bool = True, play: bool = False, transport=None) -> None:
     """Ask Gemini one question and, by default, speak every finished phrase.
@@ -121,8 +143,17 @@ async def ask(settings, question: str, *, voice_id: str | None = None,
     phrase count, the request count and the saved audio all describe the same
     answer. A generation that fails mid-stream raises before anything plays.
     """
+<<<<<<< Updated upstream
     voice_id = voice_id or settings.elevenlabs_voice_id
     require_providers(settings, voice_id, speak)
+=======
+    require(settings.gemini_api_key, "GEMINI_API_KEY")
+    voice_id = voice_id or settings.elevenlabs_voice_id
+    if speak:
+        require(settings.elevenlabs_api_key, "ELEVENLABS_API_KEY")
+        require(voice_id, "ELEVENLABS_VOICE_ID")
+        require(settings.output_dir, "VOICE_OUTPUT_DIR")
+>>>>>>> Stashed changes
     if play and not speak:
         # Playing needs a rendered file, so refuse before spending a request.
         raise ValueError("Playing needs spoken audio; drop --text-only to play.")
@@ -130,6 +161,7 @@ async def ask(settings, question: str, *, voice_id: str | None = None,
         [("owner", "Answer the test question that follows as the owner's delegate.")],
         goal="Reply to the caller in one or two short spoken sentences.")
     conversation.add_remote(question)
+<<<<<<< Updated upstream
     async with httpx.AsyncClient(transport=transport) as http:
         reply = await speak_reply(
             http, conversation, on_text=lambda delta: print(delta, end="", flush=True),
@@ -147,11 +179,59 @@ async def ask(settings, question: str, *, voice_id: str | None = None,
         path, stored = store_audio(settings, reply.audio, "voice-check-ask")
         result.update(stored, voice_id=voice_id, phrases_spoken=len(reply.phrases),
                       first_audio_ms=reply.first_audio_ms, audio_bytes=len(reply.audio))
+=======
+    buffer = SentenceBuffer()
+    phrases: list[str] = []
+    audio = bytearray()
+    first_ms = None
+    first_audio_ms = None
+    started = time.monotonic()
+
+    async def render(http, phrase: str) -> None:
+        nonlocal first_audio_ms
+        audio.extend(await speech(http, settings.elevenlabs_api_key, voice_id, phrase,
+                                  model=settings.elevenlabs_model,
+                                  output_format=settings.elevenlabs_output_format,
+                                  timeout=settings.request_timeout))
+        if first_audio_ms is None:
+            first_audio_ms = int((time.monotonic() - started) * 1000)
+
+    async with httpx.AsyncClient(transport=transport) as http:
+        async for delta in conversation.reply(http, settings.gemini_api_key,
+                                              model=settings.gemini_model,
+                                              max_output_tokens=settings.max_reply_tokens,
+                                              timeout=settings.request_timeout):
+            if first_ms is None:
+                first_ms = int((time.monotonic() - started) * 1000)
+            print(delta, end="", flush=True)
+            for phrase in buffer.feed(delta):
+                phrases.append(phrase)
+                if speak:
+                    await render(http, phrase)
+        trailing = buffer.flush()
+        if trailing:
+            phrases.append(trailing)
+            if speak:
+                await render(http, trailing)
+    print()
+    result = {
+        "model": settings.gemini_model,
+        "first_text_ms": first_ms,
+        "total_ms": int((time.monotonic() - started) * 1000),
+        "phrases": phrases,
+        "recorded_turns": len(conversation.contents),
+    }
+    if speak:
+        path, stored = store_audio(settings, bytes(audio), "voice-check-ask")
+        result.update(stored, voice_id=voice_id, phrases_spoken=len(phrases),
+                      first_audio_ms=first_audio_ms, audio_bytes=len(audio))
+>>>>>>> Stashed changes
     print(json.dumps(result, indent=2))
     if play:
         play_file(path)
 
 
+<<<<<<< Updated upstream
 CHAT_COMMANDS = frozenset({"/exit", "/quit"})
 
 
@@ -226,6 +306,8 @@ async def chat(settings, *, voice_id: str | None = None, speak: bool = True,
     print(f"ended after {turns} turn(s)", file=sys.stderr)
 
 
+=======
+>>>>>>> Stashed changes
 async def say(settings, text: str, *, voice_id: str | None = None, play: bool = False,
               transport=None) -> None:
     """Render one phrase to a file, using the override voice when supplied."""
@@ -263,12 +345,16 @@ def main() -> None:
                         help="List account voices; free, and proves the key works")
     action.add_argument("--ask", metavar="TEXT",
                         help="Send one question to Gemini and speak the answer")
+<<<<<<< Updated upstream
     action.add_argument("--chat", action="store_true",
                         help="Hold a typed conversation and speak every answer")
+=======
+>>>>>>> Stashed changes
     action.add_argument("--say", metavar="TEXT", help="Render TEXT in the configured voice")
     parser.add_argument("--voice-id",
                         help="Override ELEVENLABS_VOICE_ID for this run only")
     parser.add_argument("--text-only", action="store_true",
+<<<<<<< Updated upstream
                         help="With --ask or --chat, print the answer without speaking it")
     parser.add_argument("--play", action="store_true", help="Play the rendered file with afplay")
     args = parser.parse_args()
@@ -278,6 +364,16 @@ def main() -> None:
     speaks = bool(args.say) or (relayed and not args.text_only)
     if args.play and not speaks:
         raise ValueError("--play needs --say, or --ask or --chat without --text-only.")
+=======
+                        help="With --ask, print Gemini's answer without speaking it")
+    parser.add_argument("--play", action="store_true", help="Play the rendered file with afplay")
+    args = parser.parse_args()
+    if args.text_only and not args.ask:
+        raise ValueError("--text-only only applies to --ask.")
+    speaks = bool(args.say) or bool(args.ask and not args.text_only)
+    if args.play and not speaks:
+        raise ValueError("--play needs --say, or --ask without --text-only.")
+>>>>>>> Stashed changes
 
     settings = VoiceSettings.from_env(args.env_file)
     if args.list_voices:
@@ -285,9 +381,12 @@ def main() -> None:
     elif args.ask:
         asyncio.run(ask(settings, args.ask, voice_id=args.voice_id,
                         speak=not args.text_only, play=args.play))
+<<<<<<< Updated upstream
     elif args.chat:
         asyncio.run(chat(settings, voice_id=args.voice_id,
                          speak=not args.text_only, play=args.play))
+=======
+>>>>>>> Stashed changes
     elif args.say:
         asyncio.run(say(settings, args.say, voice_id=args.voice_id, play=args.play))
     else:

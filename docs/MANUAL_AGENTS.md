@@ -38,7 +38,7 @@ Agents, revisions, and voice mappings survive server restarts, deployments, and 
 
 1. Call the Twilio number from a different phone. The caller hears exactly **New College Data Science** while `OWNER_NUMBER` rings. Answer normally: both microphones connect as soon as both signed audio streams are ready, with no acceptance digit. This starts a human conversation, not AI. Outbound API calls retain their separate press-1 acceptance step.
 2. Talk normally, then press **#N** on the owner phone for the saved shortcut (for example, **#1** for Voice Clone). Remote-party keypad commands cannot activate agents.
-3. Humans continue talking during preparation. The caller alone hears “An AI assistant is joining this call.” The controller waits for Twilio's playback acknowledgement before agent speech starts. The owner remains connected and can hear the dialogue.
+3. Humans continue talking until the caller-only “An AI assistant is joining this call” announcement starts. Gemini prepares the reply while that announcement plays. The owner microphone is muted during the announcement and AI mode; the owner remains connected and hears the AI dialogue. Agent speech starts only after both the first reply audio is ready and Twilio acknowledges the announcement. Preparation is bounded to 15 seconds; failure returns to human relay.
 4. Press **#0** at any point to cancel generation and queued playback and restore the owner microphone. Caller speech interrupts an agent answer and a finalized turn drives the next response.
 
 The saved transcript supplies attributed context to Gemini; the published prompt remains separate from caller speech. Our agent's synthesized output is recorded for playback, represented as named `source=agent` transcript segments, and excluded from caller Modulate input. Only the remote microphone reaches caller AI detection. Interrupted agent phrases are labeled as interrupted; their full text is not proof that every word was heard. Acoustic speakerphone echo can still contaminate a remote microphone.
@@ -48,6 +48,12 @@ Both summary variants, contact matching, exports, and recent-call records use th
 ## Shared phone instructions and ending a call
 
 Every agent uses the same internal Gemini instructions: it is on a phone call, receives speech-to-text transcripts, and speaks through ElevenLabs text-to-speech. The saved personality prompt adds behavior to these instructions rather than replacing them. Caller transcript text is conversation context, not a control command.
+
+The runtime supplies the next agent reply number since this activation. Only complete, acknowledged replies advance this count; sentences, the joining announcement, earlier human dialogue, and interrupted replies do not. Repeating the same active shortcut preserves progress. Returning to human and selecting an agent again starts at reply one. Ordinary replies wait for fresh caller speech instead of consuming another turn from delayed pre-playback transcription. Turn-based personality instructions should specify what to do on each reply: “within three turns” allows an immediate hangup, whereas an explicit first/second/third-reply sequence describes the intended conversation.
+
+The default phone model is **Gemini 3.5 Flash-Lite with MINIMAL thinking**. `GEMINI_MODEL` selects it independently of the post-call summary model. The adapter uses MINIMAL for stable 3.5/3.1 Flash-Lite, a zero thinking budget for stable 2.5 Flash/Flash-Lite, and LOW for other models including 3.8 Flash. A small three-reply provider check on September 27 measured 484–752 ms to first text for 3.5 Flash-Lite, with the end-call marker correctly emitted on reply three; this is not a latency guarantee. [Google's thinking settings](https://ai.google.dev/gemini-api/docs/generate-content/thinking).
+
+HTTP connections are reused across replies and released at call end. No speculative response is generated before manual activation. A dummy request cannot guarantee that Google's hosted model worker stays warm; connection reuse avoids repeat handshakes, while the low-latency model addresses generation time. The agent has no calendar, messaging, or payment tools and must not claim to have performed those actions.
 
 When the agent decides the conversation should end, it can say a brief farewell followed by the exact control marker `[/END CALL]` on its own final line. The stream parser handles markers split across Gemini chunks, removes the marker from synthesized speech, and accepts it only after a successful completed response. Quoted or inline mentions do not trigger it. The server waits for Twilio to acknowledge the caller's announcement and farewell playback before ending both call legs. A command-only response still plays the first-takeover announcement. Human return (`#0`), caller interruption, another shortcut, or provider failure cancels a pending hangup.
 
@@ -67,16 +73,18 @@ interruptions, and Twilio playback acknowledgments. Prompt text, transcript
 text, audio, and provider credentials are excluded. Historical calls made
 before these events were added cannot provide precise provider latency.
 
-Human speech during preparation updates the context without repeatedly
+Human speech during preparation updates the history without repeatedly
 canceling the handoff. The first prepared response plays after the announcement;
-new caller turns are coalesced into one follow-up with the latest context.
+the next real caller response uses that updated history.
 Only speech that starts after agent audio is sent can interrupt playback, so
 provider generation time and delayed pre-playback STT are not barge-in events.
-The announcement and first reply synthesize concurrently; the fixed
+Announcement playback overlaps first-reply generation and synthesis; the fixed
 announcement is cached by voice and model after a manual activation.
 Repeated selection of the active shortcut is a no-op. `#0`, a different
 shortcut, and hangup still cancel the current generation.
 New finalized caller context defers an old end-call command until a fresh reply.
+Generation traces include the selected agent revision, model, and reply number,
+so a saved prompt can be tied to the activation that actually used it.
 Provider HTTP failures log only the provider name and status code, never the
 response body or credential-bearing URL.
 

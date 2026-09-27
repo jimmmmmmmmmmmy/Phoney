@@ -88,7 +88,7 @@ def test_from_env_reads_an_explicit_file(tmp_path):
     assert settings.enabled
     assert settings.configured
     assert settings.elevenlabs_voice_id == "c38kUX8pkfYO2kHyqfFy"
-    assert settings.gemini_model == "gemini-3.8-flash"
+    assert settings.gemini_model == "gemini-3.5-flash-lite"
     assert settings.max_reply_tokens == 512
     assert settings.request_timeout == 15
     assert settings.output_path == tmp_path / "turns"
@@ -100,7 +100,7 @@ def test_from_env_without_a_file_uses_only_the_environment():
         "ELEVENLABS_OUTPUT_FORMAT": "pcm_16000",
     })
     assert not settings.enabled
-    assert settings.gemini_model == "gemini-3.8-flash"
+    assert settings.gemini_model == "gemini-3.5-flash-lite"
     assert settings.elevenlabs_output_format == "pcm_16000"
     assert settings.elevenlabs_voice_id == ""
 

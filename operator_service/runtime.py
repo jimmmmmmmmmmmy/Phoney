@@ -15,7 +15,7 @@ import httpx
 
 from voice_stack.agent import Conversation, ReplyCommandBuffer, SentenceBuffer, reply_events
 from voice_stack.audio import FRAME_BYTES, iter_frames
-from voice_stack.tts import speech, speech_bytes
+from voice_stack.tts import TTSError, speech, speech_bytes
 from .sessions import AGENT, ANNOUNCING, HUMAN, PREPARING, REMOTE, OperatorRejected
 
 PHRASE_QUEUE_SIZE = 4
@@ -67,10 +67,14 @@ class DialogueRun:
         self.remote_revision = controller._remote_revisions.get(session.id, 0)
         self.speaking_started_ms = None
         self.completed = False
+        self.reply_number = controller._agent_reply_counts.get(session.id, 0) + 1
         self.takeover_request = controller._accepted_takeovers.get(session.id, 0)
         self.open_audio = None
         self.end_requested = False
+        self.end_deferred = False
         self.cue_task = None
+        self.preparation_task = None
+        self.announcement_task = None
         self.stage = "context"
         self.started = time.monotonic()
 
@@ -84,55 +88,40 @@ class DialogueRun:
 
     async def run(self):
         reply_exhausted = False
-        self.trace("generation-started", announce=self.announce)
+        self.trace("generation-started", announce=self.announce, agent_id=self.snapshot.id,
+                   agent_revision=self.snapshot.revision, agent_reply_number=self.reply_number,
+                   model=self.voice.gemini_model)
         try:
             async with asyncio.timeout(PREPARATION_SECONDS):
                 turns = (await maybe_await(self.controller.context_getter(self.session))
                          if self.controller.context_getter else self.session.turns)
             conversation = Conversation.handoff(handoff_context(turns),
-                goal=self.session.goal, boundaries=self.snapshot.prompt)
+                goal=self.session.goal, boundaries=self.snapshot.prompt,
+                agent_reply_number=self.reply_number)
             if not conversation.contents:
                 conversation.contents.append({"role": "user", "parts": [{"text":
                     "The owner selected you for this call. Begin using the selected instructions; "
                     "ask a short clarifying question if the goal is not specified."}]})
-            async with httpx.AsyncClient(transport=self.controller.provider_transport) as http:
+            async with self.controller.provider_client(self.session.id) as http:
                 self.producer = asyncio.create_task(self._produce(http, conversation))
                 if self.announce:
                     async with asyncio.timeout(PREPARATION_SECONDS):
-                        # Synthesize the fixed cue and first response in parallel.
-                        # Human relay remains live until both are usable.
+                        # Play the disclosure while Gemini/TTS prepare the reply,
+                        # instead of adding its whole duration after preparation.
+                        # Any failure or #0 cancels both and restores human relay.
                         self.cue_task = asyncio.create_task(self._announcement(http))
-                        self.stage = "first-phrase"
-                        first = await self._next_phrase()
+                        self.preparation_task = asyncio.create_task(self._prepare_first(http))
+                        self.announcement_task = asyncio.create_task(self._announce_ready())
+                        prepared, _ = await asyncio.gather(self.preparation_task, self.announcement_task)
+                        first, audio, first_chunk = prepared
                         reply_exhausted = first is None
-                        if first is None and not self.end_requested:
-                            raise ValueError("Empty agent reply")
-                        audio = None
-                        if first is not None:
-                            self.stage = "first-audio"
-                            audio = self._speech(http, first)
-                            self.open_audio = audio
-                            # The first usable response must exist before muting the owner.
-                            first_chunk = await anext(audio)
-                            if not first_chunk:
-                                raise ValueError("Empty agent audio")
-                        self.stage = "announcement-audio"
-                        cue = await self.cue_task
-                    if not self.current():
-                        return
-                    await self.controller.store.transition(self.session.id, self.epoch, ANNOUNCING)
-                    self.trace("announcement-started")
-                    self.stage = "announcement-playback"
-                    self.controller.router(self.session.id).set_mode(ANNOUNCING)
-                    await self._play_chunks(_bytes(cue), kind="announcement")
-                    await self._ack("announcement")
                     if not self.current():
                         return
                     await self.controller.store.transition(self.session.id, self.epoch, AGENT)
                     self.trace("agent-active")
                     self.controller.router(self.session.id).set_mode(AGENT)
-                    # Deliver the response we prepared before muting the owner.
-                    # New speech remains in history for the next turn; throwing
+                    # Deliver the response prepared alongside the disclosure.
+                    # New speech remains in history for the next caller turn; throwing
                     # this response away leaves a silent, already-active agent.
                     if first is not None:
                         await self._phrase(first, _prepend(first_chunk, audio))
@@ -144,6 +133,10 @@ class DialogueRun:
                     await self._phrase(phrase, self._speech(http, phrase))
                 await self.producer
                 self.completed = True
+                if (self.confirmed and self.current()
+                        and self.takeover_request == self.controller._takeover_requests.get(self.session.id, 0)):
+                    self.controller._agent_reply_counts[self.session.id] = self.reply_number
+                    self.trace("agent-reply-completed", agent_reply_number=self.reply_number)
                 # The producer's successful completion and every phrase's
                 # playback mark must precede hangup. A new owner selection
                 # revokes this action even while its registry lookup is pending.
@@ -153,6 +146,7 @@ class DialogueRun:
                         # A final caller turn received after the context snapshot
                         # must be considered before executing a stale hangup.
                         self.end_requested = False
+                        self.end_deferred = True
                         self.trace("end-call-deferred-for-new-speech")
                     else:
                         self.trace("agent-end-call")
@@ -168,14 +162,19 @@ class DialogueRun:
                     "generativelanguage.googleapis.com": "gemini",
                     "api.elevenlabs.io": "elevenlabs",
                 }.get(exc.request.url.host, "unknown")
+            elif isinstance(exc, TTSError):
+                fields["provider"] = "elevenlabs"
+                if exc.http_status is not None:
+                    fields["http_status"] = exc.http_status
             self.trace("generation-failed", stage=self.stage, error=type(exc).__name__, **fields)
             if self.current():
                 await self.controller._abandon(self.session.id, "dialogue-" + type(exc).__name__)
         finally:
-            if self.cue_task is not None:
-                if not self.cue_task.done():
-                    self.cue_task.cancel()
-                await asyncio.gather(self.cue_task, return_exceptions=True)
+            tasks = [t for t in (self.cue_task, self.preparation_task, self.announcement_task) if t is not None]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             if self.producer is not None and not self.producer.done():
                 self.producer.cancel()
             if self.producer is not None:
@@ -186,6 +185,35 @@ class DialogueRun:
                     > self.pending["sent_before"]):
                 await self._record(self.pending, "interrupted")
                 self.pending = None
+
+    async def _prepare_first(self, http):
+        self.stage = "first-phrase"
+        first = await self._next_phrase()
+        if first is None:
+            if not self.end_requested:
+                raise ValueError("Empty agent reply")
+            return None, None, None
+        self.stage = "first-audio"
+        audio = self._speech(http, first)
+        self.open_audio = audio
+        chunk = await anext(audio)
+        if not chunk:
+            raise ValueError("Empty agent audio")
+        return first, audio, chunk
+
+    async def _announce_ready(self):
+        cue = await self.cue_task
+        # Avoid a misleading cue if reply preparation has already failed.
+        if self.preparation_task.done():
+            self.preparation_task.result()
+        if not self.current():
+            return
+        await self.controller.store.transition(self.session.id, self.epoch, ANNOUNCING)
+        self.trace("announcement-started")
+        self.controller.router(self.session.id).set_mode(ANNOUNCING)
+        await self._play_chunks(_bytes(cue), kind="announcement")
+        await self._ack("announcement")
+        self.trace("announcement-completed", reply_ready=self.preparation_task.done())
 
     async def _announcement(self, http):
         key = (self.snapshot.voice_id, self.voice.elevenlabs_model, ANNOUNCEMENT)

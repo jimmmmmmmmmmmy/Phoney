@@ -22,6 +22,9 @@ import threading
 import time
 import inspect
 import json
+from contextlib import asynccontextmanager
+
+import httpx
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, Response
@@ -168,6 +171,7 @@ class OperatorController:
         self.audio_callback, self.output_callback = on_audio, on_output_audio
         self.agent_turn_callback = on_agent_turn
         self.provider_transport = provider_transport
+        self._provider_clients = {}
         self._started = set()
         self._mark_waiters = {}
         self._transcript_seen = {}
@@ -176,6 +180,8 @@ class OperatorController:
         self._accepted_takeovers = {}
         self._remote_revisions = {}
         self._dialogue_runs = {}
+        self._agent_reply_counts = {}
+        self._caller_turn_floor = {}
         self._output_clocks = {}
         self._agent_frames_sent = {}
         self.announcement_cache = {}
@@ -194,6 +200,17 @@ class OperatorController:
         self.digit_sender = None
         store.on_timeout = self.on_timeout
         store.on_end = self._on_session_end
+
+    @asynccontextmanager
+    async def provider_client(self, session_id):
+        """Reuse connections across replies; close them with the call session."""
+        client = self._provider_clients.get(session_id)
+        if client is None:
+            client = httpx.AsyncClient(transport=self.provider_transport,
+                limits=httpx.Limits(max_connections=4, max_keepalive_connections=2,
+                                   keepalive_expiry=120))
+            self._provider_clients[session_id] = client
+        yield client
 
     # ------------------------------------------------------------------ routing
 
@@ -263,6 +280,7 @@ class OperatorController:
                     and run.pending is not None and run.speaking_started_ms is None
                     and getattr(frame, "reply_epoch", None) == run.epoch):
                 run.speaking_started_ms = self.elapsed_ms(session_id)
+                self._caller_turn_floor[session_id] = run.speaking_started_ms
                 run.trace("reply-first-frame-sent")
         if self.output_callback is not None and session is not None:
             try:
@@ -633,7 +651,10 @@ class OperatorController:
         session.agent_name = snapshot.name
         session.voice_id = snapshot.voice_id
         self._accepted_takeovers[session_id] = request_id
-        self.trace(session_id, "takeover-preparing", slot=slot)
+        self._agent_reply_counts[session_id] = 0
+        self._caller_turn_floor.pop(session_id, None)
+        self.trace(session_id, "takeover-preparing", slot=slot,
+                   agent_id=snapshot.id, agent_revision=snapshot.revision)
         self._start_dialogue(session, announce=True)
         return True
 
@@ -647,9 +668,10 @@ class OperatorController:
             if self.players.get(session.id) is finished:
                 self.players.pop(session.id, None)
                 self._dialogue_runs.pop(session.id, None)
-                # Coalesce speech received during generation into one next turn.
-                # It must not repeatedly cancel a response nobody has heard yet.
-                if (run.completed and run.current() and not run.end_requested
+                # Ordinary replies wait for the caller, rather than consuming
+                # another agent turn for speech from before this reply played.
+                # A stale hangup alone needs reconsideration with newer context.
+                if (run.completed and run.current() and run.end_deferred
                         and run.takeover_request == self._takeover_requests.get(session.id, 0)
                         and self._remote_revisions.get(session.id, 0) > run.remote_revision):
                     self._schedule_reply(session.id)
@@ -679,9 +701,11 @@ class OperatorController:
             if speaker == REMOTE:
                 self._remote_revisions[session_id] = self._remote_revisions.get(session_id, 0) + 1
             await self.store.add_turn(session_id, speaker, text)
-            # Keep the manual handoff moving while humans continue talking.
-            # New caller turns are coalesced after the prepared reply is heard.
+            # Preserve new context while keeping the manual handoff moving.
         if speaker == REMOTE and session.mode == AGENT:
+            floor = self._caller_turn_floor.get(session_id)
+            if timestamp_ms is not None and floor is not None and timestamp_ms < floor:
+                return
             timer = self._reply_timers.pop(session_id, None)
             if timer is not None:
                 timer.cancel()
@@ -800,6 +824,8 @@ class OperatorController:
         self._takeover_requests.pop(session_id, None)
         self._accepted_takeovers.pop(session_id, None)
         self._remote_revisions.pop(session_id, None)
+        self._agent_reply_counts.pop(session_id, None)
+        self._caller_turn_floor.pop(session_id, None)
         self._output_clocks.pop(session_id, None)
 
     async def _on_session_end(self, session_id: str):
@@ -810,6 +836,9 @@ class OperatorController:
             router.close()
         if player is not None and player is not asyncio.current_task():
             await asyncio.gather(player, return_exceptions=True)
+        client = self._provider_clients.pop(session_id, None)
+        if client is not None:
+            await client.aclose()
         self._agent_frames_sent.pop(session_id, None)
         session = self.store.find(session_id)
         if session is not None:

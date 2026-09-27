@@ -238,7 +238,7 @@ def test_provider_failure_returns_to_human(tmp_path,status,caplog):
         failures = [json.loads(r.message.split('operator_trace ', 1)[1]) for r in caplog.records
                     if r.message.startswith('operator_trace ') and 'generation-failed' in r.message]
         assert failures[-1]['http_status'] == status
-        assert failures[-1]['provider'] == 'gemini'
+        assert failures[-1]['provider'] in ('gemini', 'elevenlabs')
         assert 'Provider unavailable' not in caplog.text
         await h.close()
     asyncio.run(run())
@@ -554,7 +554,7 @@ def test_continuous_transcript_does_not_starve_manual_handoff(tmp_path):
     asyncio.run(run())
 
 
-def test_remote_speech_across_handoff_delivers_prepared_audio_before_one_followup(tmp_path, monkeypatch):
+def test_remote_speech_across_handoff_waits_for_new_caller_turn(tmp_path, monkeypatch):
     from operator_service.runtime import DialogueRun
     original_phrase = DialogueRun._phrase
     async def run():
@@ -585,12 +585,23 @@ def test_remote_speech_across_handoff_delivers_prepared_audio_before_one_followu
         assert len([u for u,b in h.provider.requests if 'generativelanguage' in u]) == 1
         h.remote.acknowledge = True
         play_first.set()
-        await until(lambda: len([u for u,b in h.provider.requests if 'generativelanguage' in u]) == 2)
+        await h.complete()
         assert h.delivered[0][1]['delivery'] == 'played'
+        await asyncio.sleep(.35)
+        assert len([u for u,b in h.provider.requests if 'generativelanguage' in u]) == 1
+        assert h.controller._agent_reply_counts[s.id] == 1
+        # Late STT that predates the reply cannot consume another turn either.
+        await h.controller.transcript(s.id, REMOTE, 'Delayed old speech.',
+                                      segment_id='delayed', timestamp_ms=0)
+        await asyncio.sleep(.35)
+        assert len([u for u,b in h.provider.requests if 'generativelanguage' in u]) == 1
+        await h.controller.transcript(s.id, REMOTE, 'Yes, thank you.', segment_id='answer')
+        await until(lambda: len([u for u,b in h.provider.requests if 'generativelanguage' in u]) == 2)
         await h.complete()
         await asyncio.sleep(.35)
         requests = [b for u,b in h.provider.requests if 'generativelanguage' in u]
         assert len(requests) == 2 and 'New detail 7' in json.dumps(requests[-1]['contents'])
+        assert 'agent reply 2 since this activation' in json.dumps(requests[-1]['systemInstruction'])
         assert len(h.delivered) == 2
         await h.close()
     asyncio.run(run())
@@ -693,6 +704,82 @@ def test_cached_announcement_and_private_timing_trace(tmp_path, caplog):
         assert all(r['call_sid'] == REMOTE_SID and r['elapsed_ms'] >= 0 for r in traces)
         assert all('text' not in r and 'prompt' not in r and 'voice_id' not in r for r in traces)
         await h.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('outcome', ['success', 'failure', 'timeout', 'human-return'])
+def test_disclosure_plays_during_gemini_wait_and_cannot_trap_caller(tmp_path, monkeypatch, outcome):
+    from voice_stack.agent import GeminiError
+    async def run():
+        release, stopped = asyncio.Event(), asyncio.Event()
+        async def blocked_reply(*args, **kwargs):
+            try:
+                await release.wait()
+                if outcome == 'failure':
+                    raise GeminiError('Unavailable')
+                yield {'kind': 'text', 'text': 'How can I help?'}
+                yield {'kind': 'complete'}
+            finally:
+                stopped.set()
+        monkeypatch.setattr('operator_service.runtime.reply_events', blocked_reply)
+        monkeypatch.setattr('operator_service.runtime.PREPARATION_SECONDS', .4)
+        h = Harness(tmp_path); s = await h.joined()
+        await h.press('#1')
+        await until(lambda: bool(h.remote.marks()))
+        # The complete caller-only notice is audible before Gemini responds.
+        assert s.mode == ANNOUNCING and len(h.remote.frames(0x10)) == 3
+        assert not h.owner.frames(0x10) and not h.remote.frames(0x2A)
+        if outcome in ('success', 'failure'):
+            release.set()
+        elif outcome == 'human-return':
+            await h.press('#0')
+        if outcome == 'success':
+            await h.complete()
+            assert len(h.delivered) == 1
+        else:
+            await until(lambda: s.mode == HUMAN)
+            await asyncio.wait_for(stopped.wait(), 1)
+            assert h.router.forward(OWNER, OWNER_FRAME)
+            assert not h.remote.frames(0x2A) and not h.delivered
+            assert s.active and not h.dialer.ended
+        await h.close()
+    asyncio.run(run())
+
+
+def test_reply_progress_counts_complete_replies_and_connections_reuse_until_call_end(tmp_path):
+    async def run():
+        h = Harness(tmp_path, provider=Provider(reply=(
+            'Hello there, I understand you are asking about the car and its service history. '
+            'What else would you like to know about the condition of the vehicle?')))
+        s = await h.joined()
+        await h.press('#1'); await h.complete()
+        client = h.controller._provider_clients[s.id]
+        assert h.controller._agent_reply_counts[s.id] == 1
+        assert len(h.delivered) == 2  # Two sentences are one reply.
+        await h.press('#1')
+        assert h.controller._agent_reply_counts[s.id] == 1
+        await h.controller.transcript(s.id, REMOTE, 'Tell me more.', segment_id='answer-1')
+        await until(lambda: h.controller._agent_reply_counts[s.id] == 2)
+        await h.complete()
+        assert h.controller._provider_clients[s.id] is client and not client.is_closed
+        h.provider.frames = 60
+        before = len(h.remote.frames(0x2A))
+        await h.controller.transcript(s.id, REMOTE, 'Another question.', segment_id='answer-2')
+        await until(lambda: len(h.remote.frames(0x2A)) > before + 1)
+        await h.controller.transcript(s.id, REMOTE, 'Wait.', final=False)
+        await until(lambda: not h.controller.playing(s.id))
+        assert h.controller._agent_reply_counts[s.id] == 2
+        h.provider.frames = 3
+        await h.controller.transcript(s.id, REMOTE, 'Let me clarify.', segment_id='answer-3')
+        await until(lambda: h.controller._agent_reply_counts[s.id] == 3)
+        await h.complete()
+        requests = [b for u,b in h.provider.requests if 'generativelanguage' in u]
+        assert 'agent reply 3 since this activation' in json.dumps(requests[-2]['systemInstruction'])
+        assert 'agent reply 3 since this activation' in json.dumps(requests[-1]['systemInstruction'])
+        await h.press('#0#1'); await h.complete()
+        assert h.controller._agent_reply_counts[s.id] == 1
+        await h.close()
+        assert client.is_closed and not h.controller._provider_clients
     asyncio.run(run())
 
 

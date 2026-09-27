@@ -36,7 +36,7 @@ class VoiceSettings:
 
     enabled: bool = False
     gemini_api_key: str = field(default="", repr=False)
-    gemini_model: str = "gemini-3.8-flash"
+    gemini_model: str = "gemini-3.5-flash-lite"
     elevenlabs_api_key: str = field(default="", repr=False)
     elevenlabs_voice_id: str = ""
     elevenlabs_model: str = "eleven_flash_v2_5"
@@ -129,7 +129,7 @@ class VoiceSettings:
         return cls(
             enabled=flag == "true",
             gemini_api_key=value("GEMINI_API_KEY"),
-            gemini_model=value("GEMINI_MODEL", "gemini-3.8-flash"),
+            gemini_model=value("GEMINI_MODEL", "gemini-3.5-flash-lite"),
             elevenlabs_api_key=value("ELEVENLABS_API_KEY"),
             elevenlabs_voice_id=value("ELEVENLABS_VOICE_ID"),
             elevenlabs_model=value("ELEVENLABS_MODEL", "eleven_flash_v2_5"),

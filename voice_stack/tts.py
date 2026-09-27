@@ -39,6 +39,10 @@ EXCERPT_CHARS = 300
 class TTSError(RuntimeError):
     """Speech or enrollment failed: transport, rejection, or a bad response."""
 
+    def __init__(self, message, *, http_status=None):
+        super().__init__(message)
+        self.http_status = http_status
+
 
 def _client(transport, timeout: float) -> httpx.Client:
     """One short-lived client; a supplied transport keeps tests off the network."""
@@ -49,7 +53,8 @@ def _client(transport, timeout: float) -> httpx.Client:
 def _failure(action: str, status: int, body: str = "") -> TTSError:
     """A provider failure carrying status and message, never request headers."""
     detail = " ".join(str(body).split())[:EXCERPT_CHARS]
-    return TTSError(f"{action} failed with HTTP {status}" + (f": {detail}" if detail else ""))
+    return TTSError(f"{action} failed with HTTP {status}" + (f": {detail}" if detail else ""),
+                    http_status=status)
 
 
 def _checked_voice_id(voice_id) -> str:

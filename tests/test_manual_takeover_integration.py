@@ -303,10 +303,19 @@ def test_manual_slot_uses_frozen_registry_snapshot_and_acknowledged_agent_proven
         assert "owner: Please help with admissions." in first_request
 
         # A later caller turn must reuse this call's immutable published revision.
-        remote.send_json(media_message(REMOTE_FRAME, role=REMOTE, sequence="3"))
-        until(client, lambda: session.legs[REMOTE].counters["frames_in"] == 2)
+        # Model actual later audio, not delayed STT from 20ms into the call.
+        now_ms = client.app.state.operator_controller.elapsed_ms(session.id)
+        later_ms = ((now_ms // 20) + 1) * 20
+        # Twilio continues sending silence during agent speech. Preserve that
+        # continuous remote timeline for the live detector as well as STT.
+        for index, stamp in enumerate(range(20, later_ms + 1, 20), start=3):
+            frame = REMOTE_FRAME if stamp == later_ms else b'\xff' * 160
+            later_audio = media_message(frame, role=REMOTE, sequence=str(index))
+            later_audio["media"]["timestamp"] = str(stamp)
+            remote.send_json(later_audio)
+        until(client, lambda: session.legs[REMOTE].counters["frames_in"] == later_ms // 20 + 1)
         client.portal.call(stt.sockets[0].push,
-                           result("What should I prepare?", start=.02))
+                           result("What should I prepare?", start=later_ms / 1000))
         second_reply, frames = until_mark(client, remote, "reply-")
         assert AGENT_FRAME in frames
         acknowledge(remote, second_reply)
@@ -316,9 +325,12 @@ def test_manual_slot_uses_frozen_registry_snapshot_and_acknowledged_agent_proven
         assert PROMPT in json.dumps(providers.gemini[1])
         assert "New instructions" not in json.dumps(providers.gemini[1])
         assert all(f"/{VOICE_ID}/stream" in path for path, _ in providers.speech)
-        until(client, lambda: len([item for item in providers.detection[0].sent
-                                   if isinstance(item, bytes)]) == 2)
-        assert [item for item in providers.detection[0].sent if isinstance(item, bytes)] == [
+        # Only the two caller speech frames are non-silent detector input.
+        def detected_speech():
+            return [item for item in providers.detection[0].sent
+                    if isinstance(item, bytes) and any(item)]
+        until(client, lambda: len(detected_speech()) == 2)
+        assert detected_speech() == [
             decode_mulaw(REMOTE_FRAME), decode_mulaw(REMOTE_FRAME)]
         outbound_stt = b"".join(item for item in stt.sockets[1].sent if isinstance(item, bytes))
         assert OWNER_FRAME in outbound_stt

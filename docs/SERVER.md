@@ -69,7 +69,7 @@ cd "$HOME/Library/Application Support/NewCollegeOperator"
 .venv/bin/python scripts/configure_github.py --apply
 ```
 
-It creates or updates the repository's push webhook using the current `PUBLIC_BASE_URL` and the secret in the service's `.env`. Run this helper after rotating `GITHUB_WEBHOOK_SECRET`, too. Running it without `--apply` inspects configuration. From the same service directory, the Twilio equivalent is `.venv/bin/python scripts/configure_twilio.py --apply`; it sets and verifies `PUBLIC_BASE_URL/voice` and `PUBLIC_BASE_URL/status`, both POST. From the source checkout, use `.venv/bin/python scripts/configure_twilio.py --env-file "$HOME/Library/Application Support/NewCollegeOperator/.env" --apply` to target the installed configuration explicitly.
+It creates or updates the repository's push webhook using the current `PUBLIC_BASE_URL` and the secret in the service's `.env`. It resolves the repository's current GitHub name before hook mutations, so the rename from `fictional-rotary-phone` to `Phoney` does not block tunnel URL repairs. Signed push events accept both project names. Run this helper after rotating `GITHUB_WEBHOOK_SECRET`, too. Running it without `--apply` inspects configuration. From the same service directory, the Twilio equivalent is `.venv/bin/python scripts/configure_twilio.py --apply`; it sets and verifies `PUBLIC_BASE_URL/voice` and `PUBLIC_BASE_URL/status`, both POST. From the source checkout, use `.venv/bin/python scripts/configure_twilio.py --env-file "$HOME/Library/Application Support/NewCollegeOperator/.env" --apply` to target the installed configuration explicitly.
 
 ## Operate and recover
 

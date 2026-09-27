@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -39,7 +40,14 @@ def main():
     if len(secret) < 32:
         raise ValueError("Set a random GITHUB_WEBHOOK_SECRET of at least 32 characters in .env.")
     expected = settings.public_base_url + "/github/webhook"
-    hooks = api(f"repos/{REPOSITORY}/hooks?per_page=100")
+    # GET follows repository rename redirects; GitHub rejects PATCH/POST on
+    # the old name with 301. Resolve the current name before mutating a hook.
+    repository = api(f"repos/{REPOSITORY}").get("full_name", "")
+    if (not isinstance(repository, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+", repository)
+            or repository.split("/")[-1] in {".", ".."}):
+        raise ValueError("GitHub did not return a valid repository name.")
+    hooks = api(f"repos/{repository}/hooks?per_page=100")
     saved = json.loads(STATE.read_text()) if STATE.exists() else {}
     current = next((h for h in hooks if h["id"] == saved.get("id")), None)
     if current is None:
@@ -52,7 +60,7 @@ def main():
     if args.apply:
         data = {"name": "web", "active": True, "events": ["push"],
                 "config": {"url": expected, "content_type": "json", "insecure_ssl": "0", "secret": secret}}
-        path = f"repos/{REPOSITORY}/hooks"
+        path = f"repos/{repository}/hooks"
         if current:
             current = api(path + "/" + str(current["id"]), "PATCH", data)
         else:
@@ -60,13 +68,13 @@ def main():
         STATE.parent.mkdir(mode=0o700, exist_ok=True)
         descriptor = os.open(STATE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(descriptor, "w") as handle:
-            json.dump({"id": current["id"], "repository": REPOSITORY}, handle)
-        current = api(f"repos/{REPOSITORY}/hooks/{current['id']}")
+            json.dump({"id": current["id"], "repository": repository}, handle)
+        current = api(f"repos/{repository}/hooks/{current['id']}")
     matches = bool(current and current["active"] and current["events"] == ["push"]
                    and current.get("config", {}).get("url") == expected
                    and current.get("config", {}).get("content_type") == "json"
                    and str(current.get("config", {}).get("insecure_ssl", "0")) == "0")
-    print(json.dumps({"repository": REPOSITORY, "hook_id": current["id"] if current else None,
+    print(json.dumps({"repository": repository, "hook_id": current["id"] if current else None,
                       "url": current.get("config", {}).get("url") if current else None,
                       "matches_local_tunnel": matches}, indent=2))
     if args.apply and not matches:

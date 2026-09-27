@@ -51,6 +51,14 @@ def test_signed_main_push_atomically_replaces_private_trigger(settings):
     assert list(path.parent.iterdir()) == [path]
 
 
+def test_signed_push_uses_renamed_repository_without_losing_existing_config(settings):
+    payload = {**PUSH, "repository": {"full_name": "jimmmmmmmmmmmy/Phoney"}}
+    response = signed_post(TestClient(create_app(settings)), payload)
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    assert Path(settings.deploy_trigger_path).exists()
+
+
 @pytest.mark.parametrize("signature", [None, "sha256=wrong", "sha1=wrong"])
 def test_unsigned_and_invalid_signature_do_not_write(settings, signature):
     headers = {"X-GitHub-Event": "push"}

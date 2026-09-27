@@ -36,7 +36,7 @@ Agents, revisions, and voice mappings survive server restarts, deployments, and 
 
 ## Use a manually enabled call
 
-1. Call the Twilio number from a different phone. Answer on `OWNER_NUMBER` and press the prompted **1** to accept. Microphones stay private until acceptance.
+1. Call the Twilio number from a different phone. The caller hears **New College Data Science** and the recording/transcription disclosure while `OWNER_NUMBER` rings. Answer normally: both microphones connect as soon as both signed audio streams are ready, with no acceptance digit. This starts a human conversation, not AI. Outbound API calls retain their separate press-1 acceptance step.
 2. Talk normally, then press **#N** on the owner phone for the saved shortcut (for example, **#1** for Voice Clone). Remote-party keypad commands cannot activate agents.
 3. Humans continue talking during preparation. The caller alone hears “An AI assistant is joining this call.” The controller waits for Twilio's playback acknowledgement before agent speech starts. The owner remains connected and can hear the dialogue.
 4. Press **#0** at any point to cancel generation and queued playback and restore the owner microphone. Caller speech interrupts an agent answer and a finalized turn drives the next response.
@@ -53,6 +53,6 @@ When the agent decides the conversation should end, it can say a brief farewell 
 
 ## Validation and limits
 
-Offline tests use fake Twilio legs, Deepgram, Gemini, ElevenLabs, and Modulate. They cover acceptance privacy, manual-only activation, nine slots, immutable context/prompt/voice snapshots, announcement acknowledgements, realistic-length audio backpressure, interruption, `#0` races, failed transcription/provider recovery, explicit end-call parsing, farewell playback ordering, both-leg hangup, and late-dial/hangup cleanup. They do not establish real-phone audio quality, provider voice permissions, or production latency.
+Offline tests use fake Twilio legs, Deepgram, Gemini, ElevenLabs, and Modulate. They cover inbound answer-to-connect in either stream order, privacy before both streams authenticate, outbound acceptance, manual-only activation, nine slots, immutable context/prompt/voice snapshots, announcement acknowledgements, realistic-length audio backpressure, interruption, `#0` races, failed transcription/provider recovery, explicit end-call parsing, farewell playback ordering, both-leg hangup, and late-dial/hangup cleanup. They do not establish real-phone audio quality, provider voice permissions, or production latency.
 
 Before wider use, run one controlled phone call to verify caller-only cue, voice/context, repeated dialogue, interruption, `#0`, hangup, recording, and post-call summaries. Provider/STT failures restore human relay while the router remains healthy. A process/network failure cannot guarantee uninterrupted audio: this opt-in transport carries both microphones through Python. Deployment drains active calls; disabling inbound routing restores the original conference path for subsequent calls after restart/deploy.

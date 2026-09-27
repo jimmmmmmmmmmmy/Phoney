@@ -7,7 +7,7 @@ provider.
 
 import asyncio
 import base64
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -23,12 +23,12 @@ from agent_registry import AgentSnapshot
 from app import create_app
 from media_capture.capture import decode_mulaw
 from operator_service.runtime import ANNOUNCEMENT
-from operator_service.sessions import AGENT, CONNECTED, ENDED, HUMAN, OWNER, OWNER_PROMPT, REMOTE
+from operator_service.sessions import AGENT, CONNECTED, ENDED, HUMAN, OWNER, REMOTE
 from test_live_detection import SizedProviderSocket
 from test_media_webhooks import Gateway, signed_post
 from test_operator_routes import (
     ACCOUNT, DESTINATION, OWNER_FRAME, OWNER_NUMBER, REMOTE_FRAME, REMOTE_SID,
-    REMOTE_STREAM, SETTINGS, Dialer, accept_owner, await_frame, connect,
+    REMOTE_STREAM, SETTINGS, Dialer, await_frame, connect,
     connected, keypad, media_message, next_event, settle, start_message,
     stream_parameter, until,
 )
@@ -114,23 +114,22 @@ def remote_key(digit, sequence):
 
 
 @contextmanager
-def inbound_sockets(client, settings):
+def inbound_sockets(client, settings, *, first=REMOTE):
     response = inbound(client, settings)
     assert response.status_code == 200
     settle(client)
     session, = client.app.state.operator.sessions.values()
-    with connect(client, settings, session.id, REMOTE) as remote:
-        remote.send_json(connected())
-        remote.send_json(start_message(client, session.id, REMOTE))
+    second = OWNER if first == REMOTE else REMOTE
+    with ExitStack() as stack:
+        sockets = {}
+        for role in (first, second):
+            socket = sockets[role] = stack.enter_context(connect(client, settings, session.id, role))
+            socket.send_json(connected())
+            socket.send_json(start_message(client, session.id, role))
+            until(client, lambda: session.legs[role].attached)
+        until(client, lambda: session.phase == CONNECTED)
         until(client, lambda: REMOTE_SID in client.app.state.bridge_pipeline.active_call_ids)
-        with connect(client, settings, session.id, OWNER) as owner:
-            accept_owner(client, settings, session.id, owner)
-            yield session, owner, remote
-
-
-def accept(client, session, owner):
-    owner.send_json(keypad("1", 2))
-    until(client, lambda: session.phase == CONNECTED)
+        yield session, sockets[OWNER], sockets[REMOTE]
 
 
 def until_mark(client, remote, prefix):
@@ -163,7 +162,8 @@ def terminal(client, settings, status="completed"):
         "CallStatus": status, "CallDuration": "37"})
 
 
-def test_signed_inbound_reserves_existing_caller_and_requires_owner_acceptance(manual_app):
+@pytest.mark.parametrize("first_role", [REMOTE, OWNER])
+def test_signed_inbound_joins_on_answer_without_keypad_or_ai(manual_app, first_role):
     client, settings, dialer, stt, providers = manual_app
     assert client.post("/voice", data={"CallSid": REMOTE_SID}).status_code == 403
     assert dialer.created == []
@@ -176,21 +176,23 @@ def test_signed_inbound_reserves_existing_caller_and_requires_owner_acceptance(m
     assert session.legs[REMOTE].call_sid == REMOTE_SID
     assert stream_parameter(first.text, "token") == session.legs[REMOTE].token
     assert f"/media/{session.id}/remote/" in first.text
-    assert "Press 1 to connect." in dialer.created[0]["twiml"]
+    assert ET.fromstring(first.text).find("Say").text == (
+        "New College Data Science. This demo call records, transcribes, and analyzes audio for testing.")
+    assert ET.fromstring(dialer.created[0]["twiml"]).find("Say") is None
     repeated = inbound(client, settings)
     assert repeated.text == first.text
     settle(client)
     assert [call["to"] for call in dialer.created] == [OWNER_NUMBER]
     assert client.app.state.switchboard.sessions == {}
 
-    with inbound_sockets(client, settings) as (session, owner, remote):
+    with inbound_sockets(client, settings, first=first_role) as (session, owner, remote):
         remote.send_json(remote_key("#", 2))
         remote.send_json(remote_key("3", 3))
         router = client.app.state.operator_controller.router(session.id)
         until(client, lambda: router.counters["dtmf_ignored"] == 2)
-        assert session.phase == OWNER_PROMPT and session.mode == HUMAN
+        assert session.phase == CONNECTED and session.mode == HUMAN
         assert providers.gemini == providers.speech == []
-        accept(client, session, owner)
+        assert (session.id, "owner_accept") not in client.app.state.operator._timers
         assert len(dialer.created) == 1  # The incoming caller is never redialed.
         remote.send_json(remote_key("#", 4))
         remote.send_json(remote_key("3", 5))
@@ -204,29 +206,35 @@ def test_signed_inbound_reserves_existing_caller_and_requires_owner_acceptance(m
         assert terminal(client, settings).status_code == 204
 
 
-def test_inbound_microphones_remain_private_until_owner_accepts(manual_app):
+@pytest.mark.parametrize("first_role", [REMOTE, OWNER])
+def test_inbound_microphones_remain_private_until_both_streams_authenticate(manual_app, first_role):
     client, settings, dialer, stt, providers = manual_app
-    with inbound_sockets(client, settings) as (session, owner, remote):
-        assert session.phase == OWNER_PROMPT
-        owner.send_json(media_message(OWNER_FRAME, sequence="2"))
-        remote.send_json(media_message(REMOTE_FRAME, role=REMOTE, sequence="2"))
-        until(client, lambda: all(session.legs[role].counters["frames_in"] == 1
-                                  for role in (OWNER, REMOTE)))
-        # The waiting cue may reach the caller; neither microphone may cross
-        # to the other party, even though both authenticated streams exist.
-        deadline = time.monotonic() + .3
-        while time.monotonic() < deadline:
-            for socket, private_frame in ((remote, OWNER_FRAME), (owner, REMOTE_FRAME)):
-                event = next_event(client, socket, timeout=.02)
-                if event and event.get("event") == "media":
-                    assert base64.b64decode(event["media"]["payload"]) != private_frame
-        assert session.phase == OWNER_PROMPT and providers.gemini == providers.speech == []
-        owner.send_json(keypad("1", 3))
+    assert inbound(client, settings).status_code == 200
+    settle(client)
+    session, = client.app.state.operator.sessions.values()
+    second_role = OWNER if first_role == REMOTE else REMOTE
+    frame = OWNER_FRAME if first_role == OWNER else REMOTE_FRAME
+    with ExitStack() as stack:
+        first = stack.enter_context(connect(client, settings, session.id, first_role))
+        second = stack.enter_context(connect(client, settings, session.id, second_role))
+        first.send_json(connected())
+        first.send_json(start_message(client, session.id, first_role))
+        second.send_json(connected())  # Not authenticated until its start payload.
+        first.send_json(media_message(frame, role=first_role, sequence="2"))
+        until(client, lambda: session.legs[first_role].counters["frames_in"] == 1)
+        router = client.app.state.operator_controller.router(session.id)
+        assert not router.channels[second_role].media
+        assert router.counters["routed"] == 0
+        assert session.phase != CONNECTED and session.mode == HUMAN
+        assert providers.gemini == providers.speech == []
+        second.send_json(start_message(client, session.id, second_role))
         until(client, lambda: session.phase == CONNECTED)
+        owner, remote = (first, second) if first_role == OWNER else (second, first)
         owner.send_json(media_message(OWNER_FRAME, sequence="4"))
         remote.send_json(media_message(REMOTE_FRAME, role=REMOTE, sequence="3"))
         await_frame(client, remote, OWNER_FRAME)
         await_frame(client, owner, REMOTE_FRAME)
+        assert providers.gemini == providers.speech == []
         assert terminal(client, settings).status_code == 204
 
 
@@ -256,7 +264,6 @@ def test_caller_hangup_ends_owner_call_returned_by_delayed_dial_response(manual_
 def test_manual_slot_uses_frozen_registry_snapshot_and_acknowledged_agent_provenance(manual_app):
     client, settings, dialer, stt, providers = manual_app
     with inbound_sockets(client, settings) as (session, owner, remote):
-        accept(client, session, owner)
         owner.send_json(media_message(OWNER_FRAME, sequence="3"))
         await_frame(client, remote, OWNER_FRAME)
         remote.send_json(media_message(REMOTE_FRAME, role=REMOTE, sequence="2"))
@@ -336,7 +343,6 @@ def test_manual_slot_uses_frozen_registry_snapshot_and_acknowledged_agent_proven
 def test_signed_global_terminal_status_cleans_operator_and_pipeline(manual_app, status):
     client, settings, dialer, stt, providers = manual_app
     with inbound_sockets(client, settings) as (session, owner, remote):
-        accept(client, session, owner)
         remote.send_json(media_message(REMOTE_FRAME, role=REMOTE))
         until(client, lambda: len(stt.sockets) == 2 and len(providers.detection) == 1)
         assert client.post("/status", data={"CallSid": REMOTE_SID,

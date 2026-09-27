@@ -290,7 +290,11 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
         if event != "push":
             return JSONResponse({"status": "ignored", "reason": "event"}, status_code=202)
         repository = payload.get("repository")
-        if not isinstance(repository, dict) or repository.get("full_name") != settings.deploy_repository:
+        accepted_repositories = {settings.deploy_repository}
+        project_names = {"jimmmmmmmmmmmy/fictional-rotary-phone", "jimmmmmmmmmmmy/Phoney"}
+        if settings.deploy_repository in project_names:
+            accepted_repositories.update(project_names)
+        if not isinstance(repository, dict) or repository.get("full_name") not in accepted_repositories:
             return JSONResponse({"status": "ignored", "reason": "repository"}, status_code=202)
         if payload.get("ref") != "refs/heads/main":
             return JSONResponse({"status": "ignored", "reason": "branch"}, status_code=202)

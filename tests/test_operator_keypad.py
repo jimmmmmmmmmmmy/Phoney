@@ -453,11 +453,9 @@ def test_inbound_notice_matches_enabled_observers_before_streaming(
             media_storage_dir=str(tmp_path/"capture"),transcript_storage_dir=str(tmp_path/"transcripts"),
             detection_storage_dir=str(tmp_path/"detection"),deepgram_api_key="test",modulate_api_key="test")
         response=ET.fromstring(h.controller.inbound_twiml(s))
-        if notice is None:
-            assert response.find("Say") is None and response[0].tag=="Connect"
-        else:
-            assert response[0].tag=="Say" and response[0].text==notice
-            assert response[1].tag=="Connect"
+        greeting = "New College Data Science." + (" " + notice if notice else "")
+        assert response[0].tag=="Say" and response[0].text==greeting
+        assert response[1].tag=="Connect"
         assert response.find("Connect/Stream") is not None
         await h.close()
     asyncio.run(run())

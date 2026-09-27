@@ -283,14 +283,15 @@ class OperatorController:
 
     def inbound_twiml(self, session):
         leg = session.legs[REMOTE]
-        notice = None
+        notice = "New College Data Science."
         if self.settings.media_capture_enabled:
-            notice = ("This demo call records and transcribes audio for testing."
+            disclosure = ("This demo call records and transcribes audio for testing."
                       if self.settings.transcription_enabled else "This demo call records audio for testing.")
             if self.settings.modulate_detection_enabled:
-                notice = ("This demo call records, transcribes, and analyzes audio for testing."
+                disclosure = ("This demo call records, transcribes, and analyzes audio for testing."
                           if self.settings.transcription_enabled
                           else "This demo call records and analyzes audio for testing.")
+            notice += " " + disclosure
         return leg_twiml(self.settings.public_base_url, session.id, REMOTE,
                          leg.generation, leg.token, prompt=notice)
 
@@ -302,7 +303,8 @@ class OperatorController:
             return
         leg = session.legs[OWNER]
         twiml = leg_twiml(self.settings.public_base_url, session_id, OWNER,
-                          leg.generation, leg.token, prompt=ACCEPT_PROMPT)
+                          leg.generation, leg.token,
+                          prompt=ACCEPT_PROMPT if session.direction == "outbound" else None)
         await self._dial(session_id, OWNER, leg.destination, twiml)
 
     async def _dial_remote(self, session_id: str):
@@ -344,7 +346,22 @@ class OperatorController:
 
     async def stream_started(self, session_id: str, role: str, stream_sid: str):
         session = self.store.sessions.get(session_id)
-        if session is None:
+        if session is None or not session.active:
+            return
+        if session.direction == "inbound":
+            if role == REMOTE:
+                await self._notify_started(session)
+            router = self.router(session_id)
+            # Answering the incoming call is the owner's acceptance. Either
+            # stream may arrive first, but neither microphone crosses until
+            # both signed, token-bound streams are attached. This changes only
+            # the connection phase; agent takeover still requires owner #1–#9.
+            if all(router.attached(participant) for participant in ROLES):
+                if await self.store.mark_connected(session_id):
+                    router.stop_cue()
+                    log.info("operator_connected session=%s", session_id)
+            elif role == REMOTE and session.phase != CONNECTED:
+                router.start_cue(REMOTE)
             return
         if role == OWNER:
             await self.store.mark_owner_prompt(session_id)
@@ -352,9 +369,6 @@ class OperatorController:
         if not session.canonical_call_sid:
             session.canonical_call_sid = session.legs[REMOTE].call_sid
         await self._notify_started(session)
-        if session.direction == "inbound" and session.phase != CONNECTED:
-            self.router(session_id).start_cue(REMOTE)
-            return
         if await self.store.mark_connected(session_id):
             self.router(session_id).stop_cue()
             log.info("operator_connected session=%s", session_id)

@@ -18,7 +18,7 @@ A finalized **Caller** message receives a pale-red background across the whole r
 
 The whole paragraph marks an overlapping audio segment; it is not word-level classification. The robot's accessible label and tooltip explain that relationship. Deepgram transcript timestamps preserve the same initial silence and stream clock used by recordings, while batch evidence retains the trimmed capture-padding offset. No guessed timing adjustment is applied.
 
-Detection-only polling updates the existing row annotations without replacing transcript rows, changing scroll position, or resetting playback. Playback highlighting and AI annotations remain separate. A transcript's percentage continues to mean **Transcription confidence**, never AI confidence.
+Detection-only polling updates the existing row annotations without replacing transcript rows, changing scroll position, or resetting playback. Playback highlighting and AI annotations remain separate. The current playback row uses a deep-red background and white text when AI is flagged; other flagged rows keep a light-red background. The playback cursor stays visible while paused or seeking and clears when playback ends or is dismissed. A transcript's percentage continues to mean **Transcription confidence**, never AI confidence.
 
 ## Automatic recorded-call analysis
 

@@ -2,6 +2,7 @@
 
 import os
 import re
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -44,6 +45,13 @@ class Settings:
     operator_admin_token: str = field(default="", repr=False)
     max_call_seconds: int = 1800
     voice_agent_enabled: bool = False
+    modulate_detection_enabled: bool = False
+    modulate_api_key: str = field(default="", repr=False)
+    detection_storage_dir: str = ""
+    modulate_detection_max_audio_seconds: int = 120
+    modulate_detection_deadline_seconds: float = 45.0
+    modulate_detection_min_confidence: float = 0.80
+    modulate_detection_queue_frames: int = 250
 
     def __post_init__(self):
         if not self.account_sid.startswith("AC") or len(self.account_sid) != 34:
@@ -120,6 +128,38 @@ class Settings:
             raise ValueError("MAX_CALL_SECONDS must be between 30 and 14400 seconds.")
         if type(self.voice_agent_enabled) is not bool:
             raise ValueError("VOICE_AGENT_ENABLED must be true or false.")
+        if type(self.modulate_detection_enabled) is not bool:
+            raise ValueError("MODULATE_DETECTION_ENABLED must be true or false.")
+        if (type(self.modulate_detection_max_audio_seconds) is not int
+                or not 4 <= self.modulate_detection_max_audio_seconds <= 120):
+            raise ValueError("MODULATE_DETECTION_MAX_AUDIO_SECONDS must be between 4 and 120.")
+        if (type(self.modulate_detection_queue_frames) is not int
+                or not 1 <= self.modulate_detection_queue_frames <= 1000):
+            raise ValueError("MODULATE_DETECTION_QUEUE_FRAMES must be between 1 and 1000.")
+        for name, value, low, high in (
+            ("MODULATE_DETECTION_DEADLINE_SECONDS", self.modulate_detection_deadline_seconds, 1, 120),
+            ("MODULATE_DETECTION_MIN_CONFIDENCE", self.modulate_detection_min_confidence, 0.5, 1),
+        ):
+            if (type(value) not in (int, float) or not math.isfinite(value)
+                    or not low <= value <= high):
+                raise ValueError(f"{name} must be between {low} and {high}.")
+        if self.detection_storage_dir:
+            detection_path = Path(self.detection_storage_dir)
+            if (not detection_path.is_absolute() or detection_path == Path(detection_path.anchor)
+                    or ".." in detection_path.parts):
+                raise ValueError("DETECTION_STORAGE_DIR must be an absolute private directory.")
+            # Keep advisory metadata separate so rollback cannot invalidate call records.
+            if any(path and Path(path).resolve() == detection_path.resolve()
+                   for path in (self.media_storage_dir, self.transcript_storage_dir,
+                                self.voicemail_storage_dir, self.call_details_storage_dir)):
+                raise ValueError("DETECTION_STORAGE_DIR must differ from other storage directories.")
+        if self.modulate_detection_enabled:
+            if not self.media_capture_enabled:
+                raise ValueError("Enable MEDIA_CAPTURE_ENABLED before live detection.")
+            if not self.modulate_api_key or self.modulate_api_key == "REPLACE_ME":
+                raise ValueError("Set MODULATE_API_KEY before enabling detection.")
+            if not self.detection_storage_dir:
+                raise ValueError("Set DETECTION_STORAGE_DIR before enabling detection.")
 
     @property
     def switchboard_ready(self):
@@ -150,6 +190,9 @@ class Settings:
         voice_flag = os.getenv("VOICE_AGENT_ENABLED", "false").strip().lower()
         if voice_flag not in {"true", "false"}:
             raise ValueError("VOICE_AGENT_ENABLED must be true or false.")
+        detection_flag = os.getenv("MODULATE_DETECTION_ENABLED", "false").strip().lower()
+        if detection_flag not in {"true", "false"}:
+            raise ValueError("MODULATE_DETECTION_ENABLED must be true or false.")
         return cls(
             account_sid=os.getenv("TWILIO_ACCOUNT_SID", "").strip(),
             auth_token=os.getenv("TWILIO_AUTH_TOKEN", "").strip(),
@@ -184,4 +227,11 @@ class Settings:
             operator_admin_token=os.getenv("OPERATOR_ADMIN_TOKEN", "").strip(),
             max_call_seconds=int(os.getenv("MAX_CALL_SECONDS", "1800")),
             voice_agent_enabled=voice_flag == "true",
+            modulate_detection_enabled=detection_flag == "true",
+            modulate_api_key=os.getenv("MODULATE_API_KEY", "").strip(),
+            detection_storage_dir=os.getenv("DETECTION_STORAGE_DIR", "").strip(),
+            modulate_detection_max_audio_seconds=int(os.getenv("MODULATE_DETECTION_MAX_AUDIO_SECONDS", "120")),
+            modulate_detection_deadline_seconds=float(os.getenv("MODULATE_DETECTION_DEADLINE_SECONDS", "45")),
+            modulate_detection_min_confidence=float(os.getenv("MODULATE_DETECTION_MIN_CONFIDENCE", "0.80")),
+            modulate_detection_queue_frames=int(os.getenv("MODULATE_DETECTION_QUEUE_FRAMES", "250")),
         )

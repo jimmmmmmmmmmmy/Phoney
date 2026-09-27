@@ -123,9 +123,12 @@ def _private_directory(path: Path) -> int:
 
 def _observe(observer, method: str, *args):
     """Optional partners cannot break capture, even when their callback fails."""
-    if observer is not None:
+    observers = observer if isinstance(observer, (tuple, list)) else (observer,)
+    for current in observers:
+        if current is None:
+            continue
         try:
-            getattr(observer, method)(*args)
+            getattr(current, method)(*args)
         except Exception:
             pass
 

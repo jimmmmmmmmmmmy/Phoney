@@ -1,5 +1,7 @@
 # Modulate integration recipe
 
+**Implementation available:** the audited adapters, live worker, persistence, and dashboard integration are described in [MODULATE_INTEGRATION.md](MODULATE_INTEGRATION.md). The examples below are the original contract reference; use the implemented modules and runners for current operation.
+
 Use the **documented Models API**, beginning with one completed Build 2 capture and a 4–60 second clip. Copy the adapter below into a partner-owned module when detection implementation begins. This document is a recipe: no Modulate credentials, audio uploads, detector, or live call hooks were enabled while writing it.
 
 **Contract checked: 2026-09-26.** The machine-readable [batch OpenAPI](https://docs.modulate.ai/api/velma_2_synthetic_voice_detection_batch.yaml) and [streaming AsyncAPI](https://docs.modulate.ai/api/velma_2_synthetic_voice_detection_streaming.yaml) are linked from the official [documentation index](https://docs.modulate.ai/llms.txt). They define the same request paths as the developer reference. Their `info.version` value is `0.0.0`; that is not a version identifier for the deployed model.

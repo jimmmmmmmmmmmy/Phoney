@@ -25,3 +25,5 @@ Open [BUILD_3.md](BUILD_3.md) to use the live transcript dashboard. Partners can
 | Mac server, ngrok, GitHub deployment | [Server operations](SERVER.md) |
 
 The selected partner stack uses Google Gemini for conversation and ElevenLabs for voice generation. Those are the two relevant sponsor categories listed on the [ShellHacks prize page](https://www.mlh.com/events/shellhacks-b9/prizes); [Gemini resources](https://www.mlh.com/partners/gemini) and [ElevenLabs resources](https://www.mlh.com/partners/elevenlabs) explain account setup. A plan in a README is not a working API integration: demonstrate actual provider usage when that partner milestone is implemented.
+
+- [Modulate integration audit and configuration](MODULATE_INTEGRATION.md) — imported collaborator work, lifecycle fixes, saved results, and dashboard display.

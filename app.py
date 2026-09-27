@@ -26,9 +26,12 @@ from voicemail import VoicemailStore
 from call_details import CallDetailsStore
 from summaries import SummaryManager
 from operator_service import OperatorSessions, register_operator_routes
+from partner_detection import LiveDetectionManager
+from partner_detection.storage import DetectionStore
 
 logger = logging.getLogger("uvicorn.error")
 MAX_GITHUB_BODY_BYTES = 1024 * 1024
+DETECTION_SAVE_SHUTDOWN_SECONDS = 5.0
 
 
 def write_deploy_trigger(path: str, delivery_id: str) -> None:
@@ -49,13 +52,38 @@ def write_deploy_trigger(path: str, delivery_id: str) -> None:
 
 
 def create_app(settings: Settings, gateway=None, transcription_connector=None, summary_provider=None,
-               operator_dialer=None, operator_voice=None) -> FastAPI:
+               operator_dialer=None, operator_voice=None, detection_connector=None) -> FastAPI:
     transcription = TranscriptionManager(settings, connector=transcription_connector)
-    media_capture = CaptureManager(settings, observer=transcription)
     voicemails = VoicemailStore(settings)
     recordings = RecordingLibrary(settings)
     call_details = CallDetailsStore(settings.call_details_storage_dir)
     operator = OperatorSessions(settings)
+    detection_store = DetectionStore(settings.detection_storage_dir)
+    detection_writes: set[asyncio.Task] = set()
+    detection_last_write: dict[str, asyncio.Task] = {}
+
+    def persist_detection(call_sid, result):
+        previous = detection_last_write.get(call_sid)
+
+        async def save():
+            # Preserve start/final/reconnect order even when disk work runs on threads.
+            if previous is not None:
+                await asyncio.gather(previous, return_exceptions=True)
+            try:
+                await asyncio.to_thread(detection_store.save, call_sid, result)
+            except Exception:
+                logger.error("detection_result_save_failed")
+
+        task = asyncio.create_task(save(), name="save-detection-result")
+        detection_writes.add(task)
+        detection_last_write[call_sid] = task
+
+        def saved(finished):
+            detection_writes.discard(finished)
+            if detection_last_write.get(call_sid) is finished:
+                detection_last_write.pop(call_sid, None)
+
+        task.add_done_callback(saved)
 
     async def call_ended(call_sid):
         await asyncio.to_thread(call_details.finish, call_sid)
@@ -64,7 +92,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
 
     switchboard = Switchboard(settings, gateway=gateway, on_end=call_ended)
 
-    def summary_worker_active():
+    def provider_worker_active():
         if switchboard.draining:
             return False
         if not settings.deploy_commit:
@@ -79,9 +107,12 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
         except (OSError, ValueError, KeyError, TypeError):
             return False
 
+    live_detection = LiveDetectionManager(settings, connector=detection_connector,
+        can_run=provider_worker_active, on_update=persist_detection)
+    media_capture = CaptureManager(settings, observer=(transcription, live_detection))
     summaries = SummaryManager(settings, transcription, call_details,
         active_call_ids=lambda: {sid for sid, session in switchboard.sessions.items() if session.phase != "ended"},
-        provider=summary_provider, can_run=summary_worker_active)
+        provider=summary_provider, can_run=provider_worker_active)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -90,6 +121,16 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
         await summaries.close()
         await switchboard.close()
         await media_capture.close()
+        await live_detection.close()
+        if detection_writes:
+            _, pending = await asyncio.wait(list(detection_writes), timeout=DETECTION_SAVE_SHUTDOWN_SECONDS)
+            if pending:
+                logger.error("detection_result_shutdown_timeout")
+                # No new callbacks can be created after close. Cancel the whole
+                # pending chain together so queued writes cannot overtake it.
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
         await transcription.close()
         await voicemails.close()
         await operator.close()
@@ -99,12 +140,16 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     app.state.switchboard = switchboard
     app.state.media_capture = media_capture
     app.state.transcription = transcription
+    app.state.live_detection = live_detection
+    app.state.detection_store = detection_store
+    app.state.detection_writes = detection_writes
     app.state.voicemails = voicemails
     app.state.recordings = recordings
     app.state.call_details = call_details
     app.state.summaries = summaries
     register_dashboard(app, settings, transcription, voicemail_store=voicemails,
-                       recording_library=recordings, call_details_store=call_details)
+                       recording_library=recordings, call_details_store=call_details,
+                       detection_store=detection_store)
     # ``main`` passes the voice layer's settings when the operator may speak;
     # without them the keypad still parses and the bridge stays human relay.
     register_operator_routes(app, settings, operator, dialer=operator_dialer,
@@ -124,6 +169,8 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
             result["commit"] = settings.deploy_commit
         if summaries.enabled:
             result["summaries_enabled"] = True
+        if live_detection.enabled:
+            result["detection_enabled"] = settings.switchboard_ready
         return result
 
     async def validate_deploy_control(request: Request):
@@ -140,7 +187,8 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
                              "pending_work": switchboard.pending_count + media_capture.active_count
                                              + media_capture.pending_count + transcription.active_count
                                              + voicemails.active_count + summaries.active_count
-                                             + operator.pending_count},
+                                             + operator.pending_count + live_detection.active_count
+                                             + len(detection_writes)},
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/internal/deploy", dependencies=[Depends(validate_deploy_control)])
@@ -231,6 +279,10 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
                 else:
                     notice = ("This demo call records and transcribes audio for testing."
                               if settings.transcription_enabled else "This demo call records audio for testing.")
+                    if settings.modulate_detection_enabled:
+                        notice = ("This demo call records, transcribes, and analyzes audio for testing."
+                                  if settings.transcription_enabled
+                                  else "This demo call records and analyzes audio for testing.")
                     response.say(notice, language="en-US")
                     stream = response.start().stream(
                         url=settings.public_base_url.replace("https://", "wss://", 1)

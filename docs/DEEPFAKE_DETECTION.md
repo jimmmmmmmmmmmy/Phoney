@@ -2,7 +2,7 @@
 
 Start with [the Modulate batch adapter](MODULATE.md) and one authorized, completed `inbound.wav`. Verify its returned frames before connecting a detector to a live call. You can develop with local human/synthetic fixtures while the real Build 2 phone-capture test remains pending.
 
-**Status: technical implementation plan for partners, checked September 26, 2026.** Build 3 supplies Twilio capture, offline replay, and optional live Deepgram transcription. None of the detector-specific queues, endpoints, configuration variables, or partner modules proposed below runs in the server today. Enabled transcription sends live audio to Deepgram; it does not perform deepfake detection. The detector code blocks below are implementation examples, not evidence of successful detector-provider calls.
+**Status:** the audited Modulate live integration, bounded worker, private result storage, and dashboard display are implemented. See [MODULATE_INTEGRATION.md](MODULATE_INTEGRATION.md) for current behavior, provenance, and configuration. This document preserves the original partner design guidance; proposed modules and configuration below may differ from the implemented integration. Detection accuracy on representative telephone speech still requires evaluation.
 
 ## Choose a concrete first implementation
 
@@ -40,7 +40,7 @@ Read [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md) before writing the adapter. The im
 | Playback track | `outbound`: everything played to that caller | Do not mix it into incoming-caller analysis. It includes the teammate, prompts, music, and eventually our own synthetic voice. |
 | Format | Mono, 8000 samples/second, signed PCM16 little-endian | A second contains 16,000 bytes after μ-law decoding. A 20 ms replay frame normally contains 320 bytes. |
 | Time | `timestamp_ms` from the start of the stream timeline | These are media offsets, not UTC timestamps or original packet arrival times. |
-| Availability | Completed WAVs plus final manifest; offline replay | Build 3 also has a live Deepgram observer. No live detector or detector-results route is registered. |
+| Availability | Completed WAVs plus final manifest; offline replay | The current app has live Deepgram and optional Modulate observers; advisory results are included in dashboard polling. |
 
 Twilio's stream wire payload is base64-encoded raw μ-law at 8 kHz. The WAV writer decodes it to PCM for offline replay. **Do not μ-law-decode `AudioFrame.pcm_s16le` again.** The live observer instead receives validated raw μ-law bytes; that is a different contract. Do not send a WAV header to a raw-PCM WebSocket, and do not label raw PCM bytes `audio/wav` in a file upload. [Twilio media payload contract](https://www.twilio.com/docs/voice/media-streams/websocket-messages).
 
@@ -308,7 +308,7 @@ Do not select a universal `0.8` cutoff because it looks confident. Choose thresh
 
 ## Add live detection as an isolated later integration
 
-Build 3 constructs `CaptureManager(settings, observer=transcription)`. After authentication and media validation, it invokes nonblocking `start(call_sid, stream_sid)`, `offer(call_sid, track, timestamp_ms, payload)`, and `finish(call_sid, reason)` observer methods. `payload` is raw 8 kHz μ-law bytes, not the offline `AudioFrame` PCM format. Extend this seam with an observer multiplexer that preserves transcription and adds a separately bounded detector queue. **Do not attach slow HTTP requests to `CaptureManager.handle` or synchronous replay callbacks inside the FastAPI audio path.** Decode to PCM inside the detector worker when its provider requires PCM; keep the disk writer's queue independent.
+The original Build 3 constructed `CaptureManager(settings, observer=transcription)`; the integrated app now fans out to transcription and Modulate. After authentication and media validation, it invokes nonblocking `start(call_sid, stream_sid)`, `offer(call_sid, track, timestamp_ms, payload)`, and `finish(call_sid, reason)` observer methods. `payload` is raw 8 kHz μ-law bytes, not the offline `AudioFrame` PCM format. Extend this seam with an observer multiplexer that preserves transcription and adds a separately bounded detector queue. **Do not attach slow HTTP requests to `CaptureManager.handle` or synchronous replay callbacks inside the FastAPI audio path.** Decode to PCM inside the detector worker when its provider requires PCM; keep the disk writer's queue independent.
 
 ```mermaid
 flowchart TD
@@ -345,7 +345,7 @@ Live replay should pace audio rather than flooding a provider unless its API exp
 
 Add a read-only endpoint only when a UI needs it, for example `GET /internal/detection/sessions/{session_id}`. Reuse an appropriate authenticated internal-access pattern; do not put raw detection results on public `/health` or expose captured audio through ngrok. Return observation summary, scored duration, latest evidence offset, stale/unknown status, and provider availability. Do not return provider keys or raw recordings.
 
-No such detector endpoint exists in Build 3. The detector should not expose a public “dial this number” action. Later policy integration, if requested, sends a typed advisory event to the owner/session controller; the existing controller remains responsible for authorization, mode transitions, interruption, and call cleanup.
+The integrated app exposes advisory results through the existing transcript polling API, without adding a detector control endpoint. The detector should not expose a public “dial this number” action. Later policy integration, if requested, sends a typed advisory event to the owner/session controller; the existing controller remains responsible for authorization, mode transitions, interruption, and call cleanup.
 
 ## Build a test set that resembles these phone calls
 

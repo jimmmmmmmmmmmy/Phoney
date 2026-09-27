@@ -44,7 +44,7 @@ def html_page(filename):
 
 
 def register_dashboard(app, settings, manager, voicemail_store=None, recording_library=None,
-                       call_details_store=None):
+                       call_details_store=None, detection_store=None):
     """Attach a URL-accessible viewer and API without call-control capabilities."""
     def voicemail_snapshot():
         return (deepcopy(voicemail_store.snapshot()) if voicemail_store is not None else
@@ -53,6 +53,22 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
     def recording_snapshot():
         return (recording_library.snapshot() if recording_library is not None else
                 {"enabled": False, "storage_error": "", "recordings": []})
+
+    def detection_snapshot():
+        if detection_store is None:
+            return {"enabled": False, "storage_error": "", "calls": []}
+        try:
+            return detection_store.snapshot()
+        except Exception:
+            return {"enabled": True, "storage_error": "storage-unavailable", "calls": []}
+
+    def detection_result(call_sid):
+        if detection_store is None:
+            return None
+        try:
+            return detection_store.get(call_sid)
+        except Exception:
+            return None
 
     @app.get("/dashboard", response_class=HTMLResponse)
     async def page():
@@ -94,6 +110,8 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
         snapshot["schema_version"] = 1
         snapshot["voicemail"] = voicemail_snapshot()
         snapshot["recordings"] = await asyncio.to_thread(recording_snapshot)
+        snapshot["detection"] = await asyncio.to_thread(detection_snapshot)
+        detections = {result["call_sid"]: result for result in snapshot["detection"]["calls"]}
         sessions = snapshot["sessions"]
         snapshot["call_details"] = (await asyncio.to_thread(call_details_store.snapshot, sessions)
                                     if call_details_store is not None else
@@ -104,6 +122,8 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
             selected = (active or sessions or [None])[0]
         snapshot["selected_call_sid"] = selected["call_sid"] if selected else None
         for session in sessions:
+            if session["call_sid"] in detections:
+                session["detection"] = deepcopy(detections[session["call_sid"]])
             if session is not selected:
                 session["segments"] = []
                 for track in session.get("tracks", {}).values():
@@ -147,6 +167,9 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
                 details = await asyncio.to_thread(call_details_store.snapshot, [session])
                 data["call_details"] = next((entry for entry in details["calls"]
                                              if entry["call_sid"] == call_sid), None)
+            detection = await asyncio.to_thread(detection_result, call_sid)
+            if detection is not None:
+                data["detection"] = detection
             return JSONResponse(data, headers=headers)
         lines = ["New College Data Science Team — conversation transcript",
                  "Caller playback includes conference audio and prompts; it is not an isolated microphone.",

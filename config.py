@@ -38,6 +38,7 @@ class Settings:
     voicemail_max_seconds: int = 120
     voicemail_storage_dir: str = ""
     call_details_storage_dir: str = ""
+    workspace_storage_dir: str = ""
     gemini_api_key: str = field(default="", repr=False)
     gemini_summary_model: str = "gemini-3.8-flash"
     owner_number: str = field(default="", repr=False)
@@ -106,6 +107,11 @@ class Settings:
             raise ValueError("VOICEMAIL_STORAGE_DIR must be an absolute private directory.")
         if self.call_details_storage_dir and not Path(self.call_details_storage_dir).is_absolute():
             raise ValueError("CALL_DETAILS_STORAGE_DIR must be an absolute private directory.")
+        if self.workspace_storage_dir:
+            workspace_path = Path(self.workspace_storage_dir)
+            if (not workspace_path.is_absolute() or workspace_path == Path(workspace_path.anchor)
+                    or ".." in workspace_path.parts):
+                raise ValueError("WORKSPACE_STORAGE_DIR must be an absolute private directory.")
         if self.call_details_storage_dir:
             details_path = Path(self.call_details_storage_dir).resolve()
             if any(path and Path(path).resolve() == details_path
@@ -226,6 +232,7 @@ class Settings:
             voicemail_max_seconds=int(os.getenv("VOICEMAIL_MAX_SECONDS", "120")),
             voicemail_storage_dir=os.getenv("VOICEMAIL_STORAGE_DIR", "").strip(),
             call_details_storage_dir=os.getenv("CALL_DETAILS_STORAGE_DIR", "").strip(),
+            workspace_storage_dir=os.getenv("WORKSPACE_STORAGE_DIR", "").strip(),
             gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
             gemini_summary_model=os.getenv("GEMINI_SUMMARY_MODEL", "gemini-3.8-flash").strip(),
             owner_number=os.getenv("OWNER_NUMBER", "").strip(),

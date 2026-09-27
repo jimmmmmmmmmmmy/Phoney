@@ -26,8 +26,8 @@
     .segment-ai-marker{display:inline-flex;align-items:center;flex:none;color:#d51b27}.segment-ai-marker svg{width:14px;height:14px}
     .transcript-toolbar{flex:none;display:flex;align-items:center;padding:0 0 10px;color:var(--muted);font-size:10px}.live-label{letter-spacing:.9px;text-transform:uppercase;font-weight:650}.transcript{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 28px 24px;scroll-behavior:smooth;scrollbar-width:thin;scrollbar-color:#cbd4dc transparent}
     .messages{display:flex;flex-direction:column;gap:7px}.message{display:grid;grid-template-columns:39px minmax(0,1fr);gap:10px;border-radius:6px;padding:4px 8px;margin:0 -8px;border-left:3px solid transparent}.timestamp{font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#8a97a4;padding-top:2px;font-variant-numeric:tabular-nums}.message-meta{display:flex;align-items:center;gap:8px;margin-bottom:2px}.speaker{font-size:10px;color:var(--teal);font-weight:750}.message[data-track="outbound"] .speaker{color:#596a91}.confidence{font-size:9px;color:#94a0ad}.message-text{font-size:14px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;max-width:860px}.interim .message-text{color:#8995a2}.interim .speaker{color:#81968c}.interim-label{font-size:9px;background:#f0f4f1;color:#84918a;padding:2px 5px;border-radius:4px}.message.playing-line{background:#e3f3e9;border-left-color:var(--teal)}.message[data-track="outbound"].playing-line{background:#ecf0fa;border-left-color:#677bad}
-    .message.ai-detected{background:#ffe4e6;border-radius:8px;box-shadow:inset 0 0 0 1px #fecdd3}
-    .message.ai-detected.playing-line{background:#b91c1c;border-left-color:#7f1d1d;box-shadow:none;color:#fff}
+    .message.ai-detected{background:#ffe4e6;border-radius:8px}
+    .message.ai-detected.playing-line{background:#b91c1c;border-left-color:transparent;color:#fff}
     .message.ai-detected.playing-line :is(.timestamp,.speaker,.confidence,.segment-ai-marker,.message-text){color:#fff}
     .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:100%;min-height:180px;padding:20px}.empty-icon{display:grid;place-items:center;width:44px;height:44px;border-radius:12px;background:var(--teal-light);color:var(--teal);margin-bottom:14px}.empty h2{font-size:16px;font-weight:650;margin-bottom:7px}.empty p{font-size:12px;color:var(--muted);max-width:305px;line-height:1.7}.empty svg{width:23px;height:23px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
     .audio-panel{grid-column:2;grid-row:3;display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:center;position:relative;z-index:20;background:#fafbfc;border-top:1px solid var(--line);padding:18px 64px 12px 28px;padding-bottom:calc(12px + env(safe-area-inset-bottom))}.audio-inner{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) 40px;gap:12px;align-items:center}.audio-panel audio{display:block;width:100%;min-width:0;height:40px}.audio-download{display:grid;place-items:center;width:40px;height:40px;color:var(--muted);border:1px solid var(--line);border-radius:50%;text-decoration:none}.audio-download:hover{color:var(--teal);background:var(--teal-light)}.audio-download svg{width:18px;height:18px}.audio-status{max-width:1100px;margin:0 auto;font-size:12px;color:var(--muted)}.audio-status:not([hidden]){padding:8px 0}.audio-status[data-tone="bad"]{color:var(--red)}
@@ -982,7 +982,7 @@
     window.DashboardCalls = {openCall: chooseCall};
     for (const page of ["calls", "contacts", "agents"]) {
       const nav = $("nav-" + page);
-      if (nav) nav.addEventListener("click", () => showPage(page));
+      if (nav) nav.addEventListener("click", () => page === "calls" ? backToCalls() : showPage(page));
     }
     for (const id of ["team-brand", "team-brand-mobile", "team-footer"]) {
       $(id).addEventListener("click", event => {
@@ -1075,6 +1075,7 @@
     renderNavigation();
     poll();
   </script>
+  <script src="/assets/dashboard-workspace.js" defer></script>
   <script src="/assets/dashboard-crm.js" defer></script>
   <script src="/assets/dashboard-toolbar.js" defer></script>
 </body>

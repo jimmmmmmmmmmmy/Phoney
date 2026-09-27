@@ -1,6 +1,5 @@
 (function () {
   "use strict";
-  const STORAGE_KEY = "hacking-banyons.contacts.v1";
   const MAX_CONTACTS = 500;
   const contactCategories = [["all", "All contacts"], ["real-estate", "Real Estate"], ["legal", "Legal"], ["customers", "Customers"]];
   const demoContacts = [
@@ -17,7 +16,7 @@
   ];
   let localContacts = [], demoOverrides = [], storageWarning = "", realCalls = [], lastSessions = [], revision = 0, renderedKey = "";
   let listFilter = "all", searchText = "", root, dialog, form, opener, successMessage = "", savedContactId = "", listUI = null, renderedRoute = "";
-  let editingContactId = null;
+  let editingContactId = null, savingContact = false, draftContactId = null, workspaceApplied = false;
   const expandedCalls = new Set();
   const contactStatuses = ["New", "Active", "Follow up"];
   const phonePattern = /^\+[1-9][0-9]{7,14}$/;
@@ -59,17 +58,30 @@
       createdAt: value.createdAt, status: value.status || defaults.status || "New",
       labels: [...new Set((value.labels || defaults.labels || []).map(label => label.trim()))], demo: Boolean(defaults.demo)};
   }
-  function readStorage() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const data = JSON.parse(raw), overrides = data?.demoOverrides === undefined ? [] : data.demoOverrides;
-      if (!data || data.version !== 1 || !Array.isArray(data.contacts) || data.contacts.length > MAX_CONTACTS || !data.contacts.every(validStoredContact) ||
-        !Array.isArray(overrides) || overrides.length > demoContacts.length || !overrides.every(value => validContactFields(value) && demoContacts.some(contact => contact.id === value.id))) throw new Error("invalid");
-      const ids = new Set();
-      localContacts = data.contacts.filter(contact => { if (ids.has(contact.id)) return false; ids.add(contact.id); return true; }).map(contact => storedContact(contact));
-      demoOverrides = overrides.filter(contact => { if (ids.has(contact.id)) return false; ids.add(contact.id); return true; }).map(contact => storedContact(contact, demoContacts.find(original => original.id === contact.id)));
-    } catch (_) { storageWarning = "Saved contacts could not be loaded from this browser. Demo contacts are still available. Contacts cannot be saved until browser storage is available."; }
+  function applyWorkspace(state) {
+    const previousWarning = storageWarning;
+    storageWarning = state.error || state.importError || (state.loading && !state.snapshot ? "Loading workspace contacts…" : "");
+    const data = state.snapshot;
+    if (data) {
+      if (!Array.isArray(data.contacts) || !data.contacts.every(validStoredContact)
+        || !Array.isArray(data.demoOverrides) || !data.demoOverrides.every(value => validContactFields(value)
+          && demoContacts.some(contact => contact.id === value.id))) {
+        storageWarning = "Workspace contacts could not be read. Reload the dashboard and try again.";
+      } else {
+        const nextContacts = data.contacts.map(contact => storedContact(contact));
+        const nextOverrides = data.demoOverrides.map(contact => storedContact(contact, demoContacts.find(original => original.id === contact.id)));
+        if (!workspaceApplied || JSON.stringify([nextContacts, nextOverrides]) !== JSON.stringify([localContacts, demoOverrides])) {
+          localContacts = nextContacts;
+          demoOverrides = nextOverrides;
+          workspaceApplied = true;
+          setSessions(lastSessions);
+          revision += 1;
+          notifyContactsChanged();
+        }
+      }
+    }
+    if (storageWarning !== previousWarning) { revision += 1; listUI = null; }
+    render();
   }
   function filteredContacts() {
     const query = searchText.trim().toLowerCase();
@@ -261,7 +273,7 @@
       renderTable(listUI.tableWrap, listUI.resultCount);
     } else if (parts[1] && !contact) {
       const missing = node("div", "crm crm-empty");
-      missing.append(node("strong", "", "Contact not found"), node("p", "", "Contacts saved in another browser are only available there."), link("Back to contacts", "#contacts", "crm-button"));
+      missing.append(node("strong", "", "Contact not found"), node("p", "", storageWarning || "This contact is not in the workspace. Return to the contacts list or reload to try again."), link("Back to contacts", "#contacts", "crm-button"));
       root.replaceChildren(missing);
     } else root.replaceChildren(contact ? renderProfile(contact) : renderList());
     if (restoreFocus && !active.isConnected) {
@@ -303,7 +315,7 @@
     form.noValidate = true;
     const header = node("div", "crm-dialog-header"), text = node("div");
     dialogTitle = node("h2", "", "Create contact");
-    dialogDescription = node("p", "", "Keep contact details and conversations together. Saved only in this browser.");
+    dialogDescription = node("p", "", "Keep contact details and conversations together in this workspace.");
     dialogTitle.id = "crm-dialog-title";
     dialogDescription.id = "crm-dialog-description";
     text.append(dialogTitle, dialogDescription);
@@ -359,7 +371,7 @@
     dialog.append(form);
     document.body.append(dialog);
     form.addEventListener("submit", saveContact);
-    dialog.addEventListener("cancel", closeAdditionalMenu);
+    dialog.addEventListener("cancel", event => { if (savingContact) event.preventDefault(); closeAdditionalMenu(); });
     dialog.addEventListener("close", () => { closeAdditionalMenu(); editingContactId = null; opener?.focus({preventScroll: true}); });
     dialog.addEventListener("click", event => {
       if (event.target === dialog) {
@@ -374,8 +386,10 @@
       }
     });
   }
-  function closeDialog() { if (dialog.open) dialog.close(); }
+  function closeDialog() { if (!savingContact && dialog.open) dialog.close(); }
   function prepareDialog(contact) {
+    if (savingContact) return;
+    draftContactId = contact?.id || `local-${crypto.randomUUID()}`;
     opener = document.activeElement;
     form.reset();
     optionalFields.replaceChildren();
@@ -383,7 +397,7 @@
     editingContactId = contact?.id || null;
     dialogTitle.textContent = contact ? "Edit contact" : "Create contact";
     submitButton.textContent = contact ? "Save changes" : "Create contact";
-    dialogDescription.textContent = contact ? "Update contact details and labels." : "Keep contact details and conversations together. Saved only in this browser.";
+    dialogDescription.textContent = contact ? "Update contact details and labels." : "Keep contact details and conversations together in this workspace.";
     dialogClose.setAttribute("aria-label", contact ? "Close edit contact" : "Close create contact");
     additional.hidden = Boolean(contact);
     editFields.hidden = !contact;
@@ -412,8 +426,9 @@
   function openCreateContact() { if (dialog) prepareDialog(null); }
   function openEditContact(id) { const contact = contacts().find(candidate => candidate.id === id); if (dialog && contact) prepareDialog(contact); }
   function formError(message, input) { errorMessage.textContent = message; errorMessage.hidden = false; input?.focus(); }
-  function saveContact(event) {
+  async function saveContact(event) {
     event.preventDefault();
+    if (savingContact) return;
     const data = new FormData(form), get = name => String(data.get(name) || "").trim();
     const editing = editingContactId !== null, original = editing ? contacts().find(contact => contact.id === editingContactId) : null;
     if (editing && !original) { formError("This contact is no longer available. Close this dialog and reopen the contacts list."); return; }
@@ -444,20 +459,30 @@
       if (labels.length > 10 || labels.some(label => label.length > 40)) { formError("Use up to 10 labels, with 40 characters or fewer per label.", form.elements.namedItem("labels")); return; }
     }
     if (contacts().some(contact => contact.id !== original?.id && contact.phone === phone)) { formError("A contact with this phone number already exists.", form.elements.namedItem("phone")); return; }
-    if (storageWarning) { formError("Browser storage is unavailable or saved contact data could not be read. Your contact has not been saved."); return; }
-    if (!editing && localContacts.length >= MAX_CONTACTS) { formError("This browser has reached its limit of 500 contacts. Your contact has not been saved."); return; }
-    const contact = {...original, id: original?.id || `local-${crypto.randomUUID()}`, firstName, lastName, phone, email, address, website, company, createdAt, status: contactStatus, labels, demo: Boolean(original?.demo)};
-    const nextContacts = contact.demo ? localContacts : editing ? localContacts.map(current => current.id === contact.id ? contact : current) : [contact, ...localContacts];
-    const nextOverrides = contact.demo ? [...demoOverrides.filter(current => current.id !== contact.id), contact] : demoOverrides;
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({version: 1, contacts: nextContacts, ...(nextOverrides.length ? {demoOverrides: nextOverrides} : {})})); }
-    catch (_) { formError("Browser storage is unavailable or full. Your contact has not been saved. Allow site storage and try again."); return; }
-    localContacts = nextContacts;
-    demoOverrides = nextOverrides;
-    setSessions(lastSessions);
-    revision += 1;
-    successMessage = editing ? `${fullName(contact)} updated.` : `${fullName(contact)} created. Saved in this browser.`;
-    savedContactId = contact.id;
-    notifyContactsChanged();
+    if (!editing && localContacts.length >= MAX_CONTACTS) { formError("This workspace has reached its limit of 500 contacts. Your contact has not been saved."); return; }
+    const contact = {id: original?.id || draftContactId || `local-${crypto.randomUUID()}`, firstName, lastName, phone, email, address, website, company, createdAt, status: contactStatus, labels, demo: Boolean(original?.demo)};
+    savingContact = true;
+    submitButton.disabled = true;
+    submitButton.textContent = "Saving…";
+    form.inert = true;
+    form.setAttribute("aria-busy", "true");
+    errorMessage.hidden = true;
+    try {
+      if (!window.DashboardWorkspace) throw new Error("Workspace storage did not load. Reload the dashboard and try again.");
+      const saved = await window.DashboardWorkspace.saveContact(contact);
+      successMessage = editing ? `${fullName(saved)} updated.` : `${fullName(saved)} created. Saved to the workspace.`;
+      savedContactId = saved.id;
+      revision += 1;
+    } catch (failure) {
+      formError(`Could not confirm your contact was saved. ${failure.message || "Check your connection and try again."}`);
+      return;
+    } finally {
+      savingContact = false;
+      submitButton.disabled = false;
+      submitButton.textContent = editing ? "Save changes" : "Create contact";
+      form.inert = false;
+      form.removeAttribute("aria-busy");
+    }
     listFilter = "all";
     searchText = "";
     closeDialog();
@@ -482,22 +507,11 @@
   function initialize() {
     root = document.getElementById("contacts-view");
     if (!root) return;
-    readStorage();
     buildDialog();
-    notifyContactsChanged();
+    if (window.DashboardWorkspace) window.DashboardWorkspace.subscribe(applyWorkspace);
+    else applyWorkspace({error: "Workspace storage did not load. Reload the dashboard and try again."});
     render();
     window.addEventListener("hashchange", render);
-    window.addEventListener("storage", event => {
-      if ((event.storageArea && event.storageArea !== localStorage) || (event.key !== STORAGE_KEY && event.key !== null)) return;
-      localContacts = [];
-      demoOverrides = [];
-      storageWarning = "";
-      readStorage();
-      setSessions(lastSessions);
-      revision += 1;
-      notifyContactsChanged();
-      render();
-    });
   }
   window.DashboardCRM = {openCreateContact, openEditContact, render, setSessions, findContactByPhone};
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initialize, {once: true}); else initialize();

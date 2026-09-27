@@ -1,4 +1,4 @@
-"""Creation menu and local agent drafts; the fake never calls a provider or server."""
+"""Creation menu and shared agent drafts; mocked workspace calls never use the network."""
 
 import json
 from pathlib import Path
@@ -52,22 +52,48 @@ const document = {
 for (const id of ['header-actions', 'agents-view', 'nav-agents', 'page-title']) {
   const element = new Element(id === 'nav-agents' ? 'button' : 'div'); element.id = id; document.body.append(element);
 }
-let stored = null, failWrites = false, contactOpened = 0, navigated = 0, writes = 0;
+let failWrites = false, contactOpened = 0, navigated = 0, writes = 0, uuid = 0;
+let workspaceSnapshot = {version: 1, contacts: [], demoOverrides: [], agents: []};
+let workspaceError = '', importError = '', workspaceLoading = false, saveGate = null, canonicalName = null;
+const workspaceListeners = new Set(), saveAttempts = [];
+const clone = value => value === null ? null : JSON.parse(JSON.stringify(value));
+const crypto = {randomUUID: () => String(++uuid).padStart(8, '0') + '-1234-1234-1234-123456789abc'};
+const publishWorkspace = () => {
+  for (const listener of workspaceListeners) listener({snapshot: clone(workspaceSnapshot),
+    error: workspaceError, importError, loading: workspaceLoading});
+};
 const window = {
   listeners: {},
   addEventListener(type, listener) {(this.listeners[type] ||= []).push(listener);},
   dispatch(type, event = {}) {for (const listener of this.listeners[type] || []) listener(event);},
   localStorage: {
-    getItem: () => stored,
-    setItem: (key, value) => {if (failWrites) throw new Error('quota'); stored = value; writes++;}
+    getItem: () => {throw new Error('Toolbar must not read browser storage');},
+    setItem: () => {throw new Error('Toolbar must not write browser storage');}
   },
-  DashboardCRM: {openCreateContact: () => contactOpened++}
+  DashboardCRM: {openCreateContact: () => contactOpened++},
+  DashboardWorkspace: {
+    ready: Promise.resolve(workspaceSnapshot),
+    getSnapshot: () => clone(workspaceSnapshot),
+    subscribe(listener) {workspaceListeners.add(listener); publishWorkspace(); return () => workspaceListeners.delete(listener);},
+    async saveAgent(value) {
+      saveAttempts.push(clone(value));
+      if (saveGate) await saveGate;
+      if (failWrites) throw new Error('Workspace storage is unavailable. Check your connection and try again.');
+      writes++;
+      const saved = {...value, name: canonicalName || value.name};
+      workspaceSnapshot ||= {version: 1, contacts: [], demoOverrides: [], agents: []};
+      workspaceSnapshot.agents = [...workspaceSnapshot.agents.filter(item => item.id !== saved.id), saved];
+      workspaceError = ''; publishWorkspace();
+      return clone(saved);
+    }
+  }
 };
 document.getElementById('nav-agents').addEventListener('click', () => navigated++);
 const $ = id => document.getElementById(id);
 const text = element => element.textContent + element.children.map(text).join(' ');
 const menuItems = () => $('create-menu').querySelectorAll('[role="menuitem"]');
-const submit = () => $('create-agent-dialog').children[0].dispatch('submit');
+const tick = () => new Promise(resolve => setImmediate(resolve));
+const submit = async () => {$('create-agent-dialog').children[0].dispatch('submit'); await tick();};
 const call = (index, overrides = {}) => ({call_sid: 'CA' + String(index).padStart(32, '0'),
   status: 'live', started_at: '2026-09-26T20:00:00Z',
   call_detail: {caller_number: '+19415550101'}, ...overrides});
@@ -81,7 +107,8 @@ def run_toolbar(checks, *, before=""):
     if not node:
         pytest.skip("Node.js is needed for dashboard behavior tests")
     result = subprocess.run(
-        [node, "-e", HARNESS + before + "\n" + SCRIPT.read_text() + "\n" + checks],
+        [node, "-e", HARNESS + before + "\n" + SCRIPT.read_text()
+         + "\n(async () => {\n" + checks + "\n})().catch(error => {console.error(error); process.exitCode = 1;});"],
         capture_output=True, text=True, timeout=15,
     )
     assert result.returncode == 0, result.stderr
@@ -124,17 +151,18 @@ def test_agent_draft_validates_then_saves_text_without_executing_markup():
 $('create-button').click(); menuItems()[1].click();
 assert.equal($('create-agent-dialog').open, true);
 assert.equal(document.activeElement, $('agent-name'));
-$('agent-name').value = '    '; submit();
+$('agent-name').value = '    '; await submit();
 assert.equal(writes, 0);
 assert.equal($('create-agent-dialog').open, true);
 assert.match(text($('create-agent-dialog')), /Enter an agent name/);
 $('agent-name').value = ' <img src=x onerror=alert(1)> ';
-$('agent-outbound-prompt').value = '<script>bad()</script>'; submit();
+$('agent-outbound-prompt').value = '<script>bad()</script>'; await submit();
 assert.equal(writes, 1);
 assert.equal($('create-agent-dialog').open, false);
 assert.equal(navigated, 1);
 assert.equal(document.activeElement, $('page-title'));
-assert.equal(JSON.parse(stored)[0].name, '<img src=x onerror=alert(1)>');
+assert.equal(workspaceSnapshot.agents[0].name, '<img src=x onerror=alert(1)>');
+assert.match(workspaceSnapshot.agents[0].id, /^agent-/);
 assert.match(text($('agents-view')), /<img src=x onerror=alert\(1\)>/);
 assert.match(text($('agents-view')), /<script>bad\(\)<\/script>/);
 assert.match(text($('agents-view')), /Draft · not connected/);
@@ -147,41 +175,187 @@ def test_agent_draft_failure_keeps_form_and_unsaved_input():
 window.DashboardToolbar.openCreateAgent();
 $('agent-name').value = 'Admissions';
 $('agent-outbound-prompt').value = 'Hello.';
-failWrites = true; submit();
+failWrites = true; await submit();
 assert.equal(writes, 0);
-assert.equal(stored, null);
+assert.equal(workspaceSnapshot.agents.length, 0);
 assert.equal($('create-agent-dialog').open, true);
 assert.equal($('agent-name').value, 'Admissions');
 assert.equal(navigated, 0);
-assert.match(text($('create-agent-dialog')), /draft could not be saved/);
+assert.match(text($('create-agent-dialog')), /Workspace storage is unavailable/);
 assert.match(text($('agents-view')), /No agent drafts yet/);
 """)
 
 
-def test_unreadable_drafts_are_preserved_instead_of_overwritten():
+def test_unavailable_workspace_is_visible_and_does_not_claim_an_empty_list():
     run_toolbar(r"""
-assert.match(text($('agents-view')), /existing data has been preserved/);
+assert.match(text($('agents-view')), /Workspace storage is unavailable/);
+assert.doesNotMatch(text($('agents-view')), /No agent drafts yet/);
 window.DashboardToolbar.openCreateAgent();
-$('agent-name').value = 'Admissions'; submit();
+$('agent-name').value = 'Admissions'; await submit();
 assert.equal(writes, 0);
-assert.equal(stored, '{broken');
+assert.equal(workspaceSnapshot, null);
 assert.equal($('create-agent-dialog').open, true);
-assert.match(text($('create-agent-dialog')), /No changes were made/);
-""", before="stored = '{broken';")
+assert.match(text($('create-agent-dialog')), /Workspace storage is unavailable/);
+""", before="workspaceSnapshot = null; workspaceError = 'Workspace storage is unavailable.'; failWrites = true;")
 
 
 def test_agent_drafts_reload_and_cancel_returns_to_create_trigger():
-    drafts = [{"name": "Admissions", "prompt": "Hello from New College.", "createdAt": "2026-09-26T20:00:00Z"}]
+    drafts = [{"id": "agent-12345678", "name": "Admissions", "prompt": "Hello from New College.", "createdAt": "2026-09-26T20:00:00Z"}]
     run_toolbar(r"""
 assert.match(text($('agents-view')), /Admissions/);
 assert.match(text($('agents-view')), /Hello from New College/);
-assert.match(text($('agents-view')), /browser only/);
+assert.match(text($('agents-view')), /shared across this workspace/);
+assert.doesNotMatch(text($('agents-view')), /browser only/);
 $('create-button').click(); menuItems()[1].click();
 $('create-agent-close').click();
 assert.equal($('create-agent-dialog').open, false);
 assert.equal(document.activeElement, $('create-button'));
 assert.equal(writes, 0);
-""", before="stored = " + json.dumps(json.dumps(drafts)) + ";")
+""", before="workspaceSnapshot.agents = " + json.dumps(drafts) + ";")
+
+
+def test_pending_save_blocks_duplicate_submits_and_preserves_its_dialog():
+    run_toolbar(r"""
+let release;
+saveGate = new Promise(resolve => {release = resolve;});
+window.DashboardToolbar.openCreateAgent();
+$('agent-name').value = 'Admissions';
+$('agent-outbound-prompt').value = 'Hello.';
+await submit();
+const form = $('create-agent-dialog').children[0];
+assert.equal(form.getAttribute('aria-busy'), 'true');
+assert.equal($('agent-name').disabled, true);
+assert.equal($('agent-outbound-prompt').disabled, true);
+assert.equal($('create-agent-close').disabled, true);
+assert.equal(form.all().find(element => element.type === 'submit').disabled, true);
+assert.equal(saveAttempts.length, 1);
+assert.equal(writes, 0);
+assert.equal(navigated, 0);
+await submit();
+window.DashboardToolbar.openCreateAgent();
+assert.equal($('agent-name').value, 'Admissions');
+$('create-agent-close').click();
+assert.equal($('create-agent-dialog').open, true);
+const escape = $('create-agent-dialog').dispatch('cancel');
+assert.equal(escape.defaultPrevented, true);
+assert.equal(saveAttempts.length, 1);
+release(); await tick();
+assert.equal(writes, 1);
+assert.equal(navigated, 1);
+assert.equal(form.getAttribute('aria-busy'), 'false');
+assert.equal($('agent-name').disabled, false);
+assert.equal($('create-agent-dialog').open, false);
+""")
+
+
+def test_failed_save_retries_the_same_identity_without_duplicate_drafts():
+    run_toolbar(r"""
+window.DashboardToolbar.openCreateAgent();
+$('agent-name').value = 'Admissions';
+$('agent-outbound-prompt').value = 'Original prompt.';
+failWrites = true; await submit();
+assert.equal($('create-agent-dialog').open, true);
+assert.equal($('agent-name').disabled, false);
+assert.equal(navigated, 0);
+assert.doesNotMatch(text(document.body), /Agent draft saved to the workspace/);
+const firstAttempt = saveAttempts[0];
+$('agent-outbound-prompt').value = 'Revised prompt.';
+failWrites = false; await submit();
+assert.equal(saveAttempts.length, 2);
+assert.equal(saveAttempts[1].id, firstAttempt.id);
+assert.equal(saveAttempts[1].createdAt, firstAttempt.createdAt);
+assert.equal(saveAttempts[1].prompt, 'Revised prompt.');
+assert.equal(workspaceSnapshot.agents.length, 1);
+assert.equal(workspaceSnapshot.agents[0].id, firstAttempt.id);
+assert.equal(navigated, 1);
+assert.match(text(document.body), /Agent draft saved to the workspace/);
+window.DashboardToolbar.openCreateAgent();
+$('agent-name').value = 'Another draft'; await submit();
+assert.notEqual(saveAttempts[2].id, firstAttempt.id);
+""")
+
+
+def test_workspace_publications_and_server_normalization_drive_the_rendered_list():
+    run_toolbar(r"""
+workspaceSnapshot.agents = [{id: 'agent-remote123', name: 'Created on another computer', prompt: 'Shared prompt.'}];
+publishWorkspace();
+assert.match(text($('agents-view')), /Created on another computer/);
+assert.match(text($('agents-view')), /Shared prompt/);
+canonicalName = 'Canonical server name';
+window.DashboardToolbar.openCreateAgent();
+$('agent-name').value = 'Input name'; await submit();
+assert.match(text($('agents-view')), /Canonical server name/);
+assert.doesNotMatch(text($('agents-view')), /Input name/);
+assert.equal(workspaceSnapshot.agents.length, 2);
+workspaceSnapshot.agents = [];
+publishWorkspace();
+assert.match(text($('agents-view')), /No agent drafts yet/);
+assert.doesNotMatch(text($('agents-view')), /Canonical server name/);
+""")
+
+
+def test_loading_then_failed_refresh_preserves_last_shared_snapshot():
+    run_toolbar(r"""
+assert.match(text($('agents-view')), /Loading workspace agents/);
+assert.doesNotMatch(text($('agents-view')), /No agent drafts yet/);
+workspaceLoading = false;
+workspaceSnapshot = {version:1, contacts:[], demoOverrides:[], agents:[{id:'agent-loaded123', name:'Shared agent', prompt:'Hello.'}]};
+publishWorkspace();
+assert.match(text($('agents-view')), /Shared agent/);
+workspaceError = 'Workspace storage is unavailable.';
+publishWorkspace();
+assert.match(text($('agents-view')), /Shared agent/);
+assert.match(text($('agents-view')), /Workspace storage is unavailable/);
+""", before="workspaceSnapshot = null; workspaceLoading = true;")
+
+
+def test_import_warning_does_not_overwrite_shared_records_or_block_new_saves():
+    run_toolbar(r"""
+assert.match(text($('agents-view')), /Browser backup could not be imported/);
+window.DashboardToolbar.openCreateAgent();
+$('agent-name').value = 'Shared new agent'; await submit();
+assert.equal(writes, 1);
+assert.match(text($('agents-view')), /Shared new agent/);
+assert.match(text($('agents-view')), /Browser backup could not be imported/);
+""", before="importError = 'Browser backup could not be imported; it has been preserved.';")
+
+
+def test_workspace_agent_limit_prevents_an_extra_save_without_losing_input():
+    run_toolbar(r"""
+window.DashboardToolbar.openCreateAgent();
+$('agent-name').value = 'One more'; await submit();
+assert.equal(saveAttempts.length, 0);
+assert.equal($('create-agent-dialog').open, true);
+assert.equal($('agent-name').value, 'One more');
+assert.match(text($('create-agent-dialog')), /workspace already has 50 agent drafts/);
+""", before="workspaceSnapshot.agents = Array.from({length:50}, (_,i) => ({id:'agent-'+String(i).padStart(8,'0'),name:'Agent '+i,prompt:''}));")
+
+
+def test_missing_workspace_service_fails_visibly_without_breaking_the_toolbar():
+    run_toolbar(r"""
+assert.match(text($('agents-view')), /Workspace storage is unavailable/);
+window.DashboardToolbar.openCreateAgent();
+$('agent-name').value = 'Admissions'; await submit();
+assert.equal(saveAttempts.length, 0);
+assert.equal($('create-agent-dialog').open, true);
+assert.match(text($('create-agent-dialog')), /Workspace storage is unavailable/);
+$('create-agent-close').click();
+window.DashboardToolbar.setSessions([call(1)]);
+assert.equal($('notification-count').textContent, '1');
+""", before="delete window.DashboardWorkspace;")
+
+
+def test_overlength_agent_fields_are_rejected_before_a_request():
+    run_toolbar(r"""
+window.DashboardToolbar.openCreateAgent();
+$('agent-name').value = 'x'.repeat(81); await submit();
+assert.equal(saveAttempts.length, 0);
+$('agent-name').value = 'Valid';
+$('agent-outbound-prompt').value = 'x'.repeat(8001); await submit();
+assert.equal(saveAttempts.length, 0);
+assert.equal($('create-agent-dialog').open, true);
+assert.match(text($('create-agent-dialog')), /80 characters/);
+""")
 
 
 def test_live_call_notifications_count_deduplicate_and_ignore_completed_history():

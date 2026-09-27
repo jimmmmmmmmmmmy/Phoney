@@ -1,7 +1,6 @@
 (() => {
   "use strict";
 
-  const STORAGE_KEY = "hacking-banyons.agent-drafts.v1";
   const MAX_DRAFTS = 50;
   const MAX_NOTIFICATIONS = 20;
   const endedStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
@@ -28,7 +27,11 @@
   let storageNotice;
   let liveNotice;
   let drafts = [];
-  let storageReadFailed = false;
+  let workspaceLoaded = false;
+  let workspaceLoading = true;
+  let workspaceNotice = "";
+  let draftSaving = false;
+  let draftIdentity = null;
   let notificationsButton;
   let notificationPopup;
   let notificationBadge;
@@ -189,20 +192,25 @@
     renderNotifications();
   }
 
-  function readDrafts() {
-    try {
-      const stored = window.localStorage.getItem(STORAGE_KEY);
-      const parsed = stored ? JSON.parse(stored) : [];
-      if (!Array.isArray(parsed) || parsed.length > MAX_DRAFTS || parsed.some(item => !item || typeof item.name !== "string" || typeof item.prompt !== "string" || !item.name.trim() || item.name.length > 80 || item.prompt.length > 8000)) throw new Error("invalid drafts");
-      drafts = parsed.map(item => ({name: item.name, prompt: item.prompt, createdAt: typeof item.createdAt === "string" ? item.createdAt : ""}));
-    } catch (_) {
-      storageReadFailed = true;
+  function workspaceChanged({snapshot, error, importError, loading}) {
+    workspaceLoading = loading === true;
+    workspaceNotice = [error, importError].filter(Boolean).join(" ");
+    if (snapshot && Array.isArray(snapshot.agents)) {
+      drafts = snapshot.agents;
+      workspaceLoaded = true;
     }
+    renderDrafts();
   }
 
   function renderDrafts() {
     draftList.replaceChildren();
-    storageNotice.hidden = !storageReadFailed;
+    storageNotice.textContent = workspaceNotice;
+    storageNotice.hidden = !workspaceNotice;
+    if (!workspaceLoaded) {
+      draftList.append(node("p", "agent-drafts-empty", workspaceLoading
+        ? "Loading workspace agents…" : "Workspace agents are unavailable. Reload or retry saving when the connection returns."));
+      return;
+    }
     if (!drafts.length) {
       const empty = node("div", "agent-drafts-empty");
       empty.append(node("h3", "", "No agent drafts yet"), node("p", "", "Save a name and outbound prompt to prepare your first agent."));
@@ -227,8 +235,8 @@
     create.prepend(icon("plus"));
     create.addEventListener("click", openCreateAgent);
     top.append(intro, create);
-    const note = node("p", "agent-local-note", "Drafts are saved in this browser only. Provider connections and calling will be added later.");
-    storageNotice = node("p", "toolbar-error", "Saved agent drafts could not be read. Browser storage is unavailable or contains unsupported data; existing data has been preserved.");
+    const note = node("p", "agent-local-note", "Drafts are shared across this workspace. Provider connections and calling will be added later.");
+    storageNotice = node("p", "toolbar-error");
     storageNotice.setAttribute("role", "status");
     draftList = node("div", "agent-draft-list");
     draftList.setAttribute("aria-label", "Agent drafts");
@@ -250,10 +258,12 @@
 
   function openCreateAgent() {
     if (!initialized) init();
-    if (!draftDialog) return;
+    if (!draftDialog || draftSaving) return;
+    if (draftDialog.open) { draftName.focus(); return; }
     previousFocus = activeTrigger || document.activeElement;
     closePopover();
     draftForm.reset();
+    draftIdentity = null;
     draftError.hidden = true;
     draftError.textContent = "";
     if (!draftDialog.open) draftDialog.showModal();
@@ -270,9 +280,9 @@
     const title = node("h2", "", "Create agent");
     title.id = "create-agent-title";
     const close = iconButton("Close create agent", "close", "create-agent-close");
-    close.addEventListener("click", () => draftDialog.close());
+    close.addEventListener("click", () => { if (!draftSaving) draftDialog.close(); });
     heading.append(title, close);
-    const description = node("p", "toolbar-dialog-description", "Save a draft in this browser. Connect its voice provider later.");
+    const description = node("p", "toolbar-dialog-description", "Save an agent draft to the shared workspace. Connect its voice provider later.");
     description.id = "create-agent-description";
     const nameLabel = node("label", "toolbar-field", "Agent name");
     draftName = node("input");
@@ -297,7 +307,7 @@
     draftError.setAttribute("role", "alert");
     const actions = node("div", "toolbar-dialog-actions");
     const cancel = button("Cancel", "toolbar-secondary-button");
-    cancel.addEventListener("click", () => draftDialog.close());
+    cancel.addEventListener("click", () => { if (!draftSaving) draftDialog.close(); });
     const submit = button("Save draft", "toolbar-primary-button");
     submit.type = "submit";
     actions.append(cancel, submit);
@@ -307,36 +317,52 @@
     draftDialog.addEventListener("close", () => {
       if (previousFocus && previousFocus.isConnected) previousFocus.focus();
     });
-    draftForm.addEventListener("submit", event => {
+    draftDialog.addEventListener("cancel", event => { if (draftSaving) event.preventDefault(); });
+    function setPending(pending) {
+      draftSaving = pending;
+      for (const control of [draftName, draftPrompt, close, cancel, submit]) control.disabled = pending;
+      submit.textContent = pending ? "Saving…" : "Save draft";
+      draftForm.setAttribute("aria-busy", String(pending));
+    }
+    draftForm.addEventListener("submit", async event => {
       event.preventDefault();
+      if (draftSaving) return;
       draftError.hidden = true;
       const name = draftName.value.trim();
-      if (!name) {
-        draftError.textContent = "Enter an agent name.";
+      const prompt = draftPrompt.value.trim();
+      if (!name || name.length > 80 || prompt.length > 8000) {
+        draftError.textContent = !name ? "Enter an agent name." : "Use at most 80 characters for the name and 8,000 for the prompt.";
         draftError.hidden = false;
         draftName.focus();
         return;
       }
-      if (storageReadFailed || drafts.length >= MAX_DRAFTS) {
-        draftError.textContent = storageReadFailed ? "Agent drafts cannot be saved because browser storage could not be read. No changes were made." : "This browser already has 50 agent drafts. No changes were made.";
+      if (!window.DashboardWorkspace?.saveAgent || (drafts.length >= MAX_DRAFTS
+          && !drafts.some(draft => draft.id === draftIdentity?.id))) {
+        draftError.textContent = !window.DashboardWorkspace?.saveAgent
+          ? "Workspace storage is unavailable. Reload and try again."
+          : "This workspace already has 50 agent drafts.";
         draftError.hidden = false;
         return;
       }
-      const next = [...drafts, {name, prompt: draftPrompt.value.trim(), createdAt: new Date().toISOString()}];
+      setPending(true);
       try {
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      } catch (_) {
-        draftError.textContent = "The draft could not be saved. Allow browser storage or free some space, then try again.";
+        // Keep identity and creation time through retries after an ambiguous response.
+        draftIdentity ||= {id: `agent-${crypto.randomUUID()}`, createdAt: new Date().toISOString()};
+        await window.DashboardWorkspace.saveAgent({...draftIdentity, name, prompt});
+      } catch (failure) {
+        draftError.textContent = failure instanceof Error ? failure.message
+          : "Could not confirm the draft was saved. Check your connection and retry.";
         draftError.hidden = false;
         return;
+      } finally {
+        setPending(false);
       }
-      drafts = next;
-      renderDrafts();
+      // The workspace publishes its canonical snapshot before saveAgent resolves.
       draftDialog.close();
       document.getElementById("nav-agents").click();
       document.getElementById("page-title").focus({preventScroll: true});
       previousFocus = null;
-      liveNotice.textContent = "Agent draft saved in this browser. Provider connection is pending.";
+      liveNotice.textContent = "Agent draft saved to the workspace. Provider connection is pending.";
     });
   }
 
@@ -434,9 +460,10 @@
         closePopover(true);
       }
     });
-    readDrafts();
     renderAgents();
     buildAgentDialog();
+    if (window.DashboardWorkspace?.subscribe) window.DashboardWorkspace.subscribe(workspaceChanged);
+    else workspaceChanged({error: "Workspace storage is unavailable. Reload and try again.", loading: false});
   }
 
   window.DashboardToolbar = {init, openCreateAgent, setSessions};

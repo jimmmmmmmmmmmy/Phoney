@@ -180,7 +180,7 @@ const viewIds={calls:'dashboard-view',contacts:'contacts-view',agents:'agents-vi
 for(const page of ['contacts','agents','calls']){
  $('nav-'+page).events.click();
  assert.equal(state.page,page);
- assert.equal($('page-title').textContent,page==='calls'?'Call details':page[0].toUpperCase()+page.slice(1));
+ assert.equal($('page-title').textContent,page[0].toUpperCase()+page.slice(1));
  for(const name of Object.keys(viewIds)){
   assert.equal($(viewIds[name]).hidden,name!==page);
   assert.equal($('nav-'+name).attributes['aria-current'],name===page?'page':undefined);
@@ -194,7 +194,7 @@ for(const page of ['contacts','agents','calls']){
 ''')
 
 
-def test_internal_team_links_preserve_the_player_and_return_to_the_selected_call(tmp_path):
+def test_internal_team_links_preserve_the_player_and_return_to_the_calls_list(tmp_path):
     run_browser_logic(tmp_path, r'''
 state.snapshot=snapshot([session(),session(OTHER)],[recording(),recording(OTHER)]);render();openCall();
 const audio=$('call-audio');audio.play();audio.currentTime=37;
@@ -209,8 +209,9 @@ for(const id of ['team-brand','team-brand-mobile','team-footer']){
  assert.equal(audio.paused,false);assert.equal($('audio-panel').hidden,false);
  assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.plays,plays);
  $('nav-calls').events.click();
- assert.equal(state.page,'calls');assert.equal(state.detail,true);assert.equal(state.selected,SID);
- assert.equal($('team-view').hidden,true);assert.equal($('calls-detail').hidden,false);
+ assert.equal(state.page,'calls');assert.equal(state.detail,false);assert.equal(state.selected,SID);
+ assert.equal(location.hash,'#calls/recent');
+ assert.equal($('team-view').hidden,true);assert.equal($('calls-detail').hidden,true);
  assert.equal($('call-audio'),audio);assert.equal(audio.src,src);assert.equal(audio.currentTime,37);
  assert.equal(audio.paused,false);assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
  assert.equal(audio.plays,plays);

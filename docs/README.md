@@ -18,6 +18,7 @@ Open [BUILD_3.md](BUILD_3.md) to use the live transcript dashboard. Partners can
 | --- | --- |
 | Unanswered-call message recording and provider-free next tasks | [Voicemail](VOICEMAIL.md) |
 | Current transcript/recorded-audio dashboard and acceptance | [Build 3](BUILD_3.md) |
+| Contacts and agent drafts across tunnel URLs | [Workspace persistence](WORKSPACE_STORAGE.md) |
 | Telephone audio quality and higher-rate options | [Audio quality / VoIP](AUDIO_QUALITY.md) |
 | Recording and capture acceptance | [Build 2](BUILD_2.md) |
 | Human-to-human conference | [Build 1](BUILD_1.md) |

@@ -1,4 +1,4 @@
-"""Contact editing, categories, caller matching, and browser-local persistence."""
+"""Contact editing, categories, caller matching, and server workspace persistence."""
 
 from pathlib import Path
 import shutil
@@ -33,7 +33,7 @@ class Element {
   dispatch(type, event = {}) {
     event.target ||= this;
     event.preventDefault ||= () => {event.defaultPrevented = true;};
-    for (const listener of this.listeners[type] || []) listener(event);
+    event.pending = Promise.all((this.listeners[type] || []).map(listener => listener(event)));
     return event;
   }
   click() {this.dispatch('click');}
@@ -75,7 +75,33 @@ const STORAGE_KEY = 'hacking-banyons.contacts.v1';
 const CONTACT = {id: 'local-12345678', firstName: '  Avery ', lastName: ' Chen ', phone: '+16562520233',
   email: 'avery@example.com', address: '', website: '', createdAt: '2026-09-26T17:00:00Z'};
 const storeContacts = contacts => {stored = JSON.stringify({version: 1, contacts});};
-const changeStorage = (key = STORAGE_KEY, storageArea = localStorage) => window.dispatchEvent({type: 'storage', key, storageArea});
+const workspaceListeners = new Set();
+function workspaceState() {
+ try {
+  const value=stored ? JSON.parse(stored) : {version:1,contacts:[]};
+  if (!value || !Array.isArray(value.contacts)) throw new Error('invalid');
+  return {snapshot:{demoOverrides:[],agents:[],...value},error:'',loading:false};
+ } catch (_) {return {snapshot:null,error:'Workspace contacts could not be read. Reload and try again.',loading:false};}
+}
+function changeStorage(key=STORAGE_KEY,storageArea=localStorage) {
+ if ((key!==STORAGE_KEY && key!==null) || storageArea!==localStorage) return;
+ for (const listener of workspaceListeners) listener(workspaceState());
+}
+let saveGate=null;
+window.DashboardWorkspace={
+ subscribe(listener) {workspaceListeners.add(listener);listener(workspaceState());return()=>workspaceListeners.delete(listener);},
+ async saveContact(contact) {
+  if(saveGate) await saveGate;
+  if(failWrites) throw new Error('Workspace storage is unavailable. Check your connection and try again.');
+  const data=workspaceState().snapshot;
+  if(!data) throw new Error('Workspace contacts could not be read. Reload and try again.');
+  const key=contact.demo?'demoOverrides':'contacts';
+  data[key]=data[key].some(item=>item.id===contact.id)
+   ? data[key].map(item=>item.id===contact.id?contact:item) : [contact,...data[key]];
+  stored=JSON.stringify(data);writes++;
+  changeStorage();return {...contact};
+ }
+};
 const notifications = [];
 window.addEventListener('dashboard-contacts-changed', event => notifications.push({
   event, caller: window.DashboardCRM.findContactByPhone(CONTACT.phone),
@@ -83,7 +109,7 @@ window.addEventListener('dashboard-contacts-changed', event => notifications.pus
 }));
 const $ = id => document.getElementById(id);
 const text = element => element.textContent + element.children.map(text).join(' ');
-const submit = () => $('crm-create-contact').children[0].dispatch('submit');
+const submit = async () => await $('crm-create-contact').children[0].dispatch('submit').pending;
 const byRole = role => contactRoot.all().filter(element => element.getAttribute('role') === role);
 const tabs = () => byRole('tab');
 const tab = label => tabs().find(element => text(element).trim() === label);
@@ -115,7 +141,7 @@ def run_crm(checks, *, before=""):
     if not node:
         pytest.skip("Node.js is needed for dashboard behavior tests")
     result = subprocess.run(
-        [node, "-e", HARNESS + before + "\n" + SCRIPT.read_text() + "\n" + checks],
+        [node, "-e", HARNESS + before + "\n" + SCRIPT.read_text() + "\n(async()=>{\n" + checks + "\n})().catch(error=>{console.error(error);process.exitCode=1;});"],
         capture_output=True, text=True, timeout=15,
     )
     assert result.returncode == 0, result.stderr
@@ -157,12 +183,12 @@ def test_created_contact_is_visible_to_callers_only_after_successful_save():
 window.DashboardCRM.openCreateContact();
 $('crm-firstName').value = 'Avery'; $('crm-lastName').value = 'Chen';
 $('crm-phone').value = '+1 (656) 252-0233';
-failWrites = true; submit();
+failWrites = true; await submit();
 assert.equal(notifications.length, 1);
 assert.equal(window.DashboardCRM.findContactByPhone(CONTACT.phone), null);
 assert.equal($('crm-create-contact').open, true);
-assert.match(text($('crm-create-contact')), /has not been saved/);
-failWrites = false; submit();
+assert.match(text($('crm-create-contact')), /Could not confirm your contact was saved/);
+failWrites = false; await submit();
 assert.equal(writes, 1);
 assert.equal(notifications.length, 2);
 assert.equal(notifications[1].caller.name, 'Avery Chen');
@@ -171,7 +197,7 @@ assert.equal($('crm-create-contact').open, false);
 assert.match(window.location.hash, /^contacts\/local-/);
 window.DashboardCRM.openCreateContact();
 $('crm-firstName').value = 'Duplicate'; $('crm-lastName').value = 'Person';
-$('crm-phone').value = CONTACT.phone; submit();
+$('crm-phone').value = CONTACT.phone; await submit();
 assert.equal(writes, 1); assert.equal(notifications.length, 2);
 assert.match(text($('crm-create-contact')), /already exists/);
 """)
@@ -199,18 +225,18 @@ assert.equal(writes, 0);
 """)
 
 
-def test_invalid_stored_contacts_cannot_supply_stale_caller_names():
+def test_unavailable_workspace_preserves_last_loaded_contacts_and_blocks_false_save_success():
     run_crm(r"""
 assert.equal(window.DashboardCRM.findContactByPhone(CONTACT.phone).name, 'Avery Chen');
 stored = '{broken'; changeStorage();
-assert.equal(notifications.at(-1).caller, null);
-assert.equal(window.DashboardCRM.findContactByPhone(CONTACT.phone), null);
+assert.equal(window.DashboardCRM.findContactByPhone(CONTACT.phone).name, 'Avery Chen');
 window.DashboardCRM.openCreateContact();
-$('crm-firstName').value = 'Avery'; $('crm-lastName').value = 'Chen'; $('crm-phone').value = CONTACT.phone;
-submit();
+$('crm-firstName').value = 'New'; $('crm-lastName').value = 'Person'; $('crm-phone').value = '+19415550888';
+await submit();
 assert.equal(writes, 0); assert.equal(stored, '{broken');
 assert.match(text($('crm-create-contact')), /could not be read/);
-assert.equal(window.DashboardCRM.findContactByPhone('+19415550101').name, 'Alex Morgan');
+assert.equal($('crm-create-contact').open,true);
+assert.equal(window.DashboardCRM.findContactByPhone('+19415550888'),null);
 """, before="storeContacts([CONTACT]);")
 
 
@@ -365,7 +391,7 @@ const newPhone = '+16562520999';
 for (const [key, value] of Object.entries({firstName: ' Avery Updated ', lastName: ' Lee ', phone: '+1 (656) 252-0999',
   email: 'avery.lee@example.com', address: '123 Example Lane', website: 'https://example.com/avery',
   company: 'Example Legal', createdAt: '2026-08-12', status: 'Active', labels: 'Legal, Customers'})) $('crm-' + key).value = value;
-submit();
+await submit();
 assert.equal(writes, 1);
 assert.equal($('crm-create-contact').open, false);
 assert.equal(notifications.length, 2);
@@ -407,7 +433,7 @@ def test_edit_allows_unchanged_phone_and_preserves_original_creation_timestamp()
     run_crm(r"""
 editContact();
 $('crm-firstName').value = 'Renamed';
-submit();
+await submit();
 assert.equal(writes, 1);
 const saved = JSON.parse(stored).contacts[0];
 assert.equal(saved.id, CONTACT.id);
@@ -417,7 +443,7 @@ assert.equal(notifications.at(-1).caller.name, 'Renamed Chen');
 navigate('#contacts/' + CONTACT.id);
 editContact();
 $('crm-phone').value = '+1 (941) 555-0101';
-submit();
+await submit();
 assert.equal(writes, 1);
 assert.equal(notifications.length, 2);
 assert.equal($('crm-create-contact').open, true);
@@ -444,7 +470,7 @@ for (const [key, value] of [['firstName', ''], ['phone', '6562520233'], ['websit
   ['status', 'Not a status'], ['labels', 'a'.repeat(41)], ['labels', Array.from({length: 11}, (_, index) => 'Label ' + index).join(', ')]]) {
   const input = $('crm-' + key), previous = input.value;
   input.value = value;
-  submit();
+  await submit();
   assert.equal(writes, 0, key + ' validation blocks writes');
   assert.equal(notifications.length, 1, key + ' validation does not notify');
   assert.equal(stored, original);
@@ -452,16 +478,16 @@ for (const [key, value] of [['firstName', ''], ['phone', '6562520233'], ['websit
   input.value = previous;
 }
 const email = $('crm-email');
-email.value = 'invalid-email'; email.validity.valid = false; submit();
+email.value = 'invalid-email'; email.validity.valid = false; await submit();
 assert.equal(writes, 0); email.value = CONTACT.email; email.validity.valid = true;
 $('crm-firstName').value = 'Unsaved';
 failWrites = true;
-submit();
+await submit();
 assert.equal(writes, 0);
 assert.equal(notifications.length, 1);
 assert.equal(stored, original);
 assert.equal($('crm-create-contact').open, true);
-assert.match(text($('crm-create-contact')), /has not been saved/);
+assert.match(text($('crm-create-contact')), /Could not confirm your contact was saved/);
 assert.equal(window.DashboardCRM.findContactByPhone(CONTACT.phone).name, 'Avery Chen');
 dialogButton('Cancel').click();
 editContact();
@@ -479,7 +505,7 @@ $('crm-firstName').value = 'Alex Updated';
 $('crm-phone').value = changedPhone;
 $('crm-status').value = 'Active';
 $('crm-labels').value = 'Legal';
-submit();
+await submit();
 assert.equal(writes, 1);
 const data = JSON.parse(stored);
 assert.equal(data.contacts.length, 1);
@@ -511,10 +537,44 @@ assert.deepEqual(names(), []);
 assert.equal(writes, 1);
 window.DashboardCRM.openCreateContact();
 $('crm-firstName').value = 'New'; $('crm-lastName').value = 'Person'; $('crm-phone').value = '+19415550888';
-submit();
+await submit();
 assert.equal(writes, 2);
 assert.equal(JSON.parse(stored).contacts.length, 2);
 assert.equal(JSON.parse(stored).demoOverrides.length, 1);
 changeStorage();
 assert.equal(window.DashboardCRM.findContactByPhone(changedPhone).name, 'Alex Updated Morgan');
 """, before="window.location.hash = '#contacts/demo-alex-morgan'; storeContacts([CONTACT]);")
+
+
+def test_pending_save_disables_form_and_ignores_duplicate_submit():
+    run_crm(r"""
+window.DashboardCRM.openCreateContact();
+$('crm-firstName').value='Avery';$('crm-lastName').value='Chen';$('crm-phone').value=CONTACT.phone;
+let release;saveGate=new Promise(resolve=>release=resolve);
+const pending=submit();await Promise.resolve();
+const form=$('crm-create-contact').children[0];
+assert.equal(form.inert,true);assert.equal(form.getAttribute('aria-busy'),'true');
+assert.equal(dialogButton('Saving…').disabled,true);
+await submit();assert.equal(writes,0);
+dialogButton('Cancel').click();assert.equal($('crm-create-contact').open,true);
+release();await pending;
+assert.equal(writes,1);assert.equal(form.inert,false);assert.equal(form.getAttribute('aria-busy'),null);
+assert.equal($('crm-create-contact').open,false);
+assert.equal(window.DashboardCRM.findContactByPhone(CONTACT.phone).name,'Avery Chen');
+""")
+
+
+def test_retry_reuses_contact_id_and_late_server_load_matches_existing_calls():
+    run_crm(r"""
+const call={call_sid:'CA'+'a'.repeat(32),status:'completed',ended_at:'2026-09-26T18:00:00Z',
+ call_detail:{caller_number:CONTACT.phone,started_at:'2026-09-26T17:00:00Z',duration_seconds:42}};
+window.DashboardCRM.setSessions([call]);
+const ids=[],save=window.DashboardWorkspace.saveContact;
+window.DashboardWorkspace.saveContact=async contact=>{ids.push(contact.id);return save(contact);};
+window.DashboardCRM.openCreateContact();
+$('crm-firstName').value='Avery';$('crm-lastName').value='Chen';$('crm-phone').value=CONTACT.phone;
+failWrites=true;await submit();failWrites=false;await submit();
+assert.equal(ids.length,2);assert.equal(ids[0],ids[1]);
+navigate('#contacts/'+ids[0]);
+assert.match(text(contactRoot),/42s/);assert.match(text(contactRoot),/Call conversation/);
+""")

@@ -22,6 +22,7 @@ from media_capture import CaptureManager
 from media_capture.playback import RecordingLibrary
 from transcription import TranscriptionManager
 from dashboard import register_dashboard
+from workspace_store import WorkspaceStore
 from voicemail import VoicemailStore
 from call_details import CallDetailsStore
 from summaries import SummaryManager
@@ -61,6 +62,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     call_details = CallDetailsStore(settings.call_details_storage_dir)
     operator = OperatorSessions(settings)
     detection_store = DetectionStore(settings.detection_storage_dir)
+    workspace_store = WorkspaceStore(settings.workspace_storage_dir)
     detection_writes: set[asyncio.Task] = set()
     detection_last_write: dict[str, asyncio.Task] = {}
 
@@ -151,6 +153,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     app.state.transcription = transcription
     app.state.live_detection = live_detection
     app.state.detection_store = detection_store
+    app.state.workspace_store = workspace_store
     app.state.detection_backfill = detection_backfill
     app.state.detection_writes = detection_writes
     app.state.voicemails = voicemails
@@ -159,7 +162,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     app.state.summaries = summaries
     register_dashboard(app, settings, transcription, voicemail_store=voicemails,
                        recording_library=recordings, call_details_store=call_details,
-                       detection_store=detection_store)
+                       detection_store=detection_store, workspace_store=workspace_store)
     # ``main`` passes the voice layer's settings when the operator may speak;
     # without them the keypad still parses and the bridge stays human relay.
     register_operator_routes(app, settings, operator, dialer=operator_dialer,

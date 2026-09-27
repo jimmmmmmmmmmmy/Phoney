@@ -8,6 +8,7 @@ from test_dashboard_playback_ui import run_browser_logic
 
 
 WORKSPACE_ASSETS = {
+    "/assets/dashboard-workspace.js": "javascript",
     "/assets/dashboard-crm.js": "javascript",
     "/assets/dashboard-crm.css": "text/css",
     "/assets/dashboard-toolbar.js": "javascript",
@@ -35,6 +36,8 @@ def test_workspace_assets_load_under_the_dashboard_content_security_policy():
         parsed = WorkspaceAssets()
         parsed.feed(dashboard.text)
         assert set(WORKSPACE_ASSETS) <= set(parsed.scripts + parsed.styles)
+        assert parsed.scripts.index("/assets/dashboard-workspace.js") < parsed.scripts.index("/assets/dashboard-crm.js")
+        assert parsed.scripts.index("/assets/dashboard-workspace.js") < parsed.scripts.index("/assets/dashboard-toolbar.js")
         policy = dict(part.strip().split(" ", 1)
                       for part in dashboard.headers["content-security-policy"].split(";")
                       if part.strip())
@@ -140,4 +143,29 @@ window.DashboardCalls.openCall(SID);
 assert.equal(state.page,'calls');assert.equal(state.detail,true);
 assert.equal($('audio-panel').hidden,false);assert.equal(audio.paused,true);
 assert.equal(audio.currentTime,19);assert.equal(audio.plays,plays);assert.equal(audio.loads,loads);
+''')
+
+
+def test_calls_sidebar_opens_unfiltered_recent_calls_without_interrupting_playback(tmp_path):
+    run_browser_logic(tmp_path, r'''
+const caller='+16562520233';
+const call={...session(),call_details:{caller_number:caller}};
+state.snapshot=snapshot([call,session(OTHER)],[recording(),recording(OTHER)]);render();openCall();
+const audio=$('call-audio');audio.play();audio.currentTime=19;
+const source=audio.src,loads=audio.loads,pauses=audio.pauses,plays=audio.plays;
+for(const start of ['detail','filtered','voicemail','contacts']){
+ state.callerFilter=caller;
+ showCollection(start==='voicemail'?'voicemail':'recent');
+ if(start==='detail')openCall();
+ if(start==='contacts')showPage('contacts');
+ $('nav-calls').events.click();
+ assert.equal(location.hash,'#calls/recent');
+ assert.equal(state.page,'calls');assert.equal(state.collection,'recent');
+ assert.equal(state.detail,false);assert.equal(state.callerFilter,'');
+ assert.equal($('recent-panel').hidden,false);assert.equal($('calls-detail').hidden,true);
+ assert.equal($('call-list').children.length,2);
+ assert.equal(audio.src,source);assert.equal(audio.currentTime,19);assert.equal(audio.paused,false);
+ assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);assert.equal(audio.plays,plays);
+ assert.equal($('audio-return').hidden,false);
+}
 ''')

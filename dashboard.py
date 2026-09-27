@@ -1,14 +1,18 @@
-"""Public, read-only transcript views; provider credentials stay server-side."""
+"""Public dashboard views and shared workspace; credentials stay server-side."""
 
 import base64
 import asyncio
 from copy import deepcopy
 import hashlib
+import json
 from pathlib import Path
 import re
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+
+from workspace_store import WorkspaceError
 
 
 SAFE_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
@@ -18,11 +22,25 @@ PUBLIC_DIRECTORY = Path(__file__).parent / "public"
 RESUME_FILES = frozenset({"james-liu.pdf", "gerry-jones.pdf", "muhammed-altindal.pdf",
                           "shane-mccarthy.pdf"})
 WORKSPACE_ASSETS = {
+    "dashboard-workspace.js": "text/javascript",
     "dashboard-crm.js": "text/javascript",
     "dashboard-crm.css": "text/css",
     "dashboard-toolbar.js": "text/javascript",
     "dashboard-toolbar.css": "text/css",
 }
+MAX_WORKSPACE_BODY_BYTES = 2 * 1024 * 1024
+
+
+def _workspace_origin(value):
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username or parsed.password or parsed.path not in {"", "/"}
+                or parsed.query or parsed.fragment or any(c.isspace() for c in value)):
+            return None
+        return parsed.scheme, parsed.hostname.lower(), parsed.port or (443 if parsed.scheme == "https" else 80)
+    except (ValueError, TypeError):
+        return None
 
 
 def html_page(filename):
@@ -44,8 +62,77 @@ def html_page(filename):
 
 
 def register_dashboard(app, settings, manager, voicemail_store=None, recording_library=None,
-                       call_details_store=None, detection_store=None):
+                       call_details_store=None, detection_store=None, workspace_store=None):
     """Attach a URL-accessible viewer and API without call-control capabilities."""
+    async def workspace_payload(request):
+        origins = request.headers.getlist("origin")
+        allowed = {_workspace_origin(settings.public_base_url), _workspace_origin(str(request.base_url))}
+        allowed.discard(None)
+        if (len(origins) != 1 or _workspace_origin(origins[0]) not in allowed
+                or request.headers.getlist("x-workspace-request") != ["1"]):
+            raise HTTPException(403, "Workspace changes must come from this dashboard.", headers=SAFE_HEADERS)
+        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+            raise HTTPException(415, "Use application/json for workspace changes.", headers=SAFE_HEADERS)
+        length = request.headers.get("content-length")
+        if length is not None:
+            if not length.isascii() or not length.isdecimal():
+                raise HTTPException(400, "Invalid request length.", headers=SAFE_HEADERS)
+            if len(length) > 10 or int(length) > MAX_WORKSPACE_BODY_BYTES:
+                raise HTTPException(413, "Workspace request is too large.", headers=SAFE_HEADERS)
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > MAX_WORKSPACE_BODY_BYTES:
+                raise HTTPException(413, "Workspace request is too large.", headers=SAFE_HEADERS)
+            body.extend(chunk)
+
+        def unique_object(items):
+            result = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError("Duplicate JSON key")
+                result[key] = value
+            return result
+
+        def invalid_constant(value):
+            raise ValueError("Invalid JSON value")
+
+        try:
+            payload = json.loads(body.decode("utf-8"), object_pairs_hook=unique_object,
+                                 parse_constant=invalid_constant)
+            if not isinstance(payload, dict):
+                raise ValueError
+            return payload
+        except (ValueError, UnicodeError, RecursionError):
+            raise HTTPException(400, "Enter a valid JSON object.", headers=SAFE_HEADERS) from None
+
+    async def workspace_operation(method, *args):
+        if workspace_store is None:
+            raise HTTPException(503, "Shared workspace storage is disabled.", headers=SAFE_HEADERS)
+        try:
+            result = await asyncio.to_thread(getattr(workspace_store, method), *args)
+        except WorkspaceError as error:
+            raise HTTPException(error.status_code, str(error), headers=SAFE_HEADERS) from None
+        except Exception:
+            raise HTTPException(503, "Workspace storage is unavailable. Changes were not saved.",
+                                headers=SAFE_HEADERS) from None
+        return JSONResponse(result, headers=SAFE_HEADERS)
+
+    @app.get("/api/workspace")
+    async def shared_workspace():
+        return await workspace_operation("snapshot")
+
+    @app.put("/api/workspace/contacts/{contact_id}")
+    async def save_workspace_contact(contact_id: str, request: Request):
+        return await workspace_operation("put_contact", contact_id, await workspace_payload(request))
+
+    @app.put("/api/workspace/agents/{agent_id}")
+    async def save_workspace_agent(agent_id: str, request: Request):
+        return await workspace_operation("put_agent", agent_id, await workspace_payload(request))
+
+    @app.post("/api/workspace/import")
+    async def import_workspace(request: Request):
+        return await workspace_operation("import_records", await workspace_payload(request))
+
     def voicemail_snapshot():
         return (deepcopy(voicemail_store.snapshot()) if voicemail_store is not None else
                 {"enabled": False, "storage_error": "", "voicemails": []})

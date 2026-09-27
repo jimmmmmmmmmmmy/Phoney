@@ -167,7 +167,7 @@ class DetectionStore:
         sid = record["call_sid"]
         current = self._records.get(sid)
         if sid in self._failed_writes or (current and current["updated_at"] > record["updated_at"]):
-            return
+            return self._details.get(sid, current)
         if current and current["updated_at"] == record["updated_at"]:
             # Retain live ownership/recovery state when reloading evicted detail.
             evidence = {key: value for key, value in record.get("analysis", {}).items()
@@ -182,6 +182,10 @@ class DetectionStore:
         self._records[sid] = self._summary(record)
         self._cache_detail(record)
         self._bound()
+        # A direct archive lookup may itself be older than every retained cache
+        # entry. Return its validated, ownership-adjusted result even when the
+        # bounded cache immediately evicts it again.
+        return record
 
     def _bound(self):
         while len(self._records) > MAX_FILES:
@@ -286,15 +290,17 @@ class DetectionStore:
         if not self.enabled or not _sid(call_sid):
             return None
         with self._lock:
+            record = None
             try:
                 root = _root(self.path)
                 try:
-                    self._merge(self._read(root, call_sid))
+                    record = self._merge(self._read(root, call_sid))
                 finally:
                     os.close(root)
             except (OSError, ValueError, TypeError, OverflowError, RecursionError):
                 pass
-            record = self._details.get(call_sid, self._records.get(call_sid))
+            if record is None:
+                record = self._details.get(call_sid, self._records.get(call_sid))
             return self._public(record) if record is not None else None
 
     def snapshot(self) -> dict:

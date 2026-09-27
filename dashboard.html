@@ -41,6 +41,7 @@
     .team-brand{display:block;width:160px;max-width:calc(100% - 16px);padding:0;margin:0 8px;line-height:0;border-radius:4px}.team-brand img,.team-brand-mobile img{display:block;width:100%;height:auto}.team-brand-mobile{display:none}.topbar .search-box{min-width:0;flex:0 1 460px}.nav-team{margin-top:auto;flex:none;text-decoration:none;font-size:12px}.nav-team em{font-weight:inherit}.nav-team svg{width:19px;height:19px}
     @media(max-width:700px){.app-nav .team-brand{display:none}.topbar{gap:18px}.team-brand-mobile{display:block;flex:none;width:132px;line-height:0}.topbar .search-box{flex:1 1 auto}.search-box input{padding-right:8px}.app-nav{gap:4px}.nav-team{align-self:flex-start;margin-top:0;width:auto;min-height:34px;padding:6px 12px;font-size:11px}.audio-panel{gap:8px}}
     @media(max-width:360px){.team-brand-mobile{width:120px}.topbar{gap:12px;padding:0 12px}}
+    .history-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:16px 12px}.history-controls button{border:1px solid var(--line);border-radius:6px;padding:9px 13px;background:#fff;color:var(--teal);font-size:12px;font-weight:600}.history-controls button:disabled{opacity:.6;cursor:default}.history-status{font-size:12px;line-height:1.5;color:var(--muted)}.crm-history-controls{display:flex;flex-direction:column;align-items:flex-start;gap:10px;margin-top:18px}
     .team-content{width:100%;max-width:960px;margin:0 auto;padding-top:16px}.team-artwork{width:100%;aspect-ratio:3/2;max-height:calc(100dvh - 230px);min-height:160px;background:url('/assets/shellhacks-2026.webp') center/contain no-repeat}.team-list{display:flex;flex-wrap:wrap;justify-content:center;gap:8px 32px;list-style:none;margin:16px 0 0;padding:0}.team-member h3{font-size:17px;font-weight:500}.resume-link{display:inline-flex;align-items:center;min-height:44px;color:#0655d6;text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:1px}.resume-link:hover{color:#003b99}.resume-link:focus-visible{outline-color:#0655d6}
     @media(max-width:540px){.team-list{column-gap:24px;margin-top:8px}.team-member h3{font-size:16px}}
     @media(prefers-reduced-motion:reduce){.transcript{scroll-behavior:auto}}
@@ -87,6 +88,7 @@
       <div id="collection-scroller" class="collection-scroller">
         <section id="recent-panel" role="tabpanel" aria-labelledby="tab-recent"><div class="table-heading" aria-hidden="true"><span>Caller</span><span>Time</span><span>Summary</span><span></span></div><div id="call-list" class="call-list"></div><p id="sidebar-empty" class="collection-empty">No recent calls yet.</p></section>
         <section id="voicemail-panel" role="tabpanel" aria-labelledby="tab-voicemail" hidden><div class="table-heading" aria-hidden="true"><span>Caller</span><span>Time</span><span>Summary</span><span></span></div><div id="voicemail-list" class="call-list"></div><p id="voicemail-empty" class="collection-empty">No voicemail yet.</p></section>
+        <div id="history-controls" class="history-controls" hidden><button id="history-load-more" type="button">Load older calls</button><p id="history-status" class="history-status" role="status" aria-live="polite"></p></div>
       </div>
       <section id="calls-detail" class="transcript-card" aria-labelledby="transcript-title" hidden>
         <div id="transcript" class="transcript" tabindex="0" aria-label="Call transcript">
@@ -140,7 +142,8 @@
       controller: null, polling: false, paused: false, renderKey: "", listKey: "",
       voicemailKey: "", refreshRequested: false, audioCall: null, audioTrack: "combined",
       audioUrl: "", audioPhase: "idle", audioSession: null, audioDismissed: false, highlightEnabled: false,
-      transcriptRows: [], renderedCall: null, detectionKey: ""};
+      transcriptRows: [], renderedCall: null, detectionKey: "", snapshotCaller: "", selectedLoading: false,
+      historyCache: new Map(), historyByCaller: new Map()};
     const callSidPattern = /^CA[0-9a-fA-F]{32}$/;
     const audioTracks = {combined: "Call audio"};
     const endedStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
@@ -171,6 +174,7 @@
     function renderCollections() {
       renderCallList(collectionSessions("recent"));
       renderVoicemails(collectionSessions("voicemail"));
+      renderHistoryControls();
     }
     function visibleDetail() { return state.page === "calls" && state.detail; }
     function pageFocusTarget() { return $(state.page === "team" ? "team-view" : "page-title"); }
@@ -275,6 +279,11 @@
         : "Return to call →";
       if (window.DashboardCRM) {
         window.DashboardCRM.setSessions?.(state.sessions);
+        if (state.metricsSnapshot !== state.snapshot && state.snapshot?.history?.caller_metrics) {
+          state.metricsSnapshot = state.snapshot;
+          window.DashboardCRM.setHistoryMetrics?.(state.snapshot.history.caller_metrics,
+            {complete: state.snapshot.history.complete !== false, caller: state.snapshotCaller});
+        }
         window.DashboardCRM.render();
       }
       window.DashboardToolbar?.setSessions?.(state.sessions);
@@ -337,10 +346,10 @@
       if (!callSidPattern.test(callSid)) return;
       const session = state.sessions.find(entry => entry.call_sid === callSid)
         || (state.selectedSession && state.selectedSession.call_sid === callSid ? state.selectedSession : null);
-      if (!session) return;
       rememberListPosition();
-      state.collection = session.voicemail ? "voicemail" : "recent";
-      if (state.callerFilter && normalizeCaller(callerNumber(session)) !== state.callerFilter) state.callerFilter = "";
+      state.selectedLoading = !session;
+      if (session) state.collection = session.voicemail ? "voicemail" : "recent";
+      if (session && state.callerFilter && normalizeCaller(callerNumber(session)) !== state.callerFilter) state.callerFilter = "";
       state.manualSelection = true;
       if (state.pendingLive === callSid) state.pendingLive = null;
       if (state.selected !== callSid) state.renderKey = "";
@@ -870,9 +879,7 @@
       return {...session, segments: Array.from(bySegment.values()), tracks,
         transcript_retained: Boolean(partial && (before.length || Object.values(tracks).some(track => track.interim)))};
     }
-    function render() {
-      const snapshot = state.snapshot;
-      if (!snapshot) return;
+    function snapshotSessions(snapshot) {
       const voicemails = snapshot.voicemail && Array.isArray(snapshot.voicemail.voicemails)
         ? snapshot.voicemail.voicemails.filter(entry => entry && typeof entry.call_sid === "string" && callSidPattern.test(entry.call_sid)).slice() : [];
       voicemails.sort((a, b) => (dateValue(b.started_at).getTime() || 0) - (dateValue(a.started_at).getTime() || 0));
@@ -921,6 +928,97 @@
             transcript_unavailable: true});
         }
       }
+      return sessions;
+    }
+    function historyState(caller = state.callerFilter) {
+      if (!state.historyByCaller.has(caller)) state.historyByCaller.set(caller,
+        {next_cursor: null, has_more: false, started: false, loading: false, error: ""});
+      return state.historyByCaller.get(caller);
+    }
+    function mergeCall(previous, current) {
+      if (!previous) return current;
+      return {...previous, ...current, transcript_unavailable: Boolean(current.transcript_unavailable),
+        voicemail_only: Boolean(current.voicemail_only), call_detail: current.call_detail || previous.call_detail,
+        recording: current.recording || previous.recording, voicemail: current.voicemail || previous.voicemail,
+        detection: current.detection || previous.detection};
+    }
+    function rememberHistory(sessions) {
+      for (const session of sessions) if (!isActive(session)) {
+        state.historyCache.set(session.call_sid, mergeCall(state.historyCache.get(session.call_sid), session));
+      }
+    }
+    function renderHistoryControls() {
+      const history = historyState();
+      const incomplete = history.complete === false;
+      $("history-controls").hidden = !history.has_more && !history.loading && !history.error && !incomplete;
+      const button = $("history-load-more");
+      button.disabled = history.loading;
+      button.hidden = !history.has_more && !history.loading && !history.error;
+      button.textContent = history.loading ? "Loading older calls…" : history.error ? "Retry loading older calls" : "Load older calls";
+      $("history-status").textContent = history.error || (history.loading ? "Loading call history…"
+        : incomplete ? "Some saved calls could not be loaded. History may be incomplete." : "");
+    }
+    async function fetchHistory({caller = "", cursor = ""} = {}) {
+      const query = new URLSearchParams();
+      if (caller) query.set("caller", caller);
+      if (cursor) query.set("cursor", cursor);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      try {
+        const response = await fetch("/api/transcripts" + (query.size ? "?" + query.toString() : ""),
+          {credentials: "same-origin", cache: "no-store", signal: controller.signal,
+            headers: {Accept: "application/json", "ngrok-skip-browser-warning": "1"}});
+        if (!response.ok) throw new Error("Call history could not be loaded. Try again.");
+        const snapshot = await response.json();
+        if (!snapshot || !Array.isArray(snapshot.sessions) || !snapshot.history
+            || typeof snapshot.history.has_more !== "boolean"
+            || (snapshot.history.has_more && typeof snapshot.history.next_cursor !== "string")) {
+          throw new Error("Call history could not be loaded. Try again.");
+        }
+        return {sessions: snapshotSessions(snapshot), history: snapshot.history};
+      } catch (error) {
+        throw new Error(error.name === "AbortError" ? "Call history timed out. Try again." : "Call history could not be loaded. Try again.");
+      } finally {clearTimeout(timer);}
+    }
+    async function loadOlderCalls() {
+      const caller = state.callerFilter, history = historyState(caller);
+      if (history.loading || !history.has_more || !history.next_cursor) return;
+      history.loading = true; history.error = ""; renderHistoryControls();
+      const cursor = history.next_cursor;
+      const scrollTop = $("collection-scroller").scrollTop;
+      const startingSessions = snapshotSessions(state.snapshot || {});
+      const seen = new Set(state.sessions.map(session => session.call_sid));
+      try {
+        const page = await fetchHistory({caller, cursor});
+        if (page.history.has_more && page.history.next_cursor === cursor) throw new Error("Call history could not advance. Reload to try again.");
+        rememberHistory(startingSessions);
+        rememberHistory(snapshotSessions(state.snapshot || {}));
+        rememberHistory(page.sessions);
+        Object.assign(history, page.history, {started: true});
+        render();
+        if (state.page === "calls" && !state.detail && state.callerFilter === caller) {
+          $("collection-scroller").scrollTop = scrollTop;
+          const added = page.sessions.filter(session => !isActive(session) && !seen.has(session.call_sid)).length;
+          $("announcement").textContent = `${added} older ${added === 1 ? "call" : "calls"} loaded.`;
+          if (!history.has_more && document.activeElement === $("history-load-more")) {
+            const list = $(state.collection === "voicemail" ? "voicemail-list" : "call-list");
+            list.children[list.children.length - 1]?.focus({preventScroll: true});
+          }
+        }
+      } catch (error) {history.error = error.message;}
+      finally {history.loading = false; renderHistoryControls();}
+    }
+    function render() {
+      const snapshot = state.snapshot;
+      if (!snapshot) return;
+      const current = snapshotSessions(snapshot);
+      const history = historyState();
+      if (snapshot.history && state.snapshotCaller === state.callerFilter && !history.started && !history.loading) {
+        Object.assign(history, snapshot.history);
+      }
+      const combined = new Map(state.historyCache);
+      for (const session of current) combined.set(session.call_sid, mergeCall(combined.get(session.call_sid), session));
+      const sessions = [...combined.values()];
       sessions.sort((a, b) => (dateValue(b.started_at).getTime() || 0) - (dateValue(a.started_at).getTime() || 0));
       const live = sessions.find(isActive);
       const liveSid = live ? live.call_sid : null;
@@ -939,12 +1037,15 @@
       renderNavigation();
       renderSession(state.selectedSession);
       if (state.selected && !selected) {
-        if (state.selectedSession) {
-          $("session-storage-warning").textContent = "This call is no longer in recent history. Showing its last update.";
+        if (state.selectedLoading) {
+          $("empty-title").textContent = "Loading call…";
+          $("empty-description").textContent = "Loading the saved transcript and recording.";
+        } else if (state.selectedSession) {
+          $("session-storage-warning").textContent = "This call is not currently available. Showing its last update.";
           $("session-storage-warning").hidden = false;
         } else {
           $("transcript-title").textContent = "Call unavailable";
-          $("empty-title").textContent = "This call is not in recent history.";
+          $("empty-title").textContent = "This call is not available in saved history.";
           $("empty-description").textContent = "Return to the call list to choose an available conversation.";
         }
       }
@@ -965,15 +1066,18 @@
       state.controller = controller;
       const timeout = setTimeout(() => controller.abort(), 10000);
       try {
-        const query = state.selected ? "?call_sid=" + encodeURIComponent(state.selected) : "";
-        const response = await fetch("/api/transcripts" + query, {credentials: "same-origin", cache: "no-store",
+        const caller = state.callerFilter;
+        const query = new URLSearchParams();
+        if (state.selected) query.set("call_sid", state.selected);
+        if (caller) query.set("caller", caller);
+        const response = await fetch("/api/transcripts" + (query.size ? "?" + query.toString() : ""), {credentials: "same-origin", cache: "no-store",
           headers: {Accept: "application/json", "ngrok-skip-browser-warning": "1"}, signal: controller.signal});
         if (state.paused || controller.signal.aborted) return;
         if (!response.ok) throw new Error("Snapshot unavailable");
         const snapshot = await response.json();
         if (state.paused || controller.signal.aborted) return;
         if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.sessions)) throw new Error("Invalid snapshot");
-        state.snapshot = snapshot;
+        state.snapshot = snapshot; state.snapshotCaller = caller; state.selectedLoading = false;
         render();
         connection("Connected", "good");
         banner(snapshot.enabled ? "" : "Live transcription is disabled on the server.");
@@ -991,7 +1095,8 @@
         state.refreshRequested = false;
       }
     }
-    window.DashboardCalls = {openCall: chooseCall};
+    window.DashboardCalls = {openCall: chooseCall, fetchHistory};
+    $("history-load-more").addEventListener("click", loadOlderCalls);
     for (const page of ["calls", "contacts", "agents"]) {
       const nav = $("nav-" + page);
       if (nav) nav.addEventListener("click", () => page === "calls" ? backToCalls() : showPage(page));

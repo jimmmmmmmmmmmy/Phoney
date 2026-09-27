@@ -227,6 +227,45 @@ def test_full_window_cache_is_bounded_and_evicted_details_reload_on_demand(tmp_p
     assert len(restarted._records) == 6
 
 
+def test_oldest_saved_result_is_readable_even_when_it_is_immediately_evicted(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "MAX_FILES", 2)
+    monkeypatch.setattr(storage, "MAX_DETAIL_RECORDS", 2)
+    store = DetectionStore(str(tmp_path))
+    sids = ["CA" + str(index) * 32 for index in range(4)]
+    for sid in sids:
+        assert store.save(sid, result(analysis=analysis()))
+    assert sids[0] not in store._records
+    assert (tmp_path / (sids[0] + ".json")).is_file()
+    for current in (store, DetectionStore(str(tmp_path))):
+        # Fill the cache with newer calls regardless of directory enumeration.
+        for sid in sids[2:]:
+            assert current.get(sid)
+        saved = current.get(sids[0])
+        assert saved["analysis"]["alert"] == "ai_detected"
+        assert saved["analysis"]["windows"] == analysis()["windows"]
+        assert saved["analysis"]["synthetic_intervals"] == analysis()["synthetic_intervals"]
+        assert sids[0] not in current._records
+        assert len(current._records) <= 2 and len(current._details) <= 2
+        saved["analysis"]["windows"].clear()
+        assert current.get(sids[0])["analysis"]["windows"]
+
+
+def test_uncached_interrupted_archive_result_keeps_recovery_semantics(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "MAX_FILES", 1)
+    store = DetectionStore(str(tmp_path))
+    pending = result(status="analyzing", label="unknown", confidence=None, reason="analyzing",
+                     analysis=analysis(complete=False))
+    assert store.save(CALL, pending)
+    assert store.save(OTHER, result(analysis=analysis()))
+    recovered = DetectionStore(str(tmp_path))
+    assert recovered.get(OTHER)
+    older = recovered.get(CALL)
+    assert older["status"] == "unknown" and older["reason"] == "interrupted"
+    assert older["analysis"]["complete"] is False
+    assert older["analysis"]["synthetic_intervals"]
+    assert json.loads((tmp_path / (CALL + ".json")).read_text())["status"] == "analyzing"
+
+
 @pytest.mark.parametrize("version", [1, 2])
 def test_legacy_analysis_versions_remain_readable_without_interval_migration(tmp_path, version):
     from partner_detection.analysis import build_analysis

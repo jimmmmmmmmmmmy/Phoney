@@ -42,6 +42,10 @@ class _InvalidCapture(ValueError):
     pass
 
 
+class _UnfinishedCapture(_InvalidCapture):
+    """A live recorder has not published its finalized manifest yet."""
+
+
 def _http_error(status_code, detail, headers=None):
     return HTTPException(status_code, detail, headers={"Cache-Control": "no-store",
                          "Referrer-Policy": "no-referrer", **(headers or {})})
@@ -226,6 +230,8 @@ class RecordingLibrary:
         self._cache = None
         self._cached_at = 0.0
         self._cache_lock = threading.Lock()
+        self._archive_cache = None
+        self._archive_cached_at = 0.0
 
     def _open(self, call_sid, root_fd=None):
         if not isinstance(call_sid, str) or not CALL_SID.fullmatch(call_sid):
@@ -236,7 +242,10 @@ class RecordingLibrary:
         tracks = {}
         try:
             directory = os.open(call_sid, DIRECTORY_FLAGS, dir_fd=root)
-            manifest_fd, info = _open_regular(directory, "manifest.json", MAX_MANIFEST_BYTES)
+            try:
+                manifest_fd, info = _open_regular(directory, "manifest.json", MAX_MANIFEST_BYTES)
+            except FileNotFoundError:
+                raise _UnfinishedCapture("Capture is not finalized") from None
             try:
                 raw = os.pread(manifest_fd, MAX_MANIFEST_BYTES + 1, 0)
             finally:
@@ -325,6 +334,60 @@ class RecordingLibrary:
                 except (OSError, ValueError):
                     result["storage_error"] = "storage-unavailable"
             self._cache, self._cached_at = result, time.monotonic()
+            return copy.deepcopy(result)
+
+    def get(self, call_sid):
+        """Revalidate one finalized recording without relying on recent caches."""
+        if not self.enabled:
+            return None
+        try:
+            capture = self._open(call_sid)
+        except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+            return None
+        try:
+            return copy.deepcopy(capture.metadata)
+        finally:
+            capture.close()
+
+    def archive_snapshot(self):
+        """Return all valid recording metadata, not the recent ten-item preview.
+
+        Each manifest/WAV retains the same bounded descriptor validation as
+        playback. Audio samples are never read into the catalog.
+        """
+        with self._cache_lock:
+            if (self._archive_cache is not None
+                    and time.monotonic() - self._archive_cached_at < CACHE_SECONDS):
+                return copy.deepcopy(self._archive_cache)
+            result = {"enabled": self.enabled, "recordings": [], "storage_error": ""}
+            if self.enabled:
+                try:
+                    root = _open_root(self.root)
+                    try:
+                        with os.scandir(root) as entries:
+                            for entry in entries:
+                                if not CALL_SID.fullmatch(entry.name):
+                                    continue
+                                try:
+                                    capture = self._open(entry.name, root)
+                                except _UnfinishedCapture:
+                                    continue
+                                except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+                                    result["storage_error"] = "storage-unavailable"
+                                    continue
+                                try:
+                                    result["recordings"].append(capture.metadata)
+                                finally:
+                                    capture.close()
+                    finally:
+                        os.close(root)
+                    result["recordings"].sort(key=lambda item: (
+                        item["finished_at"], item["call_sid"]), reverse=True)
+                except FileNotFoundError:
+                    pass
+                except (OSError, ValueError):
+                    result["storage_error"] = "storage-unavailable"
+            self._archive_cache, self._archive_cached_at = result, time.monotonic()
             return copy.deepcopy(result)
 
     def response(self, call_sid, track, request):

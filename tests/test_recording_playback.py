@@ -316,6 +316,73 @@ def test_catalog_cache_and_scan_bound(tmp_path, monkeypatch):
     assert lib.snapshot()["recordings"] == [] and len(calls) == 14
 
 
+def test_archive_catalog_and_direct_recording_bypass_recent_and_scan_caps(tmp_path, monkeypatch):
+    root = tmp_path / 'recordings'
+    for index in range(25):
+        write_capture(root, sid=f"CA{index:032x}", minute=index)
+    lib = library(root)
+    assert len(lib.snapshot()['recordings']) == 10
+    monkeypatch.setattr(playback, 'MAX_SCAN', 2)
+    fresh = library(root)
+    assert len(fresh.snapshot()['recordings']) == 2
+    archive = fresh.archive_snapshot()
+    assert [row['call_sid'] for row in archive['recordings']] == [f"CA{i:032x}" for i in reversed(range(25))]
+    assert fresh.get('CA' + '0' * 32)['call_sid'] == 'CA' + '0' * 32
+    assert fresh.get('CA' + 'f' * 32) is None
+    assert fresh.get('../escape') is None
+    archive['recordings'][0]['tracks'].clear()
+    assert fresh.archive_snapshot()['recordings'][0]['tracks']
+    assert 'account_sid' not in json.dumps(archive) and str(root) not in json.dumps(archive)
+
+
+def test_archive_catalog_ties_are_stable_and_direct_get_revalidates_files(tmp_path):
+    root = tmp_path / 'recordings'
+    for index in (3, 1, 2):
+        write_capture(root, sid=f"CA{index:032x}", minute=1)
+    lib = library(root)
+    assert [row['call_sid'] for row in lib.archive_snapshot()['recordings']] == [f"CA{i:032x}" for i in (3, 2, 1)]
+    target = root / f"CA{3:032x}" / 'inbound.wav'
+    target.unlink()
+    target.symlink_to(root / f"CA{2:032x}" / 'inbound.wav')
+    assert lib.get(f"CA{3:032x}") is None
+    lib._archive_cached_at -= playback.CACHE_SECONDS + 1
+    assert len(lib.archive_snapshot()['recordings']) == 2
+
+
+@pytest.mark.parametrize('kind', ['symlink', 'fifo', 'malformed'])
+def test_archive_recording_getter_rejects_invalid_manifest_without_blocking(tmp_path, kind):
+    directory, _ = write_capture(tmp_path)
+    manifest = directory / 'manifest.json'
+    manifest.unlink()
+    if kind == 'symlink':
+        manifest.symlink_to(directory / 'inbound.wav')
+    elif kind == 'fifo':
+        os.mkfifo(manifest)
+    else:
+        manifest.write_text('not JSON')
+    lib = library(tmp_path)
+    assert lib.get(CALL) is None
+    assert lib.archive_snapshot()['recordings'] == []
+    assert lib.archive_snapshot()['storage_error'] == 'storage-unavailable'
+
+
+def test_archive_in_progress_capture_does_not_make_history_incomplete(tmp_path):
+    directory, _ = write_capture(tmp_path)
+    (directory / 'manifest.json').unlink()
+    lib = library(tmp_path)
+    assert lib.archive_snapshot() == {'enabled': True, 'recordings': [], 'storage_error': ''}
+
+
+def test_archive_missing_finalized_audio_marks_partial_but_keeps_other_rows(tmp_path):
+    directory, _ = write_capture(tmp_path)
+    (directory / 'inbound.wav').unlink()
+    other = 'CA' + '2' * 32
+    write_capture(tmp_path, sid=other)
+    snapshot = library(tmp_path).archive_snapshot()
+    assert snapshot['storage_error'] == 'storage-unavailable'
+    assert [row['call_sid'] for row in snapshot['recordings']] == [other]
+
+
 def test_missing_manifest_empty_audio_disabled_storage_and_invalid_track(tmp_path):
     root = tmp_path / "recordings"
     directory, _ = write_capture(root)

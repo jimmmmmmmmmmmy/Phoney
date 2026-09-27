@@ -213,6 +213,8 @@ class CallDetailsStore:
         self._load_failed = False
         self._lock = threading.RLock()
         self._last_refresh = float("-inf")
+        self._archive_cache = None
+        self._archive_cached_at = float("-inf")
         if self.enabled:
             with self._lock:
                 self._refresh()
@@ -305,6 +307,7 @@ class CallDetailsStore:
         return deepcopy(self._records.get(call_sid, _blank(call_sid)))
 
     def _persist(self, record):
+        self._archive_cache = None
         sid = record["call_sid"]
         if sid not in self._records and len(self._records) >= MAX_FILES:
             ended = [item for item in self._records.values()
@@ -502,6 +505,129 @@ class CallDetailsStore:
             record[job_key] = None
             return self._persist(record)
 
+    @staticmethod
+    def _with_document(record, document=None):
+        record = deepcopy(record)
+        if not isinstance(document, dict) or document.get("call_sid") != record["call_sid"]:
+            return record
+        for key, fallback in (("started_at", "started_at"), ("ended_at", "finished_at")):
+            if record[key] is None:
+                value = document.get(key) or document.get(fallback)
+                if value:
+                    try:
+                        record[key] = _timestamp(value)
+                    except (ValueError, TypeError, OverflowError):
+                        pass
+        if record["duration_seconds"] is None:
+            try:
+                value = document.get("duration_seconds")
+                if value is not None:
+                    record["duration_seconds"] = _duration(value)
+                elif record["started_at"] and record["ended_at"]:
+                    record["duration_seconds"] = _duration((datetime.fromisoformat(record["ended_at"])
+                        - datetime.fromisoformat(record["started_at"])).total_seconds())
+            except (ValueError, TypeError, OverflowError):
+                pass
+        return record
+
+    def _project(self, record, document=None):
+        """One detached public row; summaries still require matching transcript."""
+        record = self._with_document(record, document)
+        result = {key: record[key] for key in (
+            "call_sid", "caller_number", "started_at", "ended_at", "duration_seconds")}
+        fingerprint = (transcript_fingerprint(document) if isinstance(document, dict)
+                       and document.get("call_sid") == record["call_sid"] else None)
+        for kind, (summary_key, job_key, _) in SUMMARY_KINDS.items():
+            summary = record[summary_key]
+            result[summary_key] = ({key: summary[key] for key in ("text", "source", "created_at")}
+                if summary and record["ended_at"] and fingerprint == summary["fingerprint"] else None)
+            if result[summary_key] and "model" in summary:
+                result[summary_key]["model"] = summary["model"]
+            job_state = self._summary_state(record, fingerprint, kind)
+            if record[job_key] is not None:
+                result[summary_key + "_status"] = job_state["status"]
+                if (job_state["status"] == "failed" and job_state["retry_at"] > 0
+                        and job_state["attempts"] < MAX_SUMMARY_ATTEMPTS):
+                    result[summary_key + "_status"] = "retrying"
+                    result[summary_key + "_retry_at"] = job_state["retry_at"]
+        return result
+
+    def _prefer_local(self, document):
+        """Preserve ownership of live timestamps and unpersisted local changes."""
+        sid = document["call_sid"]
+        current = self._records.get(sid)
+        if current is not None and sid in self._failed_writes:
+            return deepcopy(current)
+        if current is not None and current["ended_at"] is None:
+            document = deepcopy(document)
+            document.update({key: current[key] for key in (
+                "started_at", "ended_at", "duration_seconds", "duration_source")})
+            document["caller_number"] = current["caller_number"] or document["caller_number"]
+        return document
+
+    def get(self, call_sid, session_document=None):
+        """Read one SID without depending on the bounded recent-call cache."""
+        if not self.enabled or not _sid(call_sid):
+            return None
+        with self._lock:
+            current = self._records.get(call_sid)
+            record = (deepcopy(current) if current is not None
+                      and (current["ended_at"] is None or call_sid in self._failed_writes) else None)
+            if call_sid not in self._failed_writes:
+                try:
+                    root = _root(self.path)
+                    try:
+                        record = self._prefer_local(self._read(root, call_sid))
+                    finally:
+                        os.close(root)
+                except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+                    pass
+            if record is None:
+                if not isinstance(session_document, dict) or session_document.get("call_sid") != call_sid:
+                    return None
+                record = _blank(call_sid)
+            return self._project(record, session_document)
+
+    def archive_snapshot(self):
+        """Compact metadata for every valid saved call, independent of live caps.
+
+        Each file keeps its existing size/schema/descriptor bounds. No raw
+        transcript, internal summary fingerprint, or audio is returned here.
+        """
+        if not self.enabled:
+            return {"enabled": False, "storage_error": "", "calls": []}
+        with self._lock:
+            if (self._archive_cache is not None
+                    and time.monotonic() - self._archive_cached_at < REFRESH_SECONDS):
+                return deepcopy(self._archive_cache)
+            records = {sid: self._project(record) for sid, record in self._records.items()
+                       if record["ended_at"] is None or sid in self._failed_writes}
+            error = self.storage_error
+            try:
+                root = _root(self.path)
+                try:
+                    with os.scandir(root) as entries:
+                        for entry in entries:
+                            if not entry.name.endswith(".json") or not _sid(entry.name[:-5]):
+                                continue
+                            try:
+                                record = self._prefer_local(self._read(root, entry.name[:-5]))
+                            except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+                                error = error or "load-failed"
+                                continue
+                            records[record["call_sid"]] = self._project(record)
+                finally:
+                    os.close(root)
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError, TypeError):
+                error = "load-failed"
+            calls = sorted(records.values(), key=lambda item: (
+                item["started_at"] or item["ended_at"] or "", item["call_sid"]), reverse=True)
+            result = {"enabled": True, "storage_error": error, "calls": calls}
+            self._archive_cache, self._archive_cached_at = result, time.monotonic()
+            return deepcopy(result)
+
     def snapshot(self, sessions=None):
         if not self.enabled:
             return {"enabled": False, "storage_error": "", "calls": []}
@@ -516,43 +642,8 @@ class CallDetailsStore:
             for sid, document in documents.items():
                 if sid not in records:
                     records[sid] = _blank(sid)
-                record = records[sid]
-                for key, fallback in (("started_at", "started_at"), ("ended_at", "finished_at")):
-                    if record[key] is None:
-                        value = document.get(key) or document.get(fallback)
-                        if value:
-                            try:
-                                record[key] = _timestamp(value)
-                            except (ValueError, TypeError, OverflowError):
-                                pass
-                if record["duration_seconds"] is None:
-                    try:
-                        value = document.get("duration_seconds")
-                        if value is not None:
-                            record["duration_seconds"] = _duration(value)
-                        elif record["started_at"] and record["ended_at"]:
-                            record["duration_seconds"] = _duration((datetime.fromisoformat(record["ended_at"])
-                                - datetime.fromisoformat(record["started_at"])).total_seconds())
-                    except (ValueError, TypeError, OverflowError):
-                        pass
+                records[sid] = self._with_document(records[sid], document)
             recent = sorted(records.values(), key=lambda item: (
                 item["call_sid"] in documents, item["started_at"] or item["ended_at"] or ""), reverse=True)[:MAX_CALLS]
-            calls = []
-            for record in recent:
-                result = {key: record[key] for key in ("call_sid", "caller_number", "started_at", "ended_at", "duration_seconds")}
-                fingerprint = transcript_fingerprint(documents.get(record["call_sid"]))
-                for kind, (summary_key, job_key, _) in SUMMARY_KINDS.items():
-                    summary = record[summary_key]
-                    result[summary_key] = ({key: summary[key] for key in ("text", "source", "created_at")}
-                        if summary and record["ended_at"] and fingerprint == summary["fingerprint"] else None)
-                    if result[summary_key] and "model" in summary:
-                        result[summary_key]["model"] = summary["model"]
-                    job_state = self._summary_state(record, fingerprint, kind)
-                    if record[job_key] is not None:
-                        result[summary_key + "_status"] = job_state["status"]
-                        if (job_state["status"] == "failed" and job_state["retry_at"] > 0
-                                and job_state["attempts"] < MAX_SUMMARY_ATTEMPTS):
-                            result[summary_key + "_status"] = "retrying"
-                            result[summary_key + "_retry_at"] = job_state["retry_at"]
-                calls.append(result)
+            calls = [self._project(record, documents.get(record["call_sid"])) for record in recent]
             return {"enabled": True, "storage_error": self.storage_error, "calls": calls}

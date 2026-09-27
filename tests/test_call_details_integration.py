@@ -62,10 +62,13 @@ def test_summary_uses_full_selected_transcript_before_other_sessions_are_trimmed
     assert store.set_summary(SID, "The caller requested a call tomorrow.", SESSION)
     other = {**deepcopy(SESSION), "call_sid": "CA" + "3" * 32}
     app.state.transcription.snapshot = lambda: {"sessions": deepcopy([other, SESSION]), "enabled": True}
+    app.state.transcription.get_saved_call = lambda sid: deepcopy(next(
+        (item for item in (other, SESSION) if item["call_sid"] == sid), None))
     with TestClient(app) as client:
         data = client.get("/api/transcripts").json()
         assert data["sessions"][1]["segments"] == []
-        assert data["call_details"]["calls"][0]["summary"]["text"] == "The caller requested a call tomorrow."
+        detail = next(item for item in data["call_details"]["calls"] if item["call_sid"] == SID)
+        assert detail["summary"]["text"] == "The caller requested a call tomorrow."
         exported = client.get(f"/api/transcripts/{SID}/export?format=json").json()
         assert exported["call_details"]["caller_number"] == FORM["From"]
         assert exported["call_details"]["summary"]["source"] == "agent"
@@ -104,7 +107,7 @@ def test_backfill_only_fetches_known_inbound_calls(tmp_path, monkeypatch):
 
 def test_cli_saves_authored_text_and_keeps_existing_caller(tmp_path, monkeypatch):
     settings = replace(SETTINGS, call_details_storage_dir=str(tmp_path / "details"))
-    monkeypatch.setattr(commands, "local_sessions", lambda settings: [deepcopy(SESSION)])
+    monkeypatch.setattr(commands, "local_session", lambda settings, sid: deepcopy(SESSION))
     store = CallDetailsStore(settings.call_details_storage_dir)
     store.start(SID, FORM["From"], started_at=SESSION["started_at"])
     store.finish(SID, ended_at=SESSION["ended_at"], duration_seconds=60)
@@ -125,7 +128,7 @@ def test_cli_retry_resets_only_the_selected_failed_job(tmp_path, monkeypatch, ki
     assert store.set_summary(SID, "Saved counterpart.", SESSION, kind=other)
     assert store.begin_summary(SID, SESSION, kind=kind)
     assert store.fail_summary(SID, SESSION, "billing_required", kind=kind)
-    monkeypatch.setattr(commands, "local_sessions", lambda settings: [deepcopy(SESSION)])
+    monkeypatch.setattr(commands, "local_session", lambda settings, sid: deepcopy(SESSION))
     monkeypatch.setattr(commands, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(commands, "Settings", SimpleNamespace(from_env=lambda: settings))
     arguments = ["call_details.py", "retry-summary", SID]

@@ -11,10 +11,15 @@ from fastapi.testclient import TestClient
 from app import create_app
 from call_details import CallDetailsStore, MAX_SUMMARY_ATTEMPTS
 from config import Settings
+from transcription import storage
 
 SID = "CA" + "a" * 32
 DOCUMENT = {"call_sid": SID, "started_at": "2026-09-26T12:00:00+00:00",
-            "ended_at": "2026-09-26T12:00:20+00:00", "status": "completed", "tracks": {},
+            "schema_version": 1, "provider": "deepgram", "model": "nova-3",
+            "stream_sid": "MZ" + "b" * 32, "finish_reason": "", "storage_error": "",
+            "ended_at": "2026-09-26T12:00:20+00:00", "status": "completed",
+            "tracks": {name: {"meaning": meaning, "status": "completed", "error": "", "interim": ""}
+                       for name, meaning in (("inbound", "caller-input"), ("outbound", "caller-playback"))},
             "segments": [{"track": "inbound", "start_ms": 0, "end_ms": 5000,
                           "text": "Please call tomorrow.", "id": "in-1", "confidence": .9}]}
 
@@ -48,8 +53,8 @@ def settings(tmp_path):
 def test_lifespan_worker_saves_gemini_summary_and_keeps_key_private(tmp_path):
     config = settings(tmp_path)
     provider = Provider()
+    storage.save(config.transcript_storage_dir, DOCUMENT)
     app = create_app(config, summary_provider=provider)
-    app.state.transcription.history = [deepcopy(DOCUMENT)]
     with TestClient(app) as client:
         client.portal.call(app.state.summaries.run_once)
         # A lifespan-started request may still hold the serial worker lock.
@@ -82,8 +87,8 @@ def test_only_supervisor_owned_app_can_summarize_and_drain_stops_new_jobs(tmp_pa
     config = replace(settings(tmp_path), deploy_commit="b" * 40,
                      deploy_trigger_path=str(tmp_path / "deploy.trigger"))
     provider = Provider()
+    storage.save(config.transcript_storage_dir, DOCUMENT)
     app = create_app(config, summary_provider=provider)
-    app.state.transcription.history = [deepcopy(DOCUMENT)]
     state_file = tmp_path / "dev.json"
 
     async def run():

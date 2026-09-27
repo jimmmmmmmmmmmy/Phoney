@@ -18,6 +18,8 @@
   let listFilter = "all", searchText = "", root, dialog, form, opener, successMessage = "", savedContactId = "", listUI = null, renderedRoute = "";
   let editingContactId = null, savingContact = false, draftContactId = null, workspaceApplied = false;
   const expandedCalls = new Set();
+  const callerHistories = new Map();
+  let callerMetrics = new Map(), callerMetricsComplete = false;
   const contactStatuses = ["New", "Active", "Follow up"];
   const phonePattern = /^\+[1-9][0-9]{7,14}$/;
   const iconPaths = {pencil: ["m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15v5Z"], plus: ["M12 5v14M5 12h14"], close: ["m6 6 12 12M6 18 18 6"], search: ["m16 16 5 5"], chevron: ["m6 9 6 6 6-6"], phone: ["M7 3H4a1 1 0 0 0-1 1c0 9.4 7.6 17 17 17a1 1 0 0 0 1-1v-3l-5-2-2 2a13 13 0 0 1-7-7l2-2-2-5Z"], email: ["M3 5h18v14H3z", "m3 6 9 7 9-7"], address: ["M20 10c0 6-8 11-8 11S4 16 4 10a8 8 0 1 1 16 0Z"], website: ["M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"]};
@@ -41,7 +43,72 @@
   function date(value, withYear = true) { const parsed = new Date(value); return Number.isFinite(parsed.getTime()) ? parsed.toLocaleDateString("en-US", {month: "short", day: "numeric", ...(withYear ? {year: "numeric"} : {})}) : "—"; }
   function dateTime(value) { const parsed = new Date(value); return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString("en-US", {month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit"}) : "—"; }
   function duration(seconds) { if (!Number.isFinite(seconds)) return "—"; return seconds < 60 ? `${Math.round(seconds)}s` : `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`; }
-  function callsFor(contact) { return [...demoCalls.filter(c => c.contactId === contact.id), ...realCalls.filter(c => c.phone === contact.phone)].sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt)); }
+  function callsFor(contact) {
+    const archived = callerHistories.get(contact.phone)?.calls || [];
+    const calls = new Map([...demoCalls.filter(c => c.contactId === contact.id), ...archived,
+      ...realCalls.filter(c => c.phone === contact.phone)].map(call => [call.id, call]));
+    return [...calls.values()].sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+  }
+  function contactMetrics(contact) {
+    const history = callsFor(contact), archive = callerHistories.get(contact.phone);
+    const shared = callerMetrics.get(contact.phone);
+    const source = shared || (callerMetricsComplete ? {total: 0, duration_seconds: 0} : archive);
+    const demos = demoCalls.filter(call => call.contactId === contact.id);
+    const complete = source?.complete !== false && Number.isInteger(source?.total);
+    const completeDuration = complete && Number.isFinite(source.duration_seconds);
+    const lastContact = [source?.last_contact_at, history[0]?.startedAt].filter(Boolean)
+      .sort((a, b) => new Date(b) - new Date(a))[0];
+    return {count: complete ? source.total + demos.length : history.length, complete, completeDuration,
+      duration: completeDuration ? source.duration_seconds + demos.reduce((total, call) => total + (call.duration || 0), 0)
+        : history.reduce((total, call) => total + (call.duration || 0), 0), lastContact};
+  }
+  function setHistoryMetrics(metrics, {complete = true, caller = ""} = {}) {
+    if (!metrics || typeof metrics !== "object" || Array.isArray(metrics)) return;
+    const next = caller ? new Map(callerMetrics) : new Map();
+    for (const [phone, value] of Object.entries(metrics)) {
+      if (!phonePattern.test(phone) || !value || !Number.isInteger(value.total) || value.total < 0) continue;
+      next.set(phone, {total: value.total, duration_seconds: value.duration_seconds,
+        last_contact_at: value.last_contact_at || null, complete});
+    }
+    if (caller && complete && !Object.hasOwn(metrics, caller)) next.set(caller, {total: 0, duration_seconds: 0, last_contact_at: null, complete: true});
+    const allComplete = caller ? callerMetricsComplete : complete;
+    if (JSON.stringify([...next]) !== JSON.stringify([...callerMetrics]) || allComplete !== callerMetricsComplete) {
+      callerMetrics = next; callerMetricsComplete = allComplete; revision += 1;
+    }
+  }
+  function callerHistory(phone) {
+    if (!callerHistories.has(phone)) callerHistories.set(phone,
+      {calls: [], loaded: false, loading: false, error: "", has_more: false, next_cursor: null});
+    return callerHistories.get(phone);
+  }
+  async function loadContactHistory(contact, older = false) {
+    if (!window.DashboardCalls?.fetchHistory) return;
+    const history = callerHistory(contact.phone);
+    if (history.loading || (older && (!history.has_more || !history.next_cursor))) return;
+    const restoreFocus = document.activeElement?.id === "crm-load-history";
+    const cursor = older ? history.next_cursor : "";
+    history.loading = true; history.error = "";
+    revision += 1; render();
+    try {
+      const page = await window.DashboardCalls.fetchHistory({caller: contact.phone,
+        cursor});
+      if (page.history.has_more && page.history.next_cursor === cursor) throw new Error("Call history could not advance. Reload to try again.");
+      const calls = new Map(history.calls.map(call => [call.id, call]));
+      for (const session of page.sessions) {
+        if (normalizePhone(session.call_detail?.caller_number) !== contact.phone) continue;
+        const call = callFromSession(session); if (call) calls.set(call.id, call);
+      }
+      history.calls = [...calls.values()];
+      Object.assign(history, page.history, {loaded: true});
+      setHistoryMetrics({[contact.phone]: page.history}, {complete: page.history.complete !== false, caller: contact.phone});
+    } catch (failure) {history.error = failure.message || "Call history could not be loaded. Try again.";}
+    finally {
+      history.loading = false; revision += 1; render();
+      if (restoreFocus && window.location.hash === `#contacts/${contact.id}`) {
+        (document.getElementById("crm-load-history") || document.getElementById("crm-profile-title"))?.focus({preventScroll: true});
+      }
+    }
+  }
   function metric(label, value, caption) { const box = node("div", "crm-metric"), dd = node("dd", "", value); if (caption) dd.append(node("small", "", caption)); box.append(node("dt", "", label), dd); return box; }
   function status(contact) { return node("span", `crm-status ${contact.status === "Follow up" ? "crm-status-followup" : contact.status === "New" ? "crm-status-new" : ""}`, contact.status); }
   function validContactFields(value) {
@@ -109,7 +176,7 @@
     thead.append(hr);
     const tbody = node("tbody");
     for (const contact of matches) {
-      const callHistory = callsFor(contact), row = node("tr"), cell = node("td"), person = node("div", "crm-person"), body = node("div"), name = node("div", "crm-person-name");
+      const activity = contactMetrics(contact), row = node("tr"), cell = node("td"), person = node("div", "crm-person"), body = node("div"), name = node("div", "crm-person-name");
       name.append(link(fullName(contact), `#contacts/${contact.id}`, "crm-link"));
       body.append(name, node("div", "crm-person-sub", contact.email || contact.phone));
       person.append(node("span", "crm-avatar", initials(contact)), body);
@@ -122,7 +189,7 @@
       } else typeCell.append(node("span", "crm-muted", "—"));
       const statusCell = node("td", "crm-status-column");
       statusCell.append(status(contact));
-      row.append(cell, typeCell, node("td", "crm-phone-column", contact.phone), statusCell, node("td", "", callHistory.length), node("td", "crm-muted", callHistory.length ? date(callHistory[0].startedAt, false) : "No calls yet"));
+      row.append(cell, typeCell, node("td", "crm-phone-column", contact.phone), statusCell, node("td", "", activity.count), node("td", "crm-muted", activity.lastContact ? date(activity.lastContact, false) : "No calls yet"));
       tbody.append(row);
     }
     table.append(thead, tbody);
@@ -221,9 +288,13 @@
       saved.setAttribute("role", "status");
       section.append(saved);
     }
-    const history = callsFor(contact), sum = history.reduce((total, call) => total + (call.duration || 0), 0), metrics = node("dl", "crm-metrics crm-profile-metrics");
-    metrics.append(metric("Conversations", history.length), metric("Talk time", duration(sum)),
-      metric("Last contact", history.length ? date(history[0].startedAt, false) : "—"));
+    const history = callsFor(contact), archive = callerHistory(contact.phone), activity = contactMetrics(contact);
+    const completeCount = activity.complete ? activity.count : null;
+    const partial = window.DashboardCalls?.fetchHistory && (!archive.loaded || archive.has_more || archive.complete === false);
+    const metrics = node("dl", "crm-metrics crm-profile-metrics");
+    metrics.append(metric(!activity.complete && partial ? "Conversations loaded" : "Conversations", activity.count),
+      metric(!activity.completeDuration && partial ? "Talk time loaded" : "Talk time", duration(activity.duration)),
+      metric("Last contact", activity.lastContact ? date(activity.lastContact, false) : "—"));
     heading.append(metrics);
     const layout = node("div", "crm-profile-layout"), main = node("section"), callHeading = node("div", "crm-section-title"), historyList = node("div", "crm-history");
     callHeading.append(node("h3", "", "Conversations"), node("span", "", `${history.length} ${history.length === 1 ? "call" : "calls"}`));
@@ -235,6 +306,17 @@
       historyList.append(empty);
     }
     main.append(historyList);
+    if (archive.loading || archive.error || archive.has_more || archive.complete === false) {
+      const controls = node("div", "crm-history-controls");
+      const status = node("p", archive.error ? "crm-error" : "crm-muted", archive.error || (archive.loading
+        ? "Loading call history…" : archive.complete === false ? "Some saved calls could not be loaded. History may be incomplete." : `${history.length} ${history.length === 1 ? "conversation" : "conversations"} loaded${completeCount === null ? "." : ` of ${completeCount}.`}`));
+      status.setAttribute("role", "status"); controls.append(status);
+      const more = button(archive.loading ? "Loading…" : archive.error ? "Retry loading calls" : "Load older calls", "crm-button",
+        () => loadContactHistory(contact, archive.loaded));
+      more.id = "crm-load-history"; more.disabled = archive.loading;
+      if (archive.loading || archive.error || archive.has_more) controls.append(more);
+      main.append(controls);
+    }
     if (contact.note) {
       const note = node("div", "crm-note");
       note.append(node("strong", "", "Next step"), node("p", "", contact.note));
@@ -259,7 +341,7 @@
     if (!root) return;
     const route = window.location.hash;
     const parts = route.slice(1).split("/");
-    if (parts[0] !== "contacts") return;
+    if (parts[0] !== "contacts") {renderedRoute = ""; renderedKey = ""; return;}
     const key = `${route}|${revision}`;
     if (key === renderedKey) return;
     const sameRoute = renderedRoute === route;
@@ -269,6 +351,13 @@
     renderedKey = key;
     renderedRoute = route;
     const contact = contacts().find(candidate => candidate.id === parts[1]);
+    if (contact && window.DashboardCalls?.fetchHistory) {
+      const history = callerHistory(contact.phone);
+      if (!history.loading && ((!history.loaded && !history.error) || !sameRoute)) {
+        loadContactHistory(contact);
+        return;
+      }
+    }
     if (sameRoute && !parts[1] && listUI && root.contains(listUI.tableWrap)) {
       renderTable(listUI.tableWrap, listUI.resultCount);
     } else if (parts[1] && !contact) {
@@ -490,18 +579,20 @@
     render();
     setTimeout(() => document.getElementById("crm-profile-title")?.focus({preventScroll: true}), 0);
   }
+  function callFromSession(session) {
+    if (!session || !/^CA[0-9a-fA-F]{32}$/.test(session.call_sid) || !session.call_detail) return null;
+    const detail = session.call_detail;
+    const terminalStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
+    const live = !session.ended_at && !detail.ended_at && !terminalStatuses.has(String(session.status).toLowerCase());
+    const failed = ["failed", "error"].includes(session.status);
+    return {id: session.call_sid, real: true, collection: session.voicemail || session.voicemail_only ? "voicemail" : "recent", phone: normalizePhone(detail.caller_number), startedAt: detail.started_at || session.started_at,
+      duration: Number.isFinite(detail.duration_seconds) ? detail.duration_seconds : null, direction: "Call",
+      outcome: live ? "Live" : failed ? "Failed" : "Completed", title: live ? "Live conversation" : "Call conversation", summary: detail.summary?.text || ""};
+  }
   function setSessions(sessions) {
     lastSessions = Array.isArray(sessions) ? sessions : [];
     const knownPhones = new Set(contacts().map(contact => contact.phone));
-    const terminalStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
-    const next = lastSessions.filter(session => session && /^CA[0-9a-fA-F]{32}$/.test(session.call_sid) && knownPhones.has(normalizePhone(session.call_detail?.caller_number))).map(session => {
-      const detail = session.call_detail;
-      const live = !session.ended_at && !detail.ended_at && !terminalStatuses.has(session.status);
-      const failed = ["failed", "error"].includes(session.status);
-      return {id: session.call_sid, real: true, collection: session.voicemail || session.voicemail_only ? "voicemail" : "recent", phone: normalizePhone(detail.caller_number), startedAt: detail.started_at || session.started_at,
-        duration: Number.isFinite(detail.duration_seconds) ? detail.duration_seconds : null, direction: "Call",
-        outcome: live ? "Live" : failed ? "Failed" : "Completed", title: live ? "Live conversation" : "Call conversation", summary: detail.summary?.text || ""};
-    });
+    const next = lastSessions.map(callFromSession).filter(call => call && knownPhones.has(call.phone));
     if (JSON.stringify(next) !== JSON.stringify(realCalls)) { realCalls = next; revision += 1; }
   }
   function initialize() {
@@ -513,6 +604,6 @@
     render();
     window.addEventListener("hashchange", render);
   }
-  window.DashboardCRM = {openCreateContact, openEditContact, render, setSessions, findContactByPhone};
+  window.DashboardCRM = {openCreateContact, openEditContact, render, setSessions, setHistoryMetrics, findContactByPhone};
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initialize, {once: true}); else initialize();
 })();

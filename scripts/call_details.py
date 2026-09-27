@@ -24,6 +24,11 @@ def local_sessions(settings):
     return storage.load(settings.transcript_storage_dir) if settings.transcript_storage_dir else []
 
 
+def local_session(settings, call_sid):
+    """Read a specific saved call, including calls outside the recent list."""
+    return storage.load_call(settings.transcript_storage_dir, call_sid) if settings.transcript_storage_dir else None
+
+
 def backfill(settings, store, client):
     """Fetch only callers already represented in the bounded local history."""
     sids = {item["call_sid"] for item in local_sessions(settings)}
@@ -47,7 +52,7 @@ def backfill(settings, store, client):
 
 
 def save_summary(settings, store, sid, text_file):
-    session = next((item for item in local_sessions(settings) if item["call_sid"] == sid), None)
+    session = local_session(settings, sid)
     if not session or not session.get("ended_at") or not session.get("segments"):
         raise ValueError("Choose a completed local transcript with finalized text")
     # Bound input before decoding; the store enforces the summary character limit.
@@ -92,7 +97,7 @@ def main():
         save_summary(settings, store, args.call_sid, args.text_file)
         print("Saved summary for the completed transcript.")
     else:
-        document = next((item for item in local_sessions(settings) if item["call_sid"] == args.call_sid), None)
+        document = local_session(settings, args.call_sid)
         if not document or not store.retry_summary(args.call_sid, document, kind=args.kind):
             raise ValueError("Choose a failed automatic summary for an ended local transcript")
         print(f"Failed {args.kind} summary reset; the running summary worker will retry it.")

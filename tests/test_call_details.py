@@ -265,6 +265,95 @@ def test_scan_and_memory_bounds_and_disabled_store(tmp_path, monkeypatch):
     assert disabled.snapshot([session()]) == {"enabled": False, "storage_error": "", "calls": []}
 
 
+def test_archive_and_direct_details_bypass_recent_and_memory_scan_caps(tmp_path, monkeypatch):
+    store = CallDetailsStore(str(tmp_path))
+    base = datetime(2026, 9, 26, tzinfo=timezone.utc)
+    for index in range(25):
+        sid = f"CA{index:032x}"
+        store.start(sid, NUMBER, (base + timedelta(minutes=index)).isoformat())
+        store.finish(sid, (base + timedelta(minutes=index, seconds=10)).isoformat())
+    assert len(store.snapshot()['calls']) == 10
+    monkeypatch.setattr(call_details, 'MAX_FILES', 3)
+    restarted = CallDetailsStore(str(tmp_path))
+    assert len(restarted._records) == 3
+    archive = restarted.archive_snapshot()
+    assert len(archive['calls']) == 25
+    assert [item['call_sid'] for item in archive['calls']] == [f"CA{i:032x}" for i in reversed(range(25))]
+    outside_cache = next(row['call_sid'] for row in archive['calls'] if row['call_sid'] not in restarted._records)
+    before = deepcopy(restarted._records)
+    assert restarted.get(outside_cache)['caller_number'] == NUMBER
+    assert restarted._records == before
+    assert restarted.get('CA' + 'f' * 32) is None
+    archive['calls'][0]['caller_number'] = 'mutated'
+    assert restarted.archive_snapshot()['calls'][0]['caller_number'] == NUMBER
+
+
+def test_archive_sort_is_stable_for_equal_timestamps_and_local_writes_invalidate_cache(tmp_path):
+    store = CallDetailsStore(str(tmp_path))
+    for index in (3, 1, 2):
+        sid = f"CA{index:032x}"
+        store.start(sid, NUMBER, START)
+        store.finish(sid, END)
+    assert [row['call_sid'] for row in store.archive_snapshot()['calls']] == [f"CA{i:032x}" for i in (3, 2, 1)]
+    store.start('CA' + 'f' * 32, NUMBER, START)
+    assert len(store.archive_snapshot()['calls']) == 4
+
+
+def test_direct_details_summary_requires_matching_full_transcript(tmp_path):
+    store = CallDetailsStore(str(tmp_path))
+    document = session()
+    assert store.set_summary(CALL, 'Please call back.', document)
+    assert store.get(CALL)['summary'] is None
+    assert store.archive_snapshot()['calls'][0]['summary'] is None
+    assert store.get(CALL, document)['summary']['text'] == 'Please call back.'
+    stale = deepcopy(document)
+    stale['segments'][0]['text'] = 'Different message.'
+    assert store.get(CALL, stale)['summary'] is None
+    assert store.get(CALL, session(OTHER))['summary'] is None
+    assert 'fingerprint' not in json.dumps(store.get(CALL, document))
+
+
+def test_archive_keeps_failed_local_write_and_live_ownership(tmp_path, monkeypatch):
+    store = CallDetailsStore(str(tmp_path))
+    store.start(CALL, NUMBER, START)
+    external = CallDetailsStore(str(tmp_path))
+    external.finish(CALL, END, 27)
+    assert store.get(CALL)['ended_at'] is None
+    assert store.archive_snapshot()['calls'][0]['ended_at'] is None
+    def fail(*args, **kwargs):
+        raise OSError('fixture')
+    monkeypatch.setattr(call_details.os, 'replace', fail)
+    assert not store.finish(CALL, END, 29)
+    assert store.get(CALL)['duration_seconds'] == 29
+    archive = store.archive_snapshot()
+    assert archive['storage_error'] == 'save-failed'
+    assert archive['calls'][0]['duration_seconds'] == 29
+
+
+@pytest.mark.parametrize('kind', ['symlink', 'fifo', 'malformed', 'oversized', 'wrong-sid'])
+def test_archive_and_direct_details_skip_invalid_files_without_mutation(tmp_path, kind):
+    root = tmp_path / 'details'
+    root.mkdir()
+    target = root / (CALL + '.json')
+    if kind == 'symlink':
+        outside = tmp_path / 'private.json'
+        outside.write_text('{"private":"not-a-call"}')
+        target.symlink_to(outside)
+    elif kind == 'fifo':
+        os.mkfifo(target)
+    elif kind == 'malformed':
+        target.write_text('{invalid')
+    elif kind == 'oversized':
+        target.write_text('x' * (call_details.MAX_FILE_BYTES + 1))
+    else:
+        target.write_text(json.dumps(call_details._blank(OTHER)))
+    store = CallDetailsStore(str(root))
+    assert store.get(CALL) is None
+    assert store.archive_snapshot()['calls'] == []
+    assert store.archive_snapshot()['storage_error'] == 'load-failed'
+    assert target.exists()
+
+
 def test_threaded_callbacks_do_not_lose_caller_or_completed_state(tmp_path):
     store = CallDetailsStore(str(tmp_path))
     with ThreadPoolExecutor(max_workers=8) as pool:

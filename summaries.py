@@ -1,6 +1,7 @@
 """Serial post-call summaries; provider and disk work never run in audio callbacks."""
 
 import asyncio
+from bisect import bisect_right
 from copy import deepcopy
 import inspect
 import json
@@ -10,6 +11,7 @@ import re
 import time
 
 from call_details import MAX_SUMMARY_ATTEMPTS, SUMMARY_ERRORS, SUMMARY_KINDS, transcript_fingerprint
+from transcription import storage as transcript_storage
 
 LOGGER = logging.getLogger("uvicorn.error")
 
@@ -52,6 +54,7 @@ class SummaryManager:
         self._busy = False
         self._closed = False
         self._provider_closed = False
+        self._archive_cursor = ""
 
     @property
     def active_count(self):
@@ -77,16 +80,50 @@ class SummaryManager:
         task.add_done_callback(done)
         return await asyncio.wait_for(asyncio.shield(task), STORE_SECONDS)
 
-    def _documents(self):
+    def _recent_documents(self):
         try:
             snapshot = self.transcription.snapshot()
             sessions = snapshot.get("sessions") if isinstance(snapshot, dict) else None
             if not isinstance(sessions, list):
                 return []
             return [deepcopy(document) for document in sessions[:MAX_SESSIONS]
-                    if isinstance(document, dict) and transcript_fingerprint(document)]
+                    if isinstance(document, dict)]
         except Exception:
             return []
+
+    def _memory_owned(self, document):
+        return (not callable(getattr(self.transcription, "get_saved_call", None))
+                or document.get("call_sid") in getattr(self.transcription, "sessions", {})
+                or not document.get("ended_at") or bool(document.get("storage_error")))
+
+    async def _documents(self):
+        recent = self._recent_documents()
+        seen = {document.get("call_sid") for document in recent
+                if isinstance(document.get("call_sid"), str)}
+        for document in recent:
+            if not self._memory_owned(document):
+                document = await self._store(self.transcription.get_saved_call, document.get("call_sid"))
+            if transcript_fingerprint(document):
+                yield document
+        path = getattr(self.settings, "transcript_storage_dir", "")
+        if not path:
+            return
+        try:
+            # Only IDs are catalogued. Read at most one bounded page of older
+            # transcripts per poll, off the audio/event loop, without retaining
+            # them in the dashboard's recent-history cache.
+            call_ids = await self._store(transcript_storage.list_call_ids, path)
+            call_ids = sorted({sid for sid in call_ids if isinstance(sid, str)
+                               and transcript_storage.SID.fullmatch(sid) and sid not in seen})
+            offset = bisect_right(call_ids, self._archive_cursor)
+            page = (call_ids[offset:] + call_ids[:offset])[:MAX_SESSIONS]
+            for sid in page:
+                self._archive_cursor = sid
+                document = await self._store(transcript_storage.load_call, path, sid)
+                if transcript_fingerprint(document):
+                    yield document
+        except Exception:
+            return
 
     def _inactive(self, call_sid):
         try:
@@ -101,12 +138,25 @@ class SummaryManager:
         except Exception:
             return False
 
-    def _current(self, call_sid, fingerprint):
+    async def _current(self, call_sid, fingerprint):
         if not self._inactive(call_sid):
             return None
-        return next((document for document in self._documents()
-                     if document["call_sid"] == call_sid
-                     and transcript_fingerprint(document) == fingerprint), None)
+        current = next((document for document in self._recent_documents()
+                        if document.get("call_sid") == call_sid), None)
+        if current is None or not self._memory_owned(current):
+            getter = getattr(self.transcription, "get_saved_call", None)
+            if callable(getter):
+                current = await self._store(getter, call_sid)
+            else:
+                path = getattr(self.settings, "transcript_storage_dir", "")
+                if not path:
+                    return None
+                current = await self._store(transcript_storage.load_call, path, call_sid)
+            # A call may have resumed or acquired newer in-memory text while
+            # the archive read was in flight. Never let its saved copy win.
+            current = next((document for document in self._recent_documents()
+                            if document.get("call_sid") == call_sid and self._memory_owned(document)), current)
+        return current if self._inactive(call_sid) and transcript_fingerprint(current) == fingerprint else None
 
     async def _state(self, document, kind):
         result = await self._store(self.call_details.summary_state, document["call_sid"], document, kind=kind)
@@ -159,7 +209,7 @@ class SummaryManager:
             try:
                 if not self._allowed():
                     return
-                for document in self._documents():
+                async for document in self._documents():
                     if not self._inactive(document["call_sid"]):
                         continue
                     for kind in SUMMARY_KINDS:
@@ -198,7 +248,7 @@ class SummaryManager:
         begun = False
         started = time.monotonic()
         try:
-            if not self._allowed() or not self._current(sid, fingerprint):
+            if not self._allowed() or not await self._current(sid, fingerprint):
                 return
             begun = bool(await self._store(self.call_details.begin_summary, sid, document, kind=kind))
             if not begun:
@@ -208,7 +258,7 @@ class SummaryManager:
                 retry_at = time.time() + RETRY_DELAYS[attempt - 1] if attempt < MAX_ATTEMPTS else 0
                 await self._failed(document, "interrupted", retry_at, kind=kind)
                 return
-            if not self._current(sid, fingerprint):
+            if not await self._current(sid, fingerprint):
                 await self._failed(document, "transcript-changed", kind=kind)
                 return
             try:
@@ -231,7 +281,7 @@ class SummaryManager:
             if not isinstance(generated, str) or not generated.strip() or len(generated) > SUMMARY_KINDS[kind][2]:
                 await self._failed(document, "invalid-response", kind=kind)
                 return
-            current = self._current(sid, fingerprint)
+            current = await self._current(sid, fingerprint)
             if current is None:
                 await self._failed(document, "transcript-changed", kind=kind)
                 return
@@ -240,7 +290,7 @@ class SummaryManager:
                 return  # An operator may have written a summary while we waited.
             # Recheck after disk I/O as well; transcript finalization may have
             # changed while the worker was checking an existing agent summary.
-            current = self._current(sid, fingerprint)
+            current = await self._current(sid, fingerprint)
             if current is None:
                 await self._failed(document, "transcript-changed", kind=kind)
                 return

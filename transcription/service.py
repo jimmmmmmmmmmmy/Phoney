@@ -118,6 +118,8 @@ class TranscriptionManager:
         self.revision = 0
         self.closed = False
         self.storage_error = ""
+        self.archive = storage.ArchiveIndex(getattr(settings, "transcript_storage_dir", ""),
+                                            self._valid_history)
         if self.enabled:
             try:
                 self.history = [item for item in storage.load(settings.transcript_storage_dir)
@@ -134,6 +136,17 @@ class TranscriptionManager:
 
     def _touch(self):
         self.revision += 1
+
+    def archive_snapshot(self):
+        return self.archive.snapshot()
+
+    def get_saved_call(self, call_sid):
+        """Disk-only lookup; dashboard keeps active/in-memory calls authoritative."""
+        try:
+            document = storage.load_call(self.settings.transcript_storage_dir, call_sid)
+            return document if document and self._valid_history(document) else None
+        except (OSError, ValueError, TypeError):
+            return None
 
     def _notify_segment(self, call_sid, segment, final, *, speech_start_ms=None):
         # Observers enqueue bounded work; provider/control I/O never runs here.
@@ -554,5 +567,5 @@ class TranscriptionManager:
                         return False
                 chars += len(segment["text"])
             return chars <= MAX_SESSION_TEXT
-        except (KeyError, TypeError, ValueError, OverflowError):
+        except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
             return False

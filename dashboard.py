@@ -13,6 +13,8 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from workspace_store import WorkspaceError
+from call_history import page as history_page, saved_call, details_for
+from call_details import normalize_caller_number
 
 
 SAFE_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
@@ -139,6 +141,10 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
         return (deepcopy(voicemail_store.snapshot()) if voicemail_store is not None else
                 {"enabled": False, "storage_error": "", "voicemails": []})
 
+    def voicemail_archive():
+        return (voicemail_store.archive_snapshot() if hasattr(voicemail_store, "archive_snapshot")
+                else voicemail_snapshot())
+
     def recording_snapshot():
         return (recording_library.snapshot() if recording_library is not None else
                 {"enabled": False, "storage_error": "", "recordings": []})
@@ -208,35 +214,44 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
                             headers=headers)
 
     @app.get("/api/transcripts")
-    async def transcripts(call_sid: str | None = None):
+    async def transcripts(call_sid: str | None = None, cursor: str | None = None,
+                          caller: str | None = None):
+        if caller and not normalize_caller_number(caller):
+            raise HTTPException(400, "Choose a valid caller number", headers=SAFE_HEADERS)
         snapshot = deepcopy(manager.snapshot())
         snapshot["schema_version"] = 1
-        snapshot["voicemail"] = voicemail_snapshot()
-        snapshot["recordings"] = await asyncio.to_thread(recording_snapshot)
+        try:
+            snapshot = await asyncio.to_thread(history_page, manager, call_details_store,
+                                               recording_library, snapshot, await asyncio.to_thread(voicemail_archive),
+                                               cursor=cursor, caller=caller, call_sid=call_sid)
+        except ValueError:
+            raise HTTPException(400, "Invalid call history cursor", headers=SAFE_HEADERS) from None
         snapshot["detection"] = await asyncio.to_thread(detection_snapshot)
         sessions = snapshot["sessions"]
-        snapshot["call_details"] = (await asyncio.to_thread(call_details_store.snapshot, sessions)
-                                    if call_details_store is not None else
-                                    {"enabled": False, "storage_error": "", "calls": []})
-        active = [s for s in sessions if not s.get("ended_at")]
-        selected = next((s for s in sessions if s["call_sid"] == call_sid), None)
-        if selected is None:
-            selected = (active or sessions or [None])[0]
-        snapshot["selected_call_sid"] = selected["call_sid"] if selected else None
+        selected = next((s for s in sessions if s["call_sid"] == snapshot["selected_call_sid"]), None)
         # The list stays compact; only the selected call includes timed evidence.
         # Recording-only calls also need evidence even without a transcript session.
         evidence_sid = (call_sid if call_sid and SID.fullmatch(call_sid)
                         else snapshot["selected_call_sid"])
+        page_ids = {item["call_sid"] for source in (sessions, snapshot["call_details"]["calls"],
+                                                   snapshot["recordings"]["recordings"],
+                                                   snapshot["voicemail"]["voicemails"])
+                    for item in source}
         if evidence_sid:
-            evidence = await asyncio.to_thread(detection_result, evidence_sid)
-            if evidence:
-                catalog = snapshot["detection"]["calls"]
-                existing = next((i for i, item in enumerate(catalog)
-                                 if item["call_sid"] == evidence_sid), None)
-                if existing is None:
-                    catalog.append(evidence)
-                else:
-                    catalog[existing] = evidence
+            page_ids.add(evidence_sid)
+        def page_detections():
+            catalog = {item["call_sid"]: item for item in snapshot["detection"]["calls"]}
+            for sid in page_ids:
+                if sid == evidence_sid or sid not in catalog:
+                    result = detection_result(sid)
+                    if result:
+                        catalog[sid] = result
+                if sid != evidence_sid and sid in catalog:
+                    analysis = catalog[sid].get("analysis", {})
+                    analysis.pop("windows", None)
+                    analysis.pop("synthetic_intervals", None)
+            return list(catalog.values())
+        snapshot["detection"]["calls"] = await asyncio.to_thread(page_detections)
         detections = {result["call_sid"]: result for result in snapshot["detection"]["calls"]}
         for session in sessions:
             if session["call_sid"] in detections:
@@ -265,10 +280,10 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
     async def export(call_sid: str, format: str = "json"):
         if not SID.fullmatch(call_sid) or format not in {"json", "txt"}:
             raise HTTPException(400, "Choose a valid call and json or txt format", headers=SAFE_HEADERS)
-        session = next((s for s in manager.snapshot()["sessions"] if s["call_sid"] == call_sid), None)
+        session = await asyncio.to_thread(saved_call, manager, call_sid, manager.snapshot()["sessions"])
         if session is None:
-            raise HTTPException(404, "Transcript is not in the current history", headers=SAFE_HEADERS)
-        voicemail = next((entry for entry in voicemail_snapshot()["voicemails"]
+            raise HTTPException(404, "Saved transcript is unavailable", headers=SAFE_HEADERS)
+        voicemail = next((entry for entry in (await asyncio.to_thread(voicemail_archive))["voicemails"]
                           if entry["call_sid"] == call_sid), None)
         headers = {**SAFE_HEADERS,
                    "Content-Disposition": f'attachment; filename="transcript-{call_sid}.{format}"'}
@@ -281,9 +296,8 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
             if voicemail is not None:
                 data["voicemail"] = voicemail
             if call_details_store is not None:
-                details = await asyncio.to_thread(call_details_store.snapshot, [session])
-                data["call_details"] = next((entry for entry in details["calls"]
-                                             if entry["call_sid"] == call_sid), None)
+                data["call_details"] = await asyncio.to_thread(details_for, call_details_store,
+                                                              call_sid, session)
             detection = await asyncio.to_thread(detection_result, call_sid)
             if detection is not None:
                 data["detection"] = detection

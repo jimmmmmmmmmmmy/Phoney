@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from call_details import CallDetailsStore, transcript_fingerprint
+from gemini_summary import SummaryError
 from summaries import SummaryManager
 import summaries
 
@@ -228,6 +229,58 @@ def test_permanent_failure_does_not_retry_or_expose_untrusted_error_code():
         assert store.jobs[CALL]["retry_at"] == 0
         await manager.close()
     asyncio.run(run())
+
+
+def test_private_trace_retains_transient_failure_cause_after_success(caplog, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(summaries.time, "time", lambda: clock[0])
+    caplog.set_level("INFO", logger="uvicorn.error")
+
+    async def run():
+        store = Store()
+        provider = Provider(SummaryError("rate_limited", True, http_status=429),
+                            "PRIVATE GENERATED SUMMARY")
+        manager = SummaryManager(settings(), Transcription(), store, provider=provider)
+        await manager.run_once()
+        assert store.jobs[CALL]["retry_at"] == 1030
+        clock[0] = 1030
+        await manager.run_once()
+        assert store.saved[CALL]["text"] == "PRIVATE GENERATED SUMMARY"
+        await manager.close()
+
+    asyncio.run(run())
+    records = [json.loads(record.message.removeprefix("summary_trace ")) for record in caplog.records
+               if record.message.startswith("summary_trace ")]
+    assert [record["event"] for record in records] == ["started", "failed", "started", "completed"]
+    failed = records[1]
+    assert failed["error"] == "rate_limited" and failed["http_status"] == 429
+    assert failed["attempt"] == 1 and failed["retry_at"] == 1030
+    assert records[-1]["attempt"] == 2
+    for record in records:
+        assert record["call_sid"] == CALL and record["kind"] == "detailed"
+        assert record["model"] == "gemini-3.8-flash"
+    assert type(failed["elapsed_ms"]) is int and failed["elapsed_ms"] >= 0
+    for private in ("fixture-key", "Fixture callback request.", "PRIVATE GENERATED SUMMARY"):
+        assert private not in caplog.text
+
+
+def test_trace_rejects_untrusted_provider_error_metadata(caplog):
+    caplog.set_level("INFO", logger="uvicorn.error")
+
+    async def run():
+        error = ProviderError("privatecredential", True)
+        error.http_status = "PRIVATE HTTP RESPONSE"
+        store = Store()
+        manager = SummaryManager(settings(), Transcription(), store, provider=Provider(error))
+        await manager.run_once()
+        assert store.jobs[CALL]["error"] == "provider-error"
+        await manager.close()
+
+    asyncio.run(run())
+    assert "privatecredential" not in caplog.text and "PRIVATE HTTP RESPONSE" not in caplog.text
+    failure = next(json.loads(record.message.removeprefix("summary_trace ")) for record in caplog.records
+                   if record.message.startswith("summary_trace ") and '"event":"failed"' in record.message)
+    assert failure["error"] == "provider-error" and "http_status" not in failure
 
 
 @pytest.mark.parametrize("change", ["transcript", "call-active", "operator-summary"])

@@ -55,6 +55,40 @@ class Controller:
         self.releases.append(args)
 
 
+def test_caller_control_uses_word_onset_after_leading_silence(tmp_path):
+    async def run():
+        config, connector = settings(tmp_path), Connector()
+        transcript = TranscriptionManager(config, connector)
+        capture = CaptureManager(config)
+        pipeline = BridgePipeline(config, capture, transcript, Detection(), CallDetailsStore(""))
+        pipeline.controller = Controller()
+        transcript.on_segment = pipeline.transcript_event
+        call = session()
+        await pipeline.start(call)
+        pipeline.audio(call, "remote", b"\xff" * 160, 3000)
+        await until(lambda: len(connector.sockets) == 2)
+        # The result window begins before agent playback at 2000 ms, but this
+        # new spoken interruption begins afterward, at 2400 ms.
+        message = result("Wait", start=1, duration=2)
+        message["channel"]["alternatives"][0]["words"] = [
+            {"word": "Wait", "start": 2.4, "end": 2.7}]
+        connector.sockets[0].push(message)
+        await until(lambda: len(pipeline.controller.turns) == 1)
+        args, kwargs = pipeline.controller.turns[0]
+        assert args == (call.id, "remote", "Wait")
+        assert kwargs["timestamp_ms"] == 2400
+        assert pipeline.context(call)[0]["start_ms"] == 1000
+        # Providers without word timing retain the existing result timestamp.
+        pipeline.transcript_event(CALL, {"track": "inbound", "text": "Another turn",
+            "start_ms": 2800, "end_ms": 3000}, False)
+        await until(lambda: len(pipeline.controller.turns) == 2)
+        assert pipeline.controller.turns[1][1]["timestamp_ms"] == 2800
+        await pipeline.close()
+        await capture.close()
+        await transcript.close()
+    asyncio.run(run())
+
+
 def test_transcription_failure_releases_agent_and_rejects_stale_context(tmp_path):
     async def run():
         config = settings(tmp_path)

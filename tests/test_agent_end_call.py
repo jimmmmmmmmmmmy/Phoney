@@ -212,6 +212,38 @@ def test_new_slot_request_revokes_hangup_while_registry_lookup_is_pending(tmp_pa
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('replacement_available', [True, False])
+def test_old_agent_cannot_start_a_hangup_reply_during_pending_replacement(tmp_path, replacement_available):
+    async def run():
+        provider = Provider()
+        h = Harness(tmp_path, provider=provider)
+        s = await h.joined()
+        await h.press('#1'); await h.complete()
+        started, release = asyncio.Event(), asyncio.Event()
+        async def delayed(slot):
+            started.set()
+            await release.wait()
+            return h.registry.slots[slot] if replacement_available else None
+        h.registry.resolve_slot = delayed
+        provider.reply = 'Goodbye.\n' + END_CALL
+        await h.press('#2')
+        await started.wait()
+        await h.controller.transcript(s.id, REMOTE, 'Please answer.', segment_id='pending-slot')
+        await asyncio.sleep(.45)
+        assert s.active and h.dialer.ended == []
+        assert len([u for u,b in provider.requests if 'generativelanguage' in u]) == 1
+        provider.reply = 'I will continue helping.'
+        release.set()
+        if replacement_available:
+            await until(lambda: s.profile == '2')
+            await h.complete()
+        else:
+            await until(lambda: s.mode == HUMAN)
+        assert s.active and h.dialer.ended == []
+        await h.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("failure", ["gemini", "tts", "ack"])
 def test_failed_generation_synthesis_or_playback_never_executes_hangup(tmp_path, monkeypatch, failure):
     monkeypatch.setattr("operator_service.runtime.PLAYBACK_ACK_SECONDS", -0.8)

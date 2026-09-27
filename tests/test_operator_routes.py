@@ -11,6 +11,7 @@ from dataclasses import replace
 import json
 import time
 from unittest.mock import Mock
+from urllib.parse import parse_qs, urlsplit
 import xml.etree.ElementTree as ET
 import uuid
 
@@ -18,10 +19,12 @@ import pytest
 import httpx
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from twilio.request_validator import RequestValidator
 
 from app import create_app
 from config import Settings
 from operator_service.controls import load_profiles
+from operator_service.routes import leg_twiml
 from operator_service.sessions import CONNECTED, ENDED, HUMAN, OWNER, OWNER_PROMPT, REMOTE
 from test_media_webhooks import Gateway, signed_post, socket_headers
 from voice_stack.settings import VoiceSettings
@@ -189,6 +192,29 @@ def accept_owner(client, settings, session_id, socket, **changes):
 
 
 # ------------------------------------------------------------------- the API
+
+
+@pytest.mark.parametrize("role,prompt,digits", [
+    (REMOTE, "New College Data Science", None),
+    (OWNER, "Press 1 to connect.", None),
+    (REMOTE, None, "123#"),
+    (OWNER, None, None),
+])
+def test_leg_recovery_waits_only_after_the_stream_and_bounds_http_retries(role, prompt, digits):
+    root = ET.fromstring(leg_twiml(SETTINGS.public_base_url, "session", role, 1,
+                                  "stream-token", prompt=prompt, digits=digits))
+    expected = (["Say"] if prompt else []) + (["Play"] if digits else [])
+    assert [node.tag for node in root] == expected + ["Connect", "Pause", "Redirect"]
+    if prompt:
+        assert root[0].text == prompt
+    assert root.find("Connect/Stream") is not None
+    assert root.find("Pause").attrib == {"length": "8"}
+    redirect = root.find("Redirect")
+    assert redirect.attrib == {"method": "POST"}
+    target = urlsplit(redirect.text)
+    assert target.path == f"/twilio/reconnect/session/{role}"
+    assert target.query == "", "Twilio overrides belong in the fragment, not signed request parameters"
+    assert parse_qs(target.fragment) == {"rc": ["2"], "rp": ["ct,5xx"], "tt": ["15000"]}
 
 
 def test_outbound_requires_the_admin_token_and_a_configured_bridge():
@@ -479,18 +505,31 @@ def test_recovery_rotates_the_stream_generation_and_is_rate_limited():
             accept_owner(client, settings, session_id, owner)
             owner_sid = session_of(client, session_id).legs[OWNER].call_sid
             stale_token = session_of(client, session_id).legs[OWNER].token
+            recovery_path = f"/twilio/reconnect/{session_id}/owner"
+            form = {"AccountSid": ACCOUNT, "CallSid": owner_sid}
+            redirect = ET.fromstring(dialer.created[0]["twiml"]).find("Redirect").text
+            # Twilio consumes connection overrides itself; HTTP requests and
+            # signature validation must use the URL with its fragment removed.
+            assert urlsplit(redirect).path == recovery_path
+            wrong_signature = RequestValidator(settings.auth_token).compute_signature(redirect, form)
+            assert client.post(recovery_path, data=form,
+                               headers={"X-Twilio-Signature": wrong_signature}).status_code == 403
+            assert client.post(recovery_path, data=form).status_code == 403
+            assert session_of(client, session_id).legs[OWNER].token == stale_token
             first = signed_post(client, settings, f"/twilio/reconnect/{session_id}/owner",
-                                {"AccountSid": ACCOUNT, "CallSid": owner_sid})
+                                form)
             assert first.status_code == 200
             assert stream_parameter(first.text, "generation") == "2"
             assert stream_parameter(first.text, "token") != stale_token
             assert "Press 1" not in first.text
+            assert [node.tag for node in ET.fromstring(first.text)] == ["Connect", "Pause", "Redirect"]
             # The other leg's SID can never take over this call.
             assert signed_post(client, settings, f"/twilio/reconnect/{session_id}/owner",
                                {"AccountSid": ACCOUNT, "CallSid": REMOTE_SID}).status_code == 400
             second = signed_post(client, settings, f"/twilio/reconnect/{session_id}/owner",
                                  {"AccountSid": ACCOUNT, "CallSid": owner_sid})
             assert stream_parameter(second.text, "generation") == "3"
+            assert stream_parameter(second.text, "token") != stream_parameter(first.text, "token")
             limited = signed_post(client, settings, f"/twilio/reconnect/{session_id}/owner",
                                   {"AccountSid": ACCOUNT, "CallSid": owner_sid})
             assert "<Hangup" in limited.text

@@ -68,12 +68,24 @@ text, audio, and provider credentials are excluded. Historical calls made
 before these events were added cannot provide precise provider latency.
 
 Human speech during preparation updates the context without repeatedly
-canceling the handoff. Changed context is refreshed after the announcement.
+canceling the handoff. The first prepared response plays after the announcement;
+new caller turns are coalesced into one follow-up with the latest context.
+Only speech that starts after agent audio is sent can interrupt playback, so
+provider generation time and delayed pre-playback STT are not barge-in events.
 The announcement and first reply synthesize concurrently; the fixed
 announcement is cached by voice and model after a manual activation.
 Repeated selection of the active shortcut is a no-op. `#0`, a different
 shortcut, and hangup still cancel the current generation.
+New finalized caller context defers an old end-call command until a fresh reply.
+Provider HTTP failures log only the provider name and status code, never the
+response body or credential-bearing URL.
 
 If the tunnel drops and a terminal callback is missed, a bounded provider
 status check reconciles an ended call. A socket disconnect alone never counts
 as a hangup, and a reconnected stream invalidates the old check.
+After a stream disconnects, inline TwiML waits eight seconds before requesting
+fresh stream credentials. The reconnect webhook has two bounded connection/5xx
+retries within Twilio's 15-second request limit, using
+[Twilio connection overrides](https://www.twilio.com/docs/usage/webhooks/webhooks-connection-overrides).
+This allows brief edge outages time to recover; it cannot prevent transport
+loss or guarantee recovery during a sustained local-network/tunnel outage.

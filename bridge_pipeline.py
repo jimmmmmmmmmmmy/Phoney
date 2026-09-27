@@ -151,7 +151,7 @@ class BridgePipeline:
                 await self.controller.transcript(session_id,
                     "remote" if segment["track"] == "inbound" else "owner",
                     segment["text"], final=final, segment_id=segment.get("id", ""),
-                    timestamp_ms=segment.get("start_ms"))
+                    timestamp_ms=segment.get("speech_start_ms", segment.get("start_ms")))
             except Exception:
                 log.warning("bridge_transcript_listener_failed")
                 await self._release(session_id)

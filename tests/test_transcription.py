@@ -160,6 +160,72 @@ def test_interims_replace_final_segments_deduplicate_and_snapshot_is_detached(tm
     asyncio.run(run())
 
 
+def test_first_word_onset_is_listener_only_and_preserves_result_identity(tmp_path):
+    async def run():
+        connector, observed = Connector(), []
+        manager = TranscriptionManager(settings(tmp_path), connector,
+            on_segment=lambda sid, segment, final: observed.append((segment, final)))
+        manager.start(CALL, STREAM)
+        manager.offer(CALL, "inbound", 3000, b"\xff" * 160)
+        await until(lambda: len(connector.sockets) == 2)
+        message = result("Wait", final=False, start=1, duration=2)
+        message["channel"]["alternatives"][0]["words"] = [
+            {"word": "Wait", "start": 2.4, "end": 2.7}]
+        connector.sockets[0].push(message)
+        await until(lambda: len(observed) == 1)
+        message["is_final"] = True
+        connector.sockets[0].push(message)
+        await until(lambda: len(observed) == 2)
+        assert [final for _, final in observed] == [False, True]
+        assert all(segment["speech_start_ms"] == 2400 for segment, _ in observed)
+        assert all(segment["start_ms"] == 1000 for segment, _ in observed)
+        # A timing-only word update neither changes canonical identity nor
+        # replays the final transcript to the control listener.
+        message["channel"]["alternatives"][0]["words"][0]["start"] = 2.5
+        connector.sockets[0].push(message)
+        await complete(manager)
+        assert len(observed) == 2
+        stored = manager.history[0]["segments"]
+        assert len(stored) == 1 and stored[0]["id"] == "inbound-0"
+        assert stored[0]["start_ms"] == 1000 and stored[0]["end_ms"] == 3000
+        assert "speech_start_ms" not in stored[0]
+        restored = TranscriptionManager(settings(tmp_path), Connector())
+        assert restored.history[0]["segments"] == stored
+        await restored.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("words", [
+    None, [], "invalid", [None],
+    [{"word": "Wait", "start": float("nan"), "end": 2.7}],
+    [{"word": "Wait", "start": 2.4, "end": float("inf")}],
+    [{"word": "Wait", "start": True, "end": 2.7}],
+    [{"word": "Wait", "start": "2.4", "end": 2.7}],
+    [{"word": "Wait", "start": .9, "end": 2.7}],
+    [{"word": "Wait", "start": 2.4, "end": 3.1}],
+    [{"word": "Wait", "start": 2.7, "end": 2.4}],
+    [{"word": "", "start": 2.4, "end": 2.7}],
+    [{"word": "Wait", "start": 2.4}],
+])
+def test_malformed_word_timing_falls_back_without_failing_transcription(tmp_path, words):
+    async def run():
+        connector, observed = Connector(), []
+        manager = TranscriptionManager(settings(tmp_path), connector,
+            on_segment=lambda sid, segment, final: observed.append(segment))
+        manager.start(CALL, STREAM)
+        manager.offer(CALL, "inbound", 3000, b"\xff" * 160)
+        await until(lambda: len(connector.sockets) == 2)
+        message = result("Wait", start=1, duration=2)
+        message["channel"]["alternatives"][0]["words"] = words
+        connector.sockets[0].push(message)
+        await until(lambda: bool(observed))
+        assert observed[0]["start_ms"] == 1000
+        assert "speech_start_ms" not in observed[0]
+        assert not manager.sessions[CALL].tracks["inbound"].error
+        await complete(manager)
+    asyncio.run(run())
+
+
 def test_close_stream_tail_persists_privately_and_reloads_history(tmp_path):
     async def run():
         connector = Connector([{"tail": result("Last words.")}, {}])

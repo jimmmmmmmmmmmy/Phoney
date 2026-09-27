@@ -47,6 +47,22 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def speech_start_ms(alternative, start, end):
+    """Return a bounded speech onset, not the result window's leading silence."""
+    words = alternative.get("words")
+    if not isinstance(words, list) or not words or not isinstance(words[0], dict):
+        return None
+    first = words[0]
+    word = first.get("word")
+    word_start, word_end = first.get("start"), first.get("end")
+    if (not isinstance(word, str) or not word.strip()
+            or any(type(value) not in (int, float) or not math.isfinite(value)
+                   for value in (word_start, word_end))
+            or not start <= word_start <= word_end <= end):
+        return None
+    return round(word_start * 1000)
+
+
 class TrackFailure(Exception):
     pass
 
@@ -119,11 +135,15 @@ class TranscriptionManager:
     def _touch(self):
         self.revision += 1
 
-    def _notify_segment(self, call_sid, segment, final):
+    def _notify_segment(self, call_sid, segment, final, *, speech_start_ms=None):
         # Observers enqueue bounded work; provider/control I/O never runs here.
         if self.on_segment is not None:
             try:
-                self.on_segment(call_sid, dict(segment), final)
+                event = dict(segment)
+                if speech_start_ms is not None:
+                    # Control-only metadata must not alter stored timing or IDs.
+                    event["speech_start_ms"] = speech_start_ms
+                self.on_segment(call_sid, event, final)
             except Exception:
                 pass
 
@@ -442,6 +462,7 @@ class TranscriptionManager:
             except (ValueError, KeyError, TypeError, IndexError):
                 raise TrackFailure("result-invalid")
             text = text.strip()
+            onset_ms = speech_start_ms(alternative, start, start + duration)
             if final:
                 if track.interim:
                     track.interim = ""
@@ -466,12 +487,14 @@ class TranscriptionManager:
                         session.segments[existing] = segment
                     session.text_chars = total
                     self._touch()
-                    self._notify_segment(session.call_sid, segment, True)
+                    self._notify_segment(session.call_sid, segment, True,
+                                         speech_start_ms=onset_ms)
             elif track.interim != text:
                 track.interim = text
                 self._touch()
                 self._notify_segment(session.call_sid, {"track": track.name,
-                    "text": text, "start_ms": start_ms, "end_ms": end_ms}, False)
+                    "text": text, "start_ms": start_ms, "end_ms": end_ms}, False,
+                    speech_start_ms=onset_ms)
         if not track.close_sent:
             raise TrackFailure("provider-disconnected")
 

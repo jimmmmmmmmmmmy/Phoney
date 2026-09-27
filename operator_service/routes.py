@@ -48,6 +48,7 @@ TERMINAL_STATUSES = frozenset({"completed", "busy", "no-answer", "failed", "canc
 RING_TIMEOUT_SECONDS = 25
 DISCONNECT_STATUS_DELAYS = (5.0, 15.0, 30.0, 60.0)
 STATUS_FETCH_SECONDS = 12.0
+RECONNECT_PAUSE_SECONDS = 8
 ACCEPT_DIGIT = "1"
 ACCEPT_PROMPT = "Press 1 to connect."
 def leg_twiml(public_base: str, session_id: str, role: str, generation: int, token: str,
@@ -68,7 +69,11 @@ def leg_twiml(public_base: str, session_id: str, role: str, generation: int, tok
         url=public_base.replace("https://", "wss://", 1) + f"/media/{session_id}/{role}/")
     stream.parameter(name="generation", value=str(generation))
     stream.parameter(name="token", value=token)
-    response.redirect(public_base + f"/twilio/reconnect/{session_id}/{role}", method="POST")
+    # This is reached only after the media stream ends. Give a briefly lost
+    # tunnel time to reconnect before asking it for fresh stream credentials.
+    response.pause(length=RECONNECT_PAUSE_SECONDS)
+    response.redirect(public_base + f"/twilio/reconnect/{session_id}/{role}"
+                      + "#rc=2&rp=ct,5xx&tt=15000", method="POST")
     return str(response)
 
 
@@ -168,7 +173,9 @@ class OperatorController:
         self._transcript_seen = {}
         self._reply_timers = {}
         self._takeover_requests = {}
-        self._context_revisions = {}
+        self._accepted_takeovers = {}
+        self._remote_revisions = {}
+        self._dialogue_runs = {}
         self._output_clocks = {}
         self._agent_frames_sent = {}
         self.announcement_cache = {}
@@ -214,6 +221,7 @@ class OperatorController:
         session = self.store.find(session_id)
         return bool(session and session.active and session.profile == slot
                     and session.agent_snapshot is not None
+                    and self._accepted_takeovers.get(session_id) == self._takeover_requests.get(session_id)
                     and session.mode in (PREPARING, ANNOUNCING, AGENT))
 
     def relay_ready(self, session_id):
@@ -250,6 +258,12 @@ class OperatorController:
         session = self.store.sessions.get(session_id)
         if kind == "agent":
             self._agent_frames_sent[session_id] = self._agent_frames_sent.get(session_id, 0) + 1
+            run = self._dialogue_runs.get(session_id)
+            if (run is not None and run.current() and session.mode == AGENT
+                    and run.pending is not None and run.speaking_started_ms is None
+                    and getattr(frame, "reply_epoch", None) == run.epoch):
+                run.speaking_started_ms = self.elapsed_ms(session_id)
+                run.trace("reply-first-frame-sent")
         if self.output_callback is not None and session is not None:
             try:
                 stamp = max(self.elapsed_ms(session_id), self._output_clocks.get(session_id, -20) + 20)
@@ -553,6 +567,21 @@ class OperatorController:
             return False
 
     async def takeover(self, session_id, slot, *, request_id=None):
+        expected = request_id if request_id is not None else self._takeover_requests.get(session_id, 0) + 1
+        try:
+            return await self._prepare_takeover(session_id, slot, request_id=request_id)
+        except OperatorRejected:
+            # A failed replacement must neither grant the old agent the new
+            # request's authority nor leave a silently suspended agent in control.
+            session = self.store.find(session_id)
+            if (session is not None and session.active
+                    and session.mode in (PREPARING, ANNOUNCING, AGENT)
+                    and self._takeover_requests.get(session_id) == expected
+                    and self._accepted_takeovers.get(session_id) != expected):
+                await self._release(session_id)
+            raise
+
+    async def _prepare_takeover(self, session_id, slot, *, request_id=None):
         session = self.store.find(session_id)
         if session is None or not session.active:
             raise OperatorRejected("unknown-session")
@@ -603,6 +632,7 @@ class OperatorController:
         session.agent_snapshot = snapshot
         session.agent_name = snapshot.name
         session.voice_id = snapshot.voice_id
+        self._accepted_takeovers[session_id] = request_id
         self.trace(session_id, "takeover-preparing", slot=slot)
         self._start_dialogue(session, announce=True)
         return True
@@ -612,10 +642,24 @@ class OperatorController:
                           announce=announce)
         task = self.store.spawn(run.run())
         self.players[session.id] = task
+        self._dialogue_runs[session.id] = run
         def done(finished):
             if self.players.get(session.id) is finished:
                 self.players.pop(session.id, None)
+                self._dialogue_runs.pop(session.id, None)
+                # Coalesce speech received during generation into one next turn.
+                # It must not repeatedly cancel a response nobody has heard yet.
+                if (run.completed and run.current() and not run.end_requested
+                        and run.takeover_request == self._takeover_requests.get(session.id, 0)
+                        and self._remote_revisions.get(session.id, 0) > run.remote_revision):
+                    self._schedule_reply(session.id)
         task.add_done_callback(done)
+
+    def _schedule_reply(self, session_id):
+        timer = self._reply_timers.pop(session_id, None)
+        if timer is not None:
+            timer.cancel()
+        self._reply_timers[session_id] = self.store.spawn(self._after_remote_turn(session_id))
 
     async def transcript(self, session_id, speaker, text, *, final=True,
                          segment_id="", timestamp_ms=None):
@@ -632,30 +676,37 @@ class OperatorController:
             while len(seen) > 1000:
                 seen.pop(next(iter(seen)))
         if final:
-            self._context_revisions[session_id] = self._context_revisions.get(session_id, 0) + 1
+            if speaker == REMOTE:
+                self._remote_revisions[session_id] = self._remote_revisions.get(session_id, 0) + 1
             await self.store.add_turn(session_id, speaker, text)
             # Keep the manual handoff moving while humans continue talking.
-            # DialogueRun refreshes changed context once after the announcement;
-            # canceling preparation for every STT segment can starve takeover.
+            # New caller turns are coalesced after the prepared reply is heard.
         if speaker == REMOTE and session.mode == AGENT:
-            # Interim remote speech clears queued agent audio immediately.
+            timer = self._reply_timers.pop(session_id, None)
+            if timer is not None:
+                timer.cancel()
             if self.playing(session_id):
+                run = self._dialogue_runs.get(session_id)
+                # Barge-in requires actual outgoing speech, not a running HTTP
+                # request. Delayed STT from before playback is not a new interruption.
+                if (run is not None and (run.speaking_started_ms is None
+                        or (timestamp_ms is not None and timestamp_ms < run.speaking_started_ms))):
+                    return
                 self.trace(session_id, "caller-interruption")
                 await self.store.invalidate_reply(session_id)
                 self._stop_playback(session_id)
                 self._note_cleared(session_id, self.router(session_id).clear(*ROLES))
                 self._note_interrupted(session_id)
-            timer = self._reply_timers.pop(session_id, None)
-            if timer is not None:
-                timer.cancel()
             if final and session.agent_snapshot is not None:
-                self._reply_timers[session_id] = self.store.spawn(self._after_remote_turn(session_id))
+                self._schedule_reply(session_id)
 
     async def _after_remote_turn(self, session_id):
         try:
             await asyncio.sleep(0.3)
             session = self.store.find(session_id)
-            if session is not None and session.active and session.mode == AGENT:
+            if (session is not None and session.active and session.mode == AGENT
+                    and not self.playing(session_id)
+                    and self._accepted_takeovers.get(session_id) == self._takeover_requests.get(session_id)):
                 await self.store.invalidate_reply(session_id)
                 self._start_dialogue(session)
         finally:
@@ -666,6 +717,7 @@ class OperatorController:
         """``#0`` returns control immediately and never waits on a provider."""
         self.trace(session_id, "return-to-human")
         self._takeover_requests[session_id] = self._takeover_requests.get(session_id, 0) + 1
+        self._accepted_takeovers.pop(session_id, None)
         self._stop_playback(session_id)
         timer = self._reply_timers.pop(session_id, None)
         if timer is not None:
@@ -702,13 +754,14 @@ class OperatorController:
         await self.digit_sender(session_id, digits)
 
     def playing(self, session_id: str) -> bool:
-        """Whether a phrase is still being spoken for this session."""
+        """Whether generation or playback is still in progress for this session."""
         task = self.players.get(session_id)
         return bool(task is not None and not task.done())
 
     def _stop_playback(self, session_id: str):
         """Cancel the phrase being spoken; the epoch change already invalidates it."""
         task = self.players.pop(session_id, None)
+        self._dialogue_runs.pop(session_id, None)
         if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
 
@@ -745,7 +798,8 @@ class OperatorController:
         self.keypads.pop(session_id, None)
         self._transcript_seen.pop(session_id, None)
         self._takeover_requests.pop(session_id, None)
-        self._context_revisions.pop(session_id, None)
+        self._accepted_takeovers.pop(session_id, None)
+        self._remote_revisions.pop(session_id, None)
         self._output_clocks.pop(session_id, None)
 
     async def _on_session_end(self, session_id: str):

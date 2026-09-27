@@ -222,6 +222,7 @@ def test_http_failures_are_classified_without_leaking_body_key_or_redirect(statu
         run_response({"error": {"message": "PRIVATE BODY " + KEY}}, status=status,
                      headers={"location": "https://untrusted.example/"}, method=method)
     assert error.value.code == code and error.value.retryable is retryable
+    assert error.value.http_status == status
     assert str(error.value) == code and KEY not in repr(error.value)
 
 

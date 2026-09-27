@@ -64,8 +64,10 @@ class DialogueRun:
         self.confirmed = []
         self.producer = None
         self.sequence = 0
-        self.context_revision = controller._context_revisions.get(session.id, 0)
-        self.takeover_request = controller._takeover_requests.get(session.id, 0)
+        self.remote_revision = controller._remote_revisions.get(session.id, 0)
+        self.speaking_started_ms = None
+        self.completed = False
+        self.takeover_request = controller._accepted_takeovers.get(session.id, 0)
         self.open_audio = None
         self.end_requested = False
         self.cue_task = None
@@ -129,33 +131,44 @@ class DialogueRun:
                     await self.controller.store.transition(self.session.id, self.epoch, AGENT)
                     self.trace("agent-active")
                     self.controller.router(self.session.id).set_mode(AGENT)
-                    if self.context_revision != self.controller._context_revisions.get(self.session.id, 0):
-                        # Speech during the announcement is new evidence too;
-                        # preserve the cue but replace the now-stale first reply.
-                        self.trace("context-refreshed-after-announcement")
-                        await self.controller.store.invalidate_reply(self.session.id)
-                        self.controller._start_dialogue(self.session)
-                        return
+                    # Deliver the response we prepared before muting the owner.
+                    # New speech remains in history for the next turn; throwing
+                    # this response away leaves a silent, already-active agent.
                     if first is not None:
                         await self._phrase(first, _prepend(first_chunk, audio))
                 while self.current() and not reply_exhausted:
+                    self.stage = "next-phrase"
                     phrase = await self._next_phrase()
                     if phrase is None:
                         break
                     await self._phrase(phrase, self._speech(http, phrase))
                 await self.producer
+                self.completed = True
                 # The producer's successful completion and every phrase's
                 # playback mark must precede hangup. A new owner selection
                 # revokes this action even while its registry lookup is pending.
                 if (self.end_requested and self.current()
                         and self.takeover_request == self.controller._takeover_requests.get(self.session.id, 0)):
-                    self.trace("agent-end-call")
-                    await self.controller.end(self.session.id, "agent-end-call")
+                    if self.remote_revision != self.controller._remote_revisions.get(self.session.id, 0):
+                        # A final caller turn received after the context snapshot
+                        # must be considered before executing a stale hangup.
+                        self.end_requested = False
+                        self.trace("end-call-deferred-for-new-speech")
+                    else:
+                        self.trace("agent-end-call")
+                        await self.controller.end(self.session.id, "agent-end-call")
         except asyncio.CancelledError:
             self.trace("generation-canceled", stage=self.stage)
             raise
         except Exception as exc:
-            self.trace("generation-failed", stage=self.stage, error=type(exc).__name__)
+            fields = {}
+            if isinstance(exc, httpx.HTTPStatusError):
+                fields["http_status"] = exc.response.status_code
+                fields["provider"] = {
+                    "generativelanguage.googleapis.com": "gemini",
+                    "api.elevenlabs.io": "elevenlabs",
+                }.get(exc.request.url.host, "unknown")
+            self.trace("generation-failed", stage=self.stage, error=type(exc).__name__, **fields)
             if self.current():
                 await self.controller._abandon(self.session.id, "dialogue-" + type(exc).__name__)
         finally:
@@ -300,7 +313,8 @@ class DialogueRun:
             await asyncio.sleep(0.01)
         if not self.current():
             raise asyncio.CancelledError
-        sent = router.send_announcement(frame) if kind == "announcement" else router.send_agent((frame,))
+        sent = (router.send_announcement(frame) if kind == "announcement"
+                else router.send_agent((frame,), reply_epoch=self.epoch))
         if not sent:
             raise ValueError("Remote stream unavailable")
         if kind == "agent" and self.pending is not None:

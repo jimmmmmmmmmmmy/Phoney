@@ -61,9 +61,10 @@ owner. This is a brief overview for a call list. """ + SUMMARY_SAFEGUARDS
 class SummaryError(Exception):
     """Safe for status storage/logging: contains no provider response or secret."""
 
-    def __init__(self, code: str, retryable: bool = False):
+    def __init__(self, code: str, retryable: bool = False, *, http_status: int | None = None):
         self.code = code
         self.retryable = retryable
+        self.http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
         super().__init__(code)
 
 
@@ -205,15 +206,15 @@ class GeminiSummarizer:
                 ) as response:
                     status = response.status_code
                     if status == 429:
-                        raise SummaryError("rate_limited", retryable=True)
+                        raise SummaryError("rate_limited", retryable=True, http_status=status)
                     if 500 <= status <= 599:
-                        raise SummaryError("provider_unavailable", retryable=True)
+                        raise SummaryError("provider_unavailable", retryable=True, http_status=status)
                     if status in (401, 403):
-                        raise SummaryError("authentication_failed")
+                        raise SummaryError("authentication_failed", http_status=status)
                     if status == 402:
-                        raise SummaryError("billing_required")
+                        raise SummaryError("billing_required", http_status=status)
                     if status != 200:
-                        raise SummaryError("request_rejected")
+                        raise SummaryError("request_rejected", http_status=status)
                     # Request identity so response expansion cannot bypass the
                     # body cap; an unexpectedly encoded response fails closed.
                     if response.headers.get("content-encoding", "identity").lower() != "identity":

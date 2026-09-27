@@ -3,11 +3,15 @@
 import asyncio
 from copy import deepcopy
 import inspect
+import json
+import logging
 import math
 import re
 import time
 
-from call_details import MAX_SUMMARY_ATTEMPTS, SUMMARY_KINDS, transcript_fingerprint
+from call_details import MAX_SUMMARY_ATTEMPTS, SUMMARY_ERRORS, SUMMARY_KINDS, transcript_fingerprint
+
+LOGGER = logging.getLogger("uvicorn.error")
 
 POLL_SECONDS = 2.0
 REQUEST_SECONDS = 45.0
@@ -20,6 +24,10 @@ MAX_ATTEMPTS = MAX_SUMMARY_ATTEMPTS
 RETRY_DELAYS = (30, 120, 600, 1800)
 RETRYABLE_ERRORS = {"rate_limited", "provider_unavailable", "timeout", "transport_error",
                     "provider-timeout", "interrupted"}
+
+
+def _safe_error(error):
+    return error if isinstance(error, str) and error in SUMMARY_ERRORS and error else "provider-error"
 
 
 class SummaryManager:
@@ -109,8 +117,31 @@ class SummaryManager:
             return None
         return result
 
-    async def _failed(self, document, error, retry_at=0, *, kind):
-        safe_error = error if isinstance(error, str) and re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", error) else "provider-error"
+    def _trace(self, event, call_sid, kind, *, error=None, http_status=None, attempt=None,
+               elapsed_ms=None, retry_at=None):
+        # Keep the cause after a successful retry clears the persisted job error.
+        # Never log provider bodies, exception strings, input/output text, or keys.
+        record = {"event": event, "call_sid": call_sid, "kind": kind}
+        model = getattr(self.settings, "gemini_summary_model", None)
+        if isinstance(model, str) and re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,99}", model):
+            record["model"] = model
+        if error is not None:
+            record["error"] = _safe_error(error)
+        if type(http_status) is int and 100 <= http_status <= 599:
+            record["http_status"] = http_status
+        if type(attempt) is int and 1 <= attempt <= MAX_ATTEMPTS:
+            record["attempt"] = attempt
+        if type(elapsed_ms) is int and elapsed_ms >= 0:
+            record["elapsed_ms"] = elapsed_ms
+        if type(retry_at) in (int, float) and math.isfinite(retry_at) and retry_at >= 0:
+            record["retry_at"] = retry_at
+        LOGGER.info("summary_trace %s", json.dumps(record, separators=(",", ":")))
+
+    async def _failed(self, document, error, retry_at=0, *, kind, http_status=None,
+                      attempt=None, elapsed_ms=None):
+        safe_error = _safe_error(error)
+        self._trace("failed", document["call_sid"], kind, error=safe_error,
+                    http_status=http_status, attempt=attempt, elapsed_ms=elapsed_ms, retry_at=retry_at)
         try:
             await self._store(self.call_details.fail_summary, document["call_sid"], document,
                               safe_error, retry_at=retry_at, kind=kind)
@@ -165,12 +196,14 @@ class SummaryManager:
         sid = document["call_sid"]
         fingerprint = transcript_fingerprint(document)
         begun = False
+        started = time.monotonic()
         try:
             if not self._allowed() or not self._current(sid, fingerprint):
                 return
             begun = bool(await self._store(self.call_details.begin_summary, sid, document, kind=kind))
             if not begun:
                 return  # Never spend on an attempt that was not durably counted.
+            self._trace("started", sid, kind, attempt=attempt)
             if not self._allowed():
                 retry_at = time.time() + RETRY_DELAYS[attempt - 1] if attempt < MAX_ATTEMPTS else 0
                 await self._failed(document, "interrupted", retry_at, kind=kind)
@@ -183,14 +216,17 @@ class SummaryManager:
                 generated = await asyncio.wait_for(generate(document), REQUEST_SECONDS)
             except asyncio.TimeoutError:
                 retry_at = time.time() + RETRY_DELAYS[attempt - 1] if attempt < MAX_ATTEMPTS else 0
-                await self._failed(document, "provider-timeout", retry_at, kind=kind)
+                await self._failed(document, "provider-timeout", retry_at, kind=kind,
+                                   attempt=attempt, elapsed_ms=round((time.monotonic() - started) * 1000))
                 return
             except asyncio.CancelledError:
                 raise
             except Exception as error:
                 retryable = getattr(error, "retryable", False) is True
                 retry_at = time.time() + RETRY_DELAYS[attempt - 1] if retryable and attempt < MAX_ATTEMPTS else 0
-                await self._failed(document, getattr(error, "code", "provider-error"), retry_at, kind=kind)
+                await self._failed(document, getattr(error, "code", "provider-error"), retry_at, kind=kind,
+                                   http_status=getattr(error, "http_status", None), attempt=attempt,
+                                   elapsed_ms=round((time.monotonic() - started) * 1000))
                 return
             if not isinstance(generated, str) or not generated.strip() or len(generated) > SUMMARY_KINDS[kind][2]:
                 await self._failed(document, "invalid-response", kind=kind)
@@ -212,6 +248,9 @@ class SummaryManager:
                                      source="gemini", model=getattr(self.settings, "gemini_summary_model", None), kind=kind)
             if not saved:
                 await self._failed(document, "storage-error", kind=kind)
+            else:
+                self._trace("completed", sid, kind, attempt=attempt,
+                            elapsed_ms=round((time.monotonic() - started) * 1000))
         except asyncio.CancelledError:
             if begun:
                 retry_at = time.time() + RETRY_DELAYS[attempt - 1] if attempt < MAX_ATTEMPTS else 0

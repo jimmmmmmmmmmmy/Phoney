@@ -229,11 +229,17 @@ def test_remote_barge_in_cancels_reply_then_final_turn_gets_new_reply(tmp_path):
 
 
 @pytest.mark.parametrize("status",[403,429,503])
-def test_provider_failure_returns_to_human(tmp_path,status):
+def test_provider_failure_returns_to_human(tmp_path,status,caplog):
+    caplog.set_level('INFO', logger='uvicorn.error')
     async def run():
         h=Harness(tmp_path,provider=Provider(status=status)); s=await h.joined()
-        await h.press("#1"); await until(lambda:s.mode==HUMAN)
+        await h.press("#1"); await until(lambda:s.mode==HUMAN and bool(h.provider.requests))
         assert not h.remote.frames(0x2A) and not h.delivered
+        failures = [json.loads(r.message.split('operator_trace ', 1)[1]) for r in caplog.records
+                    if r.message.startswith('operator_trace ') and 'generation-failed' in r.message]
+        assert failures[-1]['http_status'] == status
+        assert failures[-1]['provider'] == 'gemini'
+        assert 'Provider unavailable' not in caplog.text
         await h.close()
     asyncio.run(run())
 
@@ -474,7 +480,7 @@ def test_duplicate_final_transcript_does_not_trigger_duplicate_reply(tmp_path):
     asyncio.run(run())
 
 
-def test_new_final_turn_during_preparation_rebuilds_context(tmp_path):
+def test_owner_update_preserves_first_reply_and_is_available_to_next_turn(tmp_path):
     async def run():
         h=Harness(tmp_path,provider=Provider(delay=.1)); s=await h.joined()
         await h.press("#1")
@@ -483,7 +489,12 @@ def test_new_final_turn_during_preparation_rebuilds_context(tmp_path):
         await h.controller.transcript(s.id,OWNER,"Actually ask about a red truck instead.",segment_id="latest")
         await h.complete()
         requests=[body for url,body in h.provider.requests if "generativelanguage" in url]
-        assert len(requests)==2 and "red truck" in json.dumps(requests[-1]["contents"])
+        assert len(requests)==1 and len(h.delivered)==1
+        await h.controller.transcript(s.id,REMOTE,"What about the truck?",segment_id="next")
+        await until(lambda:len([u for u,b in h.provider.requests if "generativelanguage" in u])==2)
+        await h.complete()
+        requests=[body for url,body in h.provider.requests if "generativelanguage" in url]
+        assert "red truck" in json.dumps(requests[-1]["contents"])
         assert len(h.remote.frames(0x10))==3
         await h.close()
     asyncio.run(run())
@@ -536,8 +547,90 @@ def test_continuous_transcript_does_not_starve_manual_handoff(tmp_path):
         cues = [b for u, b in h.provider.requests if 'elevenlabs' in u and b['text'] == 'An AI assistant is joining this call.']
         assert len(cues) == 1
         requests = [b for u, b in h.provider.requests if 'generativelanguage' in u]
-        assert len(requests) == 2
-        assert 'Updated detail' in json.dumps(requests[-1]['contents'])
+        assert len(requests) == 1
+        assert any('Updated detail' in t['text'] for t in s.turns)
+        assert h.delivered[0][1]['delivery'] == 'played'
+        await h.close()
+    asyncio.run(run())
+
+
+def test_remote_speech_across_handoff_delivers_prepared_audio_before_one_followup(tmp_path, monkeypatch):
+    from operator_service.runtime import DialogueRun
+    original_phrase = DialogueRun._phrase
+    async def run():
+        first_phrase_ready, play_first = asyncio.Event(), asyncio.Event()
+        async def gated_phrase(dialogue, phrase, chunks):
+            if dialogue.announce:
+                first_phrase_ready.set()
+                await play_first.wait()
+            await original_phrase(dialogue, phrase, chunks)
+        monkeypatch.setattr(DialogueRun, '_phrase', gated_phrase)
+        h = Harness(tmp_path, provider=Provider(delay=.05), acknowledge=False)
+        s = await h.joined()
+        await h.press('#1')
+        await until(lambda: s.mode == PREPARING)
+        await h.controller.transcript(s.id, REMOTE, 'The car is blue.', segment_id='before-cue')
+        await until(lambda: bool(h.remote.marks()))
+        assert s.mode == ANNOUNCING
+        await h.controller.transcript(s.id, REMOTE, 'It also has new tires.', segment_id='during-cue')
+        await h.controller.mark(s.id, REMOTE, h.remote.marks()[-1], 'played')
+        await asyncio.wait_for(first_phrase_ready.wait(), 1)
+        assert s.mode == AGENT and not h.remote.frames(0x2A)
+        epoch = s.reply_epoch
+        for i in range(8):
+            await h.controller.transcript(s.id, REMOTE, 'Can you hear me', final=False)
+            await h.controller.transcript(s.id, REMOTE, f'New detail {i}', segment_id=f'waiting-{i}')
+            await asyncio.sleep(.05)
+        assert s.reply_epoch == epoch
+        assert len([u for u,b in h.provider.requests if 'generativelanguage' in u]) == 1
+        h.remote.acknowledge = True
+        play_first.set()
+        await until(lambda: len([u for u,b in h.provider.requests if 'generativelanguage' in u]) == 2)
+        assert h.delivered[0][1]['delivery'] == 'played'
+        await h.complete()
+        await asyncio.sleep(.35)
+        requests = [b for u,b in h.provider.requests if 'generativelanguage' in u]
+        assert len(requests) == 2 and 'New detail 7' in json.dumps(requests[-1]['contents'])
+        assert len(h.delivered) == 2
+        await h.close()
+    asyncio.run(run())
+
+
+def test_delayed_pre_playback_transcript_does_not_interrupt_but_new_speech_does(tmp_path):
+    async def run():
+        h = Harness(tmp_path, provider=Provider(frames=60))
+        s = await h.joined()
+        await h.press('#1')
+        await until(lambda: len(h.remote.frames(0x2A)) >= 2)
+        epoch = s.reply_epoch
+        await h.controller.transcript(s.id, REMOTE, 'Old delayed final.', segment_id='old', timestamp_ms=0)
+        await asyncio.sleep(.08)
+        assert s.reply_epoch == epoch and len(h.remote.frames(0x2A)) > 2
+        await h.controller.transcript(s.id, REMOTE, 'Wait.', final=False,
+                                      timestamp_ms=h.controller.elapsed_ms(s.id))
+        assert s.reply_epoch > epoch
+        count = len(h.remote.frames(0x2A))
+        await asyncio.sleep(.1)
+        assert len(h.remote.frames(0x2A)) == count
+        await h.press('#0')
+        assert not h.controller._reply_timers
+        await h.close()
+    asyncio.run(run())
+
+
+def test_new_remote_context_defers_stale_hangup_until_followup_reply(tmp_path):
+    async def run():
+        h = Harness(tmp_path, provider=Provider(delay=.08, reply='Goodbye.\n[/END CALL]'))
+        s = await h.joined()
+        await h.press('#1')
+        await until(lambda: s.mode == PREPARING and bool(h.provider.requests))
+        await h.controller.transcript(s.id, REMOTE, 'One more question.', segment_id='new')
+        await until(lambda: len(h.delivered) == 1)
+        assert s.active and h.dialer.ended == []
+        await until(lambda: not s.active)
+        assert len(h.delivered) == 2 and len(h.dialer.ended) == 2
+        requests = [b for u,b in h.provider.requests if 'generativelanguage' in u]
+        assert len(requests) == 2 and 'One more question' in json.dumps(requests[-1]['contents'])
         await h.close()
     asyncio.run(run())
 

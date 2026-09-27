@@ -76,9 +76,10 @@ class _SeenKeys:
 
 class QueuedFrame(bytes):
     """Keep provenance beside audio without changing its byte representation."""
-    def __new__(cls, frame, kind):
+    def __new__(cls, frame, kind, reply_epoch=None):
         value = super().__new__(cls, frame)
         value.kind = kind
+        value.reply_epoch = getattr(frame, "reply_epoch", None) if reply_epoch is None else reply_epoch
         return value
 
 
@@ -132,23 +133,23 @@ class OutputChannel:
 
     # ------------------------------------------------------------------ sending
 
-    def send(self, frame: bytes, *, kind: str = "live") -> bool:
+    def send(self, frame: bytes, *, kind: str = "live", reply_epoch=None) -> bool:
         """Queue audio for this leg; drop it when the leg has no stream."""
         if not self.attached:
             self._count("dropped")
             return False
         cap = AGENT_FRAMES if kind == "agent" else LIVE_FRAMES
-        self._push(self.media, QueuedFrame(frame, kind), cap)
+        self._push(self.media, QueuedFrame(frame, kind, reply_epoch), cap)
         self.underflow = UNDERFLOW_FRAMES
         self._wake.set()
         return True
 
-    def send_agent(self, frame: bytes) -> bool:
+    def send_agent(self, frame: bytes, *, reply_epoch=None) -> bool:
         """Queue agent speech for the owner's monitor mix."""
         if not self.attached:
             self._count("dropped")
             return False
-        self._push(self.agent, QueuedFrame(frame, "agent"), AGENT_FRAMES)
+        self._push(self.agent, QueuedFrame(frame, "agent", reply_epoch), AGENT_FRAMES)
         self.underflow = UNDERFLOW_FRAMES
         self._wake.set()
         return True
@@ -200,12 +201,13 @@ class OutputChannel:
                     await self._wake.wait()
                     deadline = None
                     continue
+                sent_frame, sent_kind = self._last_frame, self._last_kind
                 await socket.send_json(message)
                 if message["event"] == "media":
                     self._count("frames_out")
-                    if self.on_sent is not None and self._last_frame is not None:
+                    if self.on_sent is not None and sent_frame is not None:
                         try:
-                            self.on_sent(bytes(self._last_frame), self._last_kind)
+                            self.on_sent(sent_frame, sent_kind)
                         except Exception as exc:
                             log.warning("operator_output_observer_failed type=%s", type(exc).__name__)
                 if deadline is None:
@@ -305,15 +307,15 @@ class CallRouter:
             self.controller.on_audio(self.session_id, source, frame, timestamp_ms)
         return delivered
 
-    def send_agent(self, frames):
+    def send_agent(self, frames, *, reply_epoch=None):
         """Send cloned speech to the remote and mix it into the owner's monitor."""
         sent = 0
         for frame in frames:
             if not isinstance(frame, bytes) or len(frame) != FRAME_BYTES:
                 raise ValueError("Agent audio must be complete μ-law frames.")
-            if self.channels[REMOTE].send(frame, kind="agent"):
+            if self.channels[REMOTE].send(frame, kind="agent", reply_epoch=reply_epoch):
                 sent += 1
-            self.channels[OWNER].send_agent(frame)
+            self.channels[OWNER].send_agent(frame, reply_epoch=reply_epoch)
         return sent
 
     def send_announcement(self, frame):

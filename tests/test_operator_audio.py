@@ -11,7 +11,7 @@ import pytest
 from config import Settings
 from operator_service import OperatorSessions
 from operator_service.audio import (AGENT_FRAMES, LIVE_FRAMES, UNDERFLOW_FRAMES,
-                                   CallRouter, OutputChannel)
+                                   CallRouter, OutputChannel, QueuedFrame)
 from operator_service.codecs import (SILENCE_FRAME, clear_message, decode_payload,
                                      inbound_frames, is_silence, mark_message, media_message,
                                      mix_ulaw, ringback_pattern, silence_ulaw, tone_ulaw,
@@ -271,6 +271,53 @@ def test_writer_paces_audio_marks_and_gives_clear_priority():
         assert tally["cleared"] == 5 and tally["dropped"] == 0
         channel.detach()
 
+    asyncio.run(run())
+
+
+def test_inflight_old_reply_keeps_its_epoch_after_clear_and_replacement():
+    async def run():
+        started, release = asyncio.Event(), asyncio.Event()
+        class HeldAgentSocket(FakeSocket):
+            async def send_json(self, message):
+                if (message["event"] == "media"
+                        and base64.b64decode(message["media"]["payload"]) == AGENT_FRAME):
+                    started.set()
+                    await release.wait()
+                await super().send_json(message)
+        controller = Controller()
+        observed = []
+        controller.output_audio = lambda sid, frame, kind: observed.append((frame, kind))
+        router = CallRouter("session", controller)
+        remote = HeldAgentSocket()
+        router.channels[REMOTE].attach(remote, REMOTE_STREAM, 1, counters())
+        router.channels[OWNER].attach(FakeSocket(), OWNER_STREAM, 1, counters())
+        assert router.send_agent((AGENT_FRAME,), reply_epoch=1) == 1
+        await asyncio.wait_for(started.wait(), 1)
+        # Clearing queues cannot cancel a frame already inside send_json.
+        router.clear(OWNER, REMOTE)
+        replacement = bytes([0x44]) * 160
+        assert router.send_agent((replacement,), reply_epoch=2) == 1
+        release.set()
+        await until(lambda: len([row for row in observed if row[1] == "agent"]) == 2)
+        sent = [frame for frame, kind in observed if kind == "agent"]
+        assert [frame.reply_epoch for frame in sent] == [1, 2]
+        assert sent == [AGENT_FRAME, replacement]
+        # The replacement run can attribute only its own actual outgoing frame.
+        assert [frame for frame in sent if frame.reply_epoch == 2] == [replacement]
+        assert "reply_epoch" not in json.dumps(remote.sent)
+        router.close()
+    asyncio.run(run())
+
+
+def test_requeue_preserves_frame_epoch_without_changing_audio_bytes():
+    async def run():
+        channel = OutputChannel(REMOTE)
+        channel.attach(StalledSocket(), REMOTE_STREAM, 1, counters())
+        frame = QueuedFrame(AGENT_FRAME, "agent", reply_epoch=7)
+        assert channel.send(frame, kind="agent")
+        assert channel.media[0] == AGENT_FRAME
+        assert channel.media[0].reply_epoch == 7
+        channel.detach()
     asyncio.run(run())
 
 

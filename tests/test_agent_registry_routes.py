@@ -40,11 +40,12 @@ class Provider:
         return voice(name=name, ready=False, requiresVerification=True)
 
 
-def client_for(tmp_path, *, enabled=True, provider=None):
+def client_for(tmp_path, *, enabled=True, provider=None, demo=False):
     app = FastAPI()
     registry = AgentRegistry(str(tmp_path))
     settings = SimpleNamespace(public_base_url=BASE, agent_management_enabled=enabled,
-                               voice_agent_enabled=False, operator_inbound_enabled=False)
+                               voice_agent_enabled=False, operator_inbound_enabled=False,
+                               agent_demo_mode=demo)
     register_agent_routes(app, settings, registry, provider=provider)
     return TestClient(app, base_url=BASE), registry
 
@@ -64,6 +65,35 @@ def test_unauthed_config_reveals_no_agent_prompts_or_voice_ids(tmp_path):
     assert data["agents"] == data["voices"] == []
     assert data["automaticEnabled"] is data["manualEnabled"] is data["inboundEnabled"] is False
     assert "Ask how" not in result.text and "voiceABC" not in result.text
+
+
+def test_demo_can_read_and_save_agent_without_owner_session(tmp_path):
+    provider = Provider()
+    client, registry = client_for(tmp_path, provider=provider, demo=True)
+    registry.add_voice(voice())
+    response = client.put(f"/api/agents/{AGENT}", json=config(), headers=HEADERS)
+    assert response.status_code == 200
+    data = client.get("/api/agents/config").json()
+    assert data["demoMode"] is data["authenticated"] is True
+    assert data["agents"] == [response.json()]
+    assert len(data["voices"]) == 1
+    assert data["automaticEnabled"] is False
+    assert not client.cookies
+    assert provider.lists == 0 and provider.clones == []
+    restarted, _ = client_for(tmp_path, demo=True)
+    assert restarted.get("/api/agents/config").json()["agents"] == data["agents"]
+
+
+def test_demo_still_requires_same_origin_and_protects_provider_operations(tmp_path):
+    provider = Provider()
+    client, registry = client_for(tmp_path, provider=provider, demo=True)
+    registry.add_voice(voice())
+    for headers in ({}, {"Origin": "https://other.example", "X-Agent-Request": "1"}):
+        assert client.put(f"/api/agents/{AGENT}", json=config(), headers=headers).status_code == 403
+    assert client.post("/api/agents/voices/refresh", json={}, headers=HEADERS).status_code == 403
+    assert client.post("/api/agents/voices/clone", headers=HEADERS).status_code == 403
+    assert provider.lists == 0 and provider.clones == []
+    assert registry.snapshot()["agents"] == []
 
 
 def test_single_use_unlock_cookie_flags_logout_and_restart(tmp_path):

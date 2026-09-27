@@ -30,7 +30,7 @@ from operator_service import OperatorRejected, OperatorSessions, register_operat
 from partner_detection import LiveDetectionManager
 from partner_detection.storage import DetectionStore
 from partner_detection.backfill import BackfillManager
-from agent_registry import (AgentRegistry, owner_authenticated, owner_write_access,
+from agent_registry import (AgentRegistry, RegistryError, owner_authenticated, owner_write_access,
                             register_agent_routes)
 from bridge_pipeline import BridgePipeline
 
@@ -133,6 +133,11 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
 
     @asynccontextmanager
     async def lifespan(app):
+        if settings.agent_demo_mode:
+            try:
+                await asyncio.to_thread(agent_registry.ensure_default_voice_clone)
+            except RegistryError:
+                logger.warning("default_voice_clone_unavailable")
         summaries.start()
         detection_backfill.start()
         yield

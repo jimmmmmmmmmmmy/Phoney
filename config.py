@@ -47,6 +47,7 @@ class Settings:
     max_call_seconds: int = 1800
     voice_agent_enabled: bool = False
     agent_management_enabled: bool = False
+    agent_demo_mode: bool = False
     operator_inbound_enabled: bool = False
     modulate_detection_enabled: bool = False
     modulate_backfill_enabled: bool = False
@@ -139,6 +140,10 @@ class Settings:
             raise ValueError("VOICE_AGENT_ENABLED must be true or false.")
         if type(self.agent_management_enabled) is not bool:
             raise ValueError("AGENT_MANAGEMENT_ENABLED must be true or false.")
+        if type(self.agent_demo_mode) is not bool:
+            raise ValueError("AGENT_DEMO_MODE must be true or false.")
+        if self.agent_demo_mode and not self.agent_management_enabled:
+            raise ValueError("Enable AGENT_MANAGEMENT_ENABLED before AGENT_DEMO_MODE.")
         if type(self.operator_inbound_enabled) is not bool:
             raise ValueError("OPERATOR_INBOUND_ENABLED must be true or false.")
         if self.agent_management_enabled and not self.workspace_storage_dir:
@@ -218,6 +223,9 @@ class Settings:
         management_flag = os.getenv("AGENT_MANAGEMENT_ENABLED", "false").strip().lower()
         if management_flag not in {"true", "false"}:
             raise ValueError("AGENT_MANAGEMENT_ENABLED must be true or false.")
+        demo_flag = os.getenv("AGENT_DEMO_MODE", "false").strip().lower()
+        if demo_flag not in {"true", "false"}:
+            raise ValueError("AGENT_DEMO_MODE must be true or false.")
         inbound_flag = os.getenv("OPERATOR_INBOUND_ENABLED", "false").strip().lower()
         if inbound_flag not in {"true", "false"}:
             raise ValueError("OPERATOR_INBOUND_ENABLED must be true or false.")
@@ -263,6 +271,7 @@ class Settings:
             max_call_seconds=int(os.getenv("MAX_CALL_SECONDS", "1800")),
             voice_agent_enabled=voice_flag == "true",
             agent_management_enabled=management_flag == "true",
+            agent_demo_mode=demo_flag == "true",
             operator_inbound_enabled=inbound_flag == "true",
             modulate_detection_enabled=detection_flag == "true",
             modulate_backfill_enabled=backfill_flag == "true",

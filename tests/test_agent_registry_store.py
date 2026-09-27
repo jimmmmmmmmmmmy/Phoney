@@ -9,7 +9,7 @@ import stat
 import pytest
 
 from agent_registry import AgentRegistry, RegistryError
-from agent_registry.store import DATABASE_NAME, SESSION_SECONDS
+from agent_registry.store import DATABASE_NAME, SESSION_SECONDS, DEFAULT_AGENT_ID, DEFAULT_PERSONALITY
 from workspace_store import WorkspaceStore
 
 AGENT = "agent-12345678-1234-1234-1234-123456789abc"
@@ -30,6 +30,55 @@ def ready_store(tmp_path):
     store = AgentRegistry(str(tmp_path / "workspace"))
     store.add_voice(voice())
     return store
+
+
+def test_default_voice_clone_is_persistent_and_does_not_reset_edits(tmp_path):
+    store = ready_store(tmp_path)
+    store.add_voice(voice(name="owner"))
+    seeded = store.ensure_default_voice_clone()
+    assert seeded.id == DEFAULT_AGENT_ID
+    assert (seeded.name, seeded.prompt, seeded.slot) == ("Voice Clone", DEFAULT_PERSONALITY, 1)
+    assert store.resolve_slot("1") == seeded
+    assert seeded.voice_id == voice()["voiceId"]
+    edited = store.publish(seeded.id, config(name="My agent", prompt="Later edit", slot=3))
+    restarted = AgentRegistry(str(tmp_path / "workspace"))
+    assert restarted.ensure_default_voice_clone() == edited
+    assert restarted.resolve_slot("1") is None
+    assert restarted.snapshot()["agents"] == [edited.to_dict()]
+
+
+def test_default_waits_for_ready_owner_voice_without_inventing_a_voice(tmp_path):
+    store = ready_store(tmp_path)
+    assert store.ensure_default_voice_clone() is None
+    store.add_voice(voice(name="owner", requiresVerification=True))
+    assert store.ensure_default_voice_clone() is None
+    assert store.snapshot()["agents"] == []
+    store.add_voice(voice(name="owner"))
+    assert store.ensure_default_voice_clone().slot == 1
+
+
+def test_default_adopts_matching_agent_without_duplicate_or_lost_history(tmp_path):
+    store = ready_store(tmp_path)
+    store.add_voice(voice(name="owner"))
+    prior = store.publish(AGENT, config(name="Tom", prompt=DEFAULT_PERSONALITY + "."))
+    seeded = store.ensure_default_voice_clone()
+    assert seeded.id == prior.id and seeded.revision == 2
+    assert seeded.name == "Voice Clone" and seeded.prompt == DEFAULT_PERSONALITY
+    assert len(store.snapshot()["agents"]) == 1
+    with sqlite3.connect(tmp_path / "workspace" / DATABASE_NAME) as db:
+        first = json.loads(db.execute("SELECT payload FROM revisions WHERE revision=1").fetchone()[0])
+    assert first == prior.to_dict()
+
+
+def test_default_preserves_other_agent_when_assigning_slot_one(tmp_path):
+    store = ready_store(tmp_path)
+    store.add_voice(voice(name="owner"))
+    prior = store.publish(AGENT, config())
+    seeded = store.ensure_default_voice_clone()
+    assert seeded.id == DEFAULT_AGENT_ID
+    saved = {item["id"]: item for item in store.snapshot()["agents"]}
+    assert saved[AGENT] == {**prior.to_dict(), "revision": 2, "slot": None}
+    assert store.resolve_slot("1").id == DEFAULT_AGENT_ID
 
 
 def test_public_draft_is_not_execution_and_cannot_change_published_snapshot(tmp_path):

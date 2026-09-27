@@ -27,6 +27,8 @@ SESSION_SECONDS = 12 * 60 * 60
 MAX_AGENTS = 50
 MAX_VOICES = 500
 LOCK = threading.RLock()
+DEFAULT_AGENT_ID = "agent-voice-clone-default"
+DEFAULT_PERSONALITY = "Tries to hang the call up asap"
 
 
 class RegistryError(ValueError):
@@ -116,6 +118,7 @@ class AgentRegistry:
                 connection.execute("CREATE TABLE IF NOT EXISTS grants (digest TEXT PRIMARY KEY, expires REAL NOT NULL)")
                 connection.execute("CREATE TABLE IF NOT EXISTS owner_sessions (digest TEXT PRIMARY KEY, expires REAL NOT NULL)")
                 connection.execute("CREATE TABLE IF NOT EXISTS clone_receipts (key TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+                connection.execute("CREATE TABLE IF NOT EXISTS agent_setup (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
                 connection.execute("PRAGMA user_version=1")
                 yield connection
                 connection.commit()
@@ -231,6 +234,54 @@ class AgentRegistry:
                     "voiceId": voice["voiceId"], "consent": True, "at": self.clock()})))
         return voice
 
+    @staticmethod
+    def _save_revision(db, agent_id, name, prompt, voice_profile, voice_id, slot):
+        current = db.execute("SELECT revision FROM current_agents WHERE id=?", (agent_id,)).fetchone()
+        if current is None and db.execute("SELECT count(*) FROM current_agents").fetchone()[0] >= MAX_AGENTS:
+            raise RegistryError("The workspace agent limit has been reached.", 409)
+        revision = current[0] + 1 if current else 1
+        snapshot = AgentSnapshot(agent_id, name, prompt, revision, voice_profile, voice_id, slot)
+        db.execute("INSERT INTO revisions VALUES(?,?,?)", (agent_id, revision, json.dumps(snapshot.to_dict())))
+        db.execute("INSERT INTO current_agents VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,slot=excluded.slot",
+                   (agent_id, revision, slot))
+        return snapshot
+
+    def ensure_default_voice_clone(self):
+        """Create the demo's first agent once, without resetting later edits.
+
+        A matching existing #1 agent is adopted rather than duplicated. If #1
+        belongs to different instructions, preserve that agent and its history
+        in a new unassigned revision before assigning the requested default.
+        No provider operation or call activation happens here.
+        """
+        with self._transaction() as db:
+            marker = db.execute("SELECT value FROM agent_setup WHERE key='voice-clone-default'").fetchone()
+            ident = marker[0] if marker else DEFAULT_AGENT_ID
+            existing = db.execute("SELECT r.payload FROM current_agents c JOIN revisions r "
+                                  "ON r.agent_id=c.id AND r.revision=c.revision WHERE c.id=?", (ident,)).fetchone()
+            if marker or existing:
+                if not marker:
+                    db.execute("INSERT INTO agent_setup VALUES('voice-clone-default',?)", (ident,))
+                return AgentSnapshot.from_dict(json.loads(existing[0])) if existing else None
+            voice = next((item for item in self._voices(db)
+                          if item["name"].casefold() == "owner" and item["ready"]), None)
+            if voice is None:
+                return None
+            occupied = db.execute("SELECT r.payload FROM current_agents c JOIN revisions r "
+                                  "ON r.agent_id=c.id AND r.revision=c.revision WHERE c.slot=1").fetchone()
+            if occupied:
+                other = AgentSnapshot.from_dict(json.loads(occupied[0]))
+                if (other.voice_profile_id == voice["id"]
+                        and other.prompt.rstrip(". ") == DEFAULT_PERSONALITY):
+                    ident = other.id
+                else:
+                    self._save_revision(db, other.id, other.name, other.prompt,
+                                        other.voice_profile_id, other.voice_id, None)
+            saved = self._save_revision(db, ident, "Voice Clone", DEFAULT_PERSONALITY,
+                                        voice["id"], voice["voiceId"], 1)
+            db.execute("INSERT INTO agent_setup VALUES('voice-clone-default',?)", (ident,))
+            return saved
+
     def publish(self, agent_id, value):
         if not isinstance(agent_id, str) or not AGENT_ID.fullmatch(agent_id):
             raise RegistryError("Enter a valid agent identifier.")
@@ -259,14 +310,7 @@ class AgentRegistry:
                 raise RegistryError("A keypad slot needs a ready voice and an agent prompt.", 409)
             if slot is not None and db.execute("SELECT 1 FROM current_agents WHERE slot=? AND id!=?", (slot, agent_id)).fetchone():
                 raise RegistryError(f"Keypad #{slot} already belongs to another agent.", 409)
-            current = db.execute("SELECT revision FROM current_agents WHERE id=?", (agent_id,)).fetchone()
-            if current is None and db.execute("SELECT count(*) FROM current_agents").fetchone()[0] >= MAX_AGENTS:
-                raise RegistryError("The workspace agent limit has been reached.", 409)
-            revision = current[0] + 1 if current else 1
-            snapshot = AgentSnapshot(agent_id, name, prompt, revision, voice_profile, voice_id, slot)
-            db.execute("INSERT INTO revisions VALUES(?,?,?)", (agent_id, revision, json.dumps(snapshot.to_dict())))
-            db.execute("INSERT INTO current_agents VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,slot=excluded.slot",
-                       (agent_id, revision, slot))
+            snapshot = self._save_revision(db, agent_id, name, prompt, voice_profile, voice_id, slot)
         return snapshot
 
     def resolve_slot(self, key):

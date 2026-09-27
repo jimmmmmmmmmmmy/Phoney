@@ -1,6 +1,6 @@
 # Manual phone agents
 
-The Agents tab now supports saved prompts, ElevenLabs voice selection or consented enrollment, and unique `#1`–`#9` assignments. Publishing a configuration does not start a call or activate an agent. Modulate cannot trigger takeover. Existing Calls, Contacts, recordings, résumé links, and workspace drafts remain in place.
+The Agents tab is a list of saved agents. **New agent** and each row open the same editor for name, personality prompt, ElevenLabs voice, and a unique `#1`–`#9` call shortcut. **Save agent** stores a versioned configuration; it does not start a call or activate an agent. Modulate cannot trigger takeover.
 
 ## Configure the installed server
 
@@ -8,11 +8,12 @@ The installed service reads `~/Library/Application Support/NewCollegeOperator/.e
 
 | Setting | Purpose |
 | --- | --- |
-| `AGENT_MANAGEMENT_ENABLED=true` | Enable protected publishing and voice management. Requires existing `WORKSPACE_STORAGE_DIR`. |
+| `AGENT_MANAGEMENT_ENABLED=true` | Enable agent configuration. Requires existing `WORKSPACE_STORAGE_DIR`. |
+| `AGENT_DEMO_MODE=true` | Let demo visitors read and save agents without a lock/unlock step. Writes require same-origin requests. Defaults false; does not grant access to paid voice enrollment or outbound/call-control APIs. |
 | `GEMINI_API_KEY`, `ELEVENLABS_API_KEY` | Server-side providers. No keys or operator bearer token are sent to browser code. |
 | `VOICE_OUTPUT_DIR` | Absolute private directory required by voice settings. Per-agent voices replace the optional global default voice ID. |
 | `OWNER_NUMBER` | Owner's E.164 phone number, distinct from `TWILIO_NUMBER`. |
-| `OPERATOR_ADMIN_TOKEN` | Random server-only token of at least 32 characters. Browser controls use a separate owner session. |
+| `OPERATOR_ADMIN_TOKEN` | Random server-only token of at least 32 characters for protected operator APIs. |
 | `VOICE_AGENT_ENABLED=true` | Allow explicitly selected agents to speak when providers and a ready published voice are available. Defaults false. |
 | `OPERATOR_INBOUND_ENABLED=true` | Route new incoming calls through the agent-capable two-leg bridge. Requires voice flag, management, and transcription. Defaults false. |
 | `ALLOWED_DESTINATIONS` | Comma-separated allowlist for the existing protected outbound API. Incoming calls do not expand this allowlist. |
@@ -21,35 +22,37 @@ Deploy the scaffold with `VOICE_AGENT_ENABLED=false` and `OPERATOR_INBOUND_ENABL
 
 There is no automatic-takeover setting. Enabling the manual feature never makes AI detection select an agent.
 
-## Publish an agent
+## Create or edit an agent
 
-1. Open **Agents**, create or select a draft, and enter its name and prompt (up to 8,000 characters).
-2. Generate a five-minute, single-use owner code locally, then paste it into **Unlock owner controls**:
+1. Open **Agents → New agent**, or select an existing row. The global **+ → New agent** opens the same popup.
+2. Enter the name and personality prompt (up to 8,000 characters), choose a ready voice, and select an available `#1`–`#9` shortcut. **No shortcut** saves an unassigned agent.
+3. Select **Save agent**. Calls pin the selected revision at activation; later edits apply to the next activation.
 
-   ```sh
-   .venv/bin/python scripts/operator_access.py --env-file "$HOME/Library/Application Support/NewCollegeOperator/.env"
-   ```
+There are no Owner controls, voice catalog, or manual call controls on the Agents page. The demo deploy uses `AGENT_DEMO_MODE=true`, so visitors can edit executable agent settings. Actual takeover still requires the owner phone's keypad. Non-demo deployments keep the configuration API owner-session protected; the simplified demo UI has no unlock flow. The existing local `scripts/operator_access.py` tool and protected voice APIs remain available for administration.
 
-3. Use **Refresh voices** to load your account's catalog. Alternatively, expand voice enrollment and explicitly consent before uploading 1–3 voice samples (8 MiB each, 16 MiB total). A verification-required voice cannot be assigned until ready.
-4. Choose a ready voice and a free `#1`–`#9` shortcut, then select **Publish call settings**. Calls pin this exact revision; later edits apply to the next activation.
+On first demo startup with a ready voice named **owner**, the server seeds **Voice Clone**, shortcut **#1**, with personality **Tries to hang the call up asap**. A matching existing #1 agent is adopted rather than duplicated. A different agent already on #1 is retained without a shortcut. Seeding is recorded once and never resets later edits. It does not enroll a voice or make provider requests.
 
-Owner access uses a 12-hour Secure, HttpOnly, SameSite cookie. A tunnel URL change requires a fresh unlock, but contacts, drafts, published revisions, and voice mappings persist in server storage. `--revoke` on the same local command revokes owner sessions and pending codes. Public draft edits never silently replace an executable prompt.
-
-The execution database is `agent-execution.sqlite3` in `WORKSPACE_STORAGE_DIR`, separate from the existing workspace database. Back up both with the app idle. Rollback can leave the execution database untouched.
+Agents, revisions, and voice mappings survive server restarts, deployments, and Cloudflare URL changes. The execution database is `agent-execution.sqlite3` in `WORKSPACE_STORAGE_DIR`, separate from the existing workspace database containing contacts and legacy drafts. The list includes legacy drafts, but execution records take precedence for matching IDs. Back up both databases with the app idle. Rollback can leave the execution database untouched.
 
 ## Use a manually enabled call
 
 1. Call the Twilio number from a different phone. Answer on `OWNER_NUMBER` and press the prompted **1** to accept. Microphones stay private until acceptance.
-2. Talk normally, then press **#N** on the owner phone, or choose the connected call and published agent in **Agents → Take over call**. Remote-party keypad commands cannot activate agents.
+2. Talk normally, then press **#N** on the owner phone for the saved shortcut (for example, **#1** for Voice Clone). Remote-party keypad commands cannot activate agents.
 3. Humans continue talking during preparation. The caller alone hears “An AI assistant is joining this call.” The controller waits for Twilio's playback acknowledgement before agent speech starts. The owner remains connected and can hear the dialogue.
-4. Press **#0** or **Return to human** at any point to cancel generation and queued playback and restore the owner microphone. Caller speech interrupts an agent answer and a finalized turn drives the next response.
+4. Press **#0** at any point to cancel generation and queued playback and restore the owner microphone. Caller speech interrupts an agent answer and a finalized turn drives the next response.
 
 The saved transcript supplies attributed context to Gemini; the published prompt remains separate from caller speech. Our agent's synthesized output is recorded for playback, represented as named `source=agent` transcript segments, and excluded from caller Modulate input. Only the remote microphone reaches caller AI detection. Interrupted agent phrases are labeled as interrupted; their full text is not proof that every word was heard. Acoustic speakerphone echo can still contaminate a remote microphone.
 
 Both summary variants, contact matching, exports, and recent-call records use the canonical remote CallSid. Real leg StreamSids and reconnect generations are retained in recording provenance.
 
+## Shared phone instructions and ending a call
+
+Every agent uses the same internal Gemini instructions: it is on a phone call, receives speech-to-text transcripts, and speaks through ElevenLabs text-to-speech. The saved personality prompt adds behavior to these instructions rather than replacing them. Caller transcript text is conversation context, not a control command.
+
+When the agent decides the conversation should end, it can say a brief farewell followed by the exact control marker `[/END CALL]` on its own final line. The stream parser handles markers split across Gemini chunks, removes the marker from synthesized speech, and accepts it only after a successful completed response. Quoted or inline mentions do not trigger it. The server waits for Twilio to acknowledge the caller's announcement and farewell playback before ending both call legs. A command-only response still plays the first-takeover announcement. Human return (`#0`), caller interruption, another shortcut, or provider failure cancels a pending hangup.
+
 ## Validation and limits
 
-Offline tests use fake Twilio legs, Deepgram, Gemini, ElevenLabs, and Modulate. They cover acceptance privacy, manual-only activation, nine slots, immutable context/prompt/voice snapshots, announcement acknowledgements, realistic-length audio backpressure, interruption, `#0` races, failed transcription/provider recovery, and late-dial/hangup cleanup. They do not establish real-phone audio quality, provider voice permissions, or production latency.
+Offline tests use fake Twilio legs, Deepgram, Gemini, ElevenLabs, and Modulate. They cover acceptance privacy, manual-only activation, nine slots, immutable context/prompt/voice snapshots, announcement acknowledgements, realistic-length audio backpressure, interruption, `#0` races, failed transcription/provider recovery, explicit end-call parsing, farewell playback ordering, both-leg hangup, and late-dial/hangup cleanup. They do not establish real-phone audio quality, provider voice permissions, or production latency.
 
 Before wider use, run one controlled phone call to verify caller-only cue, voice/context, repeated dialogue, interruption, `#0`, hangup, recording, and post-call summaries. Provider/STT failures restore human relay while the router remains healthy. A process/network failure cannot guarantee uninterrupted audio: this opt-in transport carries both microphones through Python. Deployment drains active calls; disabling inbound routing restores the original conference path for subsequent calls after restart/deploy.

@@ -1,4 +1,4 @@
-"""Private agent configuration endpoints. No route activates a phone call."""
+"""Agent configuration, optionally open for the demo. Saving never activates a call."""
 
 import asyncio
 import json
@@ -135,12 +135,14 @@ def register_agent_routes(app, settings, registry, voice_settings=None, *, provi
     async def config(request, *, authenticated=None):
         authorized = enabled() and (await asyncio.to_thread(owner_authenticated, request, registry)
                                     if authenticated is None else authenticated)
-        result = {"authenticated": bool(authorized), "enabled": enabled(), "agents": [], "voices": [],
+        demo = enabled() and getattr(settings, "agent_demo_mode", False)
+        result = {"authenticated": bool(authorized or demo), "demoMode": bool(demo),
+                  "enabled": enabled(), "agents": [], "voices": [],
                   "manualEnabled": bool(getattr(settings, "voice_agent_enabled", False)),
                   "inboundEnabled": bool(getattr(settings, "operator_inbound_enabled", False)),
                   "automaticEnabled": False,
                   "capabilities": {"voiceCatalog": bool(voice_provider and enabled()), "voiceCloning": bool(voice_provider and enabled())}}
-        if authorized:
+        if authorized or demo:
             result.update(await operation("snapshot"))
         return result
 
@@ -172,7 +174,10 @@ def register_agent_routes(app, settings, registry, voice_settings=None, *, provi
     @app.put("/api/agents/{agent_id}")
     async def publish_agent(agent_id: str, request: Request):
         require_enabled()
-        await asyncio.to_thread(owner_write_access, request, registry, settings)
+        if getattr(settings, "agent_demo_mode", False):
+            require_agent_origin(request, settings)
+        else:
+            await asyncio.to_thread(owner_write_access, request, registry, settings)
         snapshot = await operation("publish", agent_id, await json_body(request))
         return JSONResponse(snapshot.to_dict(), headers=SAFE_HEADERS)
 

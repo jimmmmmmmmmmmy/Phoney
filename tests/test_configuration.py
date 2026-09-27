@@ -49,6 +49,8 @@ BASE = dict(account_sid="AC" + "1" * 32, auth_token="test-auth",
     {"max_call_seconds": True},
     {"voice_agent_enabled": "true"},
     {"agent_management_enabled": "true"},
+    {"agent_demo_mode": "true"},
+    {"agent_demo_mode": True},
     {"operator_inbound_enabled": "true"},
     {"agent_management_enabled": True},
     {"operator_inbound_enabled": True},
@@ -87,6 +89,15 @@ def test_manual_inbound_configuration_keeps_automatic_behavior_off(tmp_path):
     assert not defaults.voice_agent_enabled
     assert not defaults.operator_inbound_enabled
     assert not defaults.agent_management_enabled
+    assert not defaults.agent_demo_mode
+
+
+def test_demo_agent_editing_does_not_enable_phone_takeover(tmp_path):
+    configured = Settings(**BASE, agent_demo_mode=True, agent_management_enabled=True,
+                          workspace_storage_dir=str(tmp_path))
+    assert configured.agent_demo_mode
+    assert not configured.voice_agent_enabled
+    assert not configured.operator_inbound_enabled
 
 
 def test_transcription_requires_provider_key_and_storage_but_no_viewer_code(tmp_path):

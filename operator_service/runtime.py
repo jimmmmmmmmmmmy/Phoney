@@ -13,7 +13,7 @@ import time
 
 import httpx
 
-from voice_stack.agent import Conversation, SentenceBuffer, reply_events
+from voice_stack.agent import Conversation, ReplyCommandBuffer, SentenceBuffer, reply_events
 from voice_stack.audio import FRAME_BYTES, iter_frames
 from voice_stack.tts import speech, speech_bytes
 from .sessions import AGENT, ANNOUNCING, HUMAN, PREPARING, REMOTE, OperatorRejected
@@ -65,13 +65,16 @@ class DialogueRun:
         self.producer = None
         self.sequence = 0
         self.context_revision = controller._context_revisions.get(session.id, 0)
+        self.takeover_request = controller._takeover_requests.get(session.id, 0)
         self.open_audio = None
+        self.end_requested = False
 
     def current(self):
         return (self.session.active and self.session.reply_epoch == self.epoch
                 and self.session.mode in (PREPARING, ANNOUNCING, AGENT))
 
     async def run(self):
+        reply_exhausted = False
         try:
             async with asyncio.timeout(PREPARATION_SECONDS):
                 turns = (await maybe_await(self.controller.context_getter(self.session))
@@ -93,23 +96,24 @@ class DialogueRun:
                         if not cue or len(cue) > MAX_AUDIO_BYTES:
                             raise ValueError("Invalid announcement audio")
                         first = await self._next_phrase()
-                        if first is None:
+                        reply_exhausted = first is None
+                        if first is None and not self.end_requested:
                             raise ValueError("Empty agent reply")
-                        audio = self._speech(http, first)
-                        self.open_audio = audio
-                        # The first usable response must exist before muting the owner.
-                        first_chunk = await anext(audio)
-                        if not first_chunk:
-                            raise ValueError("Empty agent audio")
+                        audio = None
+                        if first is not None:
+                            audio = self._speech(http, first)
+                            self.open_audio = audio
+                            # The first usable response must exist before muting the owner.
+                            first_chunk = await anext(audio)
+                            if not first_chunk:
+                                raise ValueError("Empty agent audio")
                     if not self.current():
-                        await audio.aclose()
                         return
                     await self.controller.store.transition(self.session.id, self.epoch, ANNOUNCING)
                     self.controller.router(self.session.id).set_mode(ANNOUNCING)
                     await self._play_chunks(_bytes(cue), kind="announcement")
                     await self._ack("announcement")
                     if not self.current():
-                        await audio.aclose()
                         return
                     await self.controller.store.transition(self.session.id, self.epoch, AGENT)
                     self.controller.router(self.session.id).set_mode(AGENT)
@@ -119,13 +123,20 @@ class DialogueRun:
                         await self.controller.store.invalidate_reply(self.session.id)
                         self.controller._start_dialogue(self.session)
                         return
-                    await self._phrase(first, _prepend(first_chunk, audio))
-                while self.current():
+                    if first is not None:
+                        await self._phrase(first, _prepend(first_chunk, audio))
+                while self.current() and not reply_exhausted:
                     phrase = await self._next_phrase()
                     if phrase is None:
                         break
                     await self._phrase(phrase, self._speech(http, phrase))
                 await self.producer
+                # The producer's successful completion and every phrase's
+                # playback mark must precede hangup. A new owner selection
+                # revokes this action even while its registry lookup is pending.
+                if (self.end_requested and self.current()
+                        and self.takeover_request == self.controller._takeover_requests.get(self.session.id, 0)):
+                    await self.controller.end(self.session.id, "agent-end-call")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -145,6 +156,7 @@ class DialogueRun:
 
     async def _produce(self, http, conversation):
         buffer = SentenceBuffer()
+        commands = ReplyCommandBuffer()
         chars = 0
         async for event in reply_events(http, self.voice.gemini_api_key,
                 conversation.system, deepcopy(conversation.contents),
@@ -154,8 +166,10 @@ class DialogueRun:
                 chars += len(event["text"])
                 if chars > MAX_REPLY_CHARS:
                     raise ValueError("Reply too long")
-                for phrase in buffer.feed(event["text"]):
+                for phrase in buffer.feed(commands.feed(event["text"])):
                     await self.phrases.put(phrase)
+        commands.finish()
+        self.end_requested = commands.end_call
         trailing = buffer.flush()
         if trailing:
             await self.phrases.put(trailing)

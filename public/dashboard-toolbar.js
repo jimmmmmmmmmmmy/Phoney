@@ -1,7 +1,6 @@
 (() => {
   "use strict";
 
-  const MAX_DRAFTS = 50;
   const MAX_NOTIFICATIONS = 20;
   const endedStatuses = new Set(["completed", "ended", "closed", "failed", "error", "stopped", "disabled", "absent", "partial"]);
   const icons = {
@@ -16,22 +15,7 @@
   let initialized = false;
   let activePopover = null;
   let activeTrigger = null;
-  let draftDialog;
-  let draftForm;
-  let draftName;
-  let draftPrompt;
-  let draftError;
-  let previousFocus;
-  let agentsView;
-  let draftList;
-  let storageNotice;
   let liveNotice;
-  let drafts = [];
-  let workspaceLoaded = false;
-  let workspaceLoading = true;
-  let workspaceNotice = "";
-  let draftSaving = false;
-  let draftIdentity = null;
   let notificationsButton;
   let notificationPopup;
   let notificationBadge;
@@ -192,188 +176,18 @@
     renderNotifications();
   }
 
-  function workspaceChanged({snapshot, error, importError, loading}) {
-    workspaceLoading = loading === true;
-    workspaceNotice = [error, importError].filter(Boolean).join(" ");
-    if (snapshot && Array.isArray(snapshot.agents)) {
-      drafts = snapshot.agents;
-      workspaceLoaded = true;
-    }
-    renderDrafts();
-  }
-
-  function renderDrafts() {
-    if (!draftList) return;
-    draftList.replaceChildren();
-    storageNotice.textContent = workspaceNotice;
-    storageNotice.hidden = !workspaceNotice;
-    if (!workspaceLoaded) {
-      draftList.append(node("p", "agent-drafts-empty", workspaceLoading
-        ? "Loading workspace agents…" : "Workspace agents are unavailable. Reload or retry saving when the connection returns."));
-      return;
-    }
-    if (!drafts.length) {
-      const empty = node("div", "agent-drafts-empty");
-      empty.append(node("h3", "", "No agent drafts yet"), node("p", "", "Save a name and outbound prompt to prepare your first agent."));
-      draftList.append(empty);
-      return;
-    }
-    for (const draft of drafts) {
-      const article = node("article", "agent-draft");
-      const heading = node("div", "agent-draft-heading");
-      heading.append(node("h3", "", draft.name), node("span", "toolbar-label", "Draft · not connected"));
-      const prompt = node("p", "agent-draft-prompt", draft.prompt || "No outbound prompt added.");
-      article.append(heading, prompt);
-      draftList.append(article);
-    }
-  }
-
-  function renderAgents() {
-    if (agentsView.getAttribute("data-agent-workspace") === "managed") return;
-    const top = node("div", "agent-workspace-heading");
-    const intro = node("div");
-    intro.append(node("h2", "", "Rotary agents"), node("p", "", "Prepare the agents and prompts for your conversations."));
-    const create = button("New agent", "toolbar-primary-button");
-    create.prepend(icon("plus"));
-    create.addEventListener("click", openCreateAgent);
-    top.append(intro, create);
-    const note = node("p", "agent-local-note", "Drafts are shared across this workspace. Provider connections and calling will be added later.");
-    storageNotice = node("p", "toolbar-error");
-    storageNotice.setAttribute("role", "status");
-    draftList = node("div", "agent-draft-list");
-    draftList.setAttribute("aria-label", "Agent drafts");
-    const shortcuts = node("section", "agent-shortcuts");
-    const shortcutHeading = node("div", "agent-shortcut-heading");
-    shortcutHeading.append(node("h3", "", "Call shortcuts"), node("span", "toolbar-label", "Planned"));
-    const list = node("dl", "shortcut-list");
-    for (const [key, description] of [["#1", "Add an agent to the conversation"], ["#2", "Transfer the conversation to an agent"]]) {
-      const row = node("div");
-      const term = node("dt");
-      term.append(node("kbd", "", key));
-      row.append(term, node("dd", "", description));
-      list.append(row);
-    }
-    shortcuts.append(shortcutHeading, list, node("p", "", "Keypad routing and agent connections are not active yet."));
-    agentsView.replaceChildren(top, note, storageNotice, draftList, shortcuts);
-    renderDrafts();
-  }
-
   function openCreateAgent() {
     if (!initialized) init();
-    if (!draftDialog || draftSaving) return;
-    if (draftDialog.open) { draftName.focus(); return; }
-    previousFocus = activeTrigger || document.activeElement;
+    const returnFocus = activeTrigger || document.activeElement;
     closePopover();
-    draftForm.reset();
-    draftIdentity = null;
-    draftError.hidden = true;
-    draftError.textContent = "";
-    if (!draftDialog.open) draftDialog.showModal();
-    draftName.focus();
-  }
-
-  function buildAgentDialog() {
-    draftDialog = node("dialog", "toolbar-dialog");
-    draftDialog.id = "create-agent-dialog";
-    draftDialog.setAttribute("aria-labelledby", "create-agent-title");
-    draftDialog.setAttribute("aria-describedby", "create-agent-description");
-    draftForm = node("form", "toolbar-dialog-form");
-    const heading = node("div", "toolbar-dialog-heading");
-    const title = node("h2", "", "Create agent");
-    title.id = "create-agent-title";
-    const close = iconButton("Close create agent", "close", "create-agent-close");
-    close.addEventListener("click", () => { if (!draftSaving) draftDialog.close(); });
-    heading.append(title, close);
-    const description = node("p", "toolbar-dialog-description", "Save a draft, then choose a voice and call shortcut in Agents.");
-    description.id = "create-agent-description";
-    const nameLabel = node("label", "toolbar-field", "Agent name");
-    draftName = node("input");
-    draftName.id = "agent-name";
-    draftName.name = "name";
-    draftName.required = true;
-    draftName.maxLength = 80;
-    draftName.autocomplete = "off";
-    draftName.placeholder = "e.g. Admissions assistant";
-    nameLabel.append(draftName);
-    const promptLabel = node("label", "toolbar-field", "Outbound prompt");
-    const optional = node("span", "toolbar-field-optional", "Optional");
-    draftPrompt = node("textarea");
-    draftPrompt.id = "agent-outbound-prompt";
-    draftPrompt.name = "prompt";
-    draftPrompt.maxLength = 8000;
-    draftPrompt.rows = 5;
-    draftPrompt.placeholder = "Describe the agent’s role and how it should start a conversation.";
-    promptLabel.append(optional, draftPrompt);
-    draftError = node("p", "toolbar-error");
-    draftError.hidden = true;
-    draftError.setAttribute("role", "alert");
-    const actions = node("div", "toolbar-dialog-actions");
-    const cancel = button("Cancel", "toolbar-secondary-button");
-    cancel.addEventListener("click", () => { if (!draftSaving) draftDialog.close(); });
-    const submit = button("Save draft", "toolbar-primary-button");
-    submit.type = "submit";
-    actions.append(cancel, submit);
-    draftForm.append(heading, description, nameLabel, promptLabel, draftError, actions);
-    draftDialog.append(draftForm);
-    document.body.append(draftDialog);
-    draftDialog.addEventListener("close", () => {
-      if (previousFocus && previousFocus.isConnected) previousFocus.focus();
-    });
-    draftDialog.addEventListener("cancel", event => { if (draftSaving) event.preventDefault(); });
-    function setPending(pending) {
-      draftSaving = pending;
-      for (const control of [draftName, draftPrompt, close, cancel, submit]) control.disabled = pending;
-      submit.textContent = pending ? "Saving…" : "Save draft";
-      draftForm.setAttribute("aria-busy", String(pending));
-    }
-    draftForm.addEventListener("submit", async event => {
-      event.preventDefault();
-      if (draftSaving) return;
-      draftError.hidden = true;
-      const name = draftName.value.trim();
-      const prompt = draftPrompt.value.trim();
-      if (!name || name.length > 80 || prompt.length > 8000) {
-        draftError.textContent = !name ? "Enter an agent name." : "Use at most 80 characters for the name and 8,000 for the prompt.";
-        draftError.hidden = false;
-        draftName.focus();
-        return;
-      }
-      if (!window.DashboardWorkspace?.saveAgent || (drafts.length >= MAX_DRAFTS
-          && !drafts.some(draft => draft.id === draftIdentity?.id))) {
-        draftError.textContent = !window.DashboardWorkspace?.saveAgent
-          ? "Workspace storage is unavailable. Reload and try again."
-          : "This workspace already has 50 agent drafts.";
-        draftError.hidden = false;
-        return;
-      }
-      setPending(true);
-      try {
-        // Keep identity and creation time through retries after an ambiguous response.
-        draftIdentity ||= {id: `agent-${crypto.randomUUID()}`, createdAt: new Date().toISOString()};
-        await window.DashboardWorkspace.saveAgent({...draftIdentity, name, prompt});
-      } catch (failure) {
-        draftError.textContent = failure instanceof Error ? failure.message
-          : "Could not confirm the draft was saved. Check your connection and retry.";
-        draftError.hidden = false;
-        return;
-      } finally {
-        setPending(false);
-      }
-      // The workspace publishes its canonical snapshot before saveAgent resolves.
-      draftDialog.close();
-      document.getElementById("nav-agents").click();
-      document.getElementById("page-title").focus({preventScroll: true});
-      previousFocus = null;
-      liveNotice.textContent = "Agent draft saved to the workspace.";
-      window.DashboardAgents?.editAgent(draftIdentity.id);
-    });
+    if (window.DashboardAgents?.openCreateAgent) window.DashboardAgents.openCreateAgent(returnFocus);
+    else if (liveNotice) liveNotice.textContent = "The agent form is still loading. Try again in a moment.";
   }
 
   function init() {
     if (initialized) return;
     const mount = document.getElementById("header-actions");
-    agentsView = document.getElementById("agents-view");
-    if (!mount || !agentsView) return;
+    if (!mount) return;
     initialized = true;
     mount.classList.add("toolbar-actions");
     mount.setAttribute("role", "group");
@@ -398,7 +212,7 @@
     settingsPopup.id = "settings-popover";
     settingsPopup.hidden = true;
     settingsPopup.setAttribute("aria-label", "Settings");
-    settingsPopup.append(node("h2", "", "Workspace settings"), node("p", "", "Manage voices and manual call shortcuts from the Agents tab."));
+    settingsPopup.append(node("h2", "", "Workspace settings"), node("p", "", "Edit agent prompts, voices, and call shortcuts from the Agents tab."));
     const createPopup = node("div", "toolbar-popover toolbar-create-menu");
     createPopup.id = "create-menu";
     createPopup.hidden = true;
@@ -463,10 +277,6 @@
         closePopover(true);
       }
     });
-    renderAgents();
-    buildAgentDialog();
-    if (window.DashboardWorkspace?.subscribe) window.DashboardWorkspace.subscribe(workspaceChanged);
-    else workspaceChanged({error: "Workspace storage is unavailable. Reload and try again.", loading: false});
   }
 
   window.DashboardToolbar = {init, openCreateAgent, setSessions};

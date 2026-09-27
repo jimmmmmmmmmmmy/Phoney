@@ -19,7 +19,7 @@ The audit covered the detector, its test coverage and CLI tools, configuration, 
 | `non-synthetic` became `human` | Preserve synthetic/non-synthetic terminology; no identity claim |
 | Very short evidence could produce a verdict | Require at least four seconds of qualifying speech intervals; this is a provisional project policy |
 | Results existed only in process memory | Atomic private result files and restart recovery |
-| No result display | Compact Voice analysis in the current call-detail view |
+| No result display | Positive caller badge beside the Call details title |
 | Fork predates newer operator/CRM/summary changes | Additive integration preserves both summary outputs and current navigation |
 
 ## Configuration
@@ -39,7 +39,7 @@ MODULATE_DETECTION_QUEUE_FRAMES=250
 
 Capture must already be enabled. Configuration validates the key, limits, and a storage directory distinct from recordings, transcripts, voicemail, and call details. A key by itself does not enable detection. The installed server reads its own private `.env`; copying a key into the source checkout alone does not configure the installed service.
 
-Live media streams are analyzed when detection is enabled. Historical and newly finalized caller WAVs are processed only when `MODULATE_BACKFILL_ENABLED=true`. The private serial worker reuses valid live evidence and saved successful chunks; see [caller AI alerts](CALLER_AI_ALERTS.md) for duration thresholds, quality checks, and retry behavior. Candidate deployments cannot open provider connections: the active serving PID and commit must match the supervisor's record. Deployment drain waits for detector finalization and pending result writes.
+Live media streams are analyzed when detection is enabled. Historical and newly finalized caller WAVs are processed only when `MODULATE_BACKFILL_ENABLED=true`. The private serial worker analyzes each complete caller WAV independently of live predictions and caches the result; see [caller AI alerts](CALLER_AI_ALERTS.md) for duration thresholds, quality checks, and retry behavior. Candidate deployments cannot open provider connections: the active serving PID and commit must match the supervisor's record. Deployment drain waits for detector finalization and pending result writes.
 
 The caller's validated inbound G.711 μ-law bytes are decoded to mono 8 kHz PCM16 and passed through a bounded, nonblocking detector queue. Outbound audio is excluded. A queue overflow, gap, failed transport, malformed result, insufficient speech, or conflicting evidence is inconclusive. Failure does not interrupt the human conference, local capture, or transcription.
 
@@ -49,7 +49,7 @@ The existing `/api/transcripts` polling response includes `detection.calls`; ret
 
 Results contain only bounded advisory metadata: provider, status, label, verdict confidence, reason, analyzed duration, coverage flag, counts, and update time. Credentials, raw provider messages, and audio are excluded. Files are atomic `0600` writes in private storage. A persisted unfinished analysis becomes inconclusive after restart. The detector store is separate from call details so rollback does not invalidate caller information or either Gemini summary.
 
-The UI shows **AI caller** at 75% synthetic speech duration, **Potential AI caller** at 50–74%, **No AI speech flagged**, or **Inconclusive**. It never displays an exact AI percentage. Version 2 files preserve timestamped evidence and duration totals; version 1 aggregates remain readable but do not establish a duration-based alert. Limited and provisional coverage is stated explicitly. Transcription confidence remains separate.
+The UI shows only **AI Caller** at 75% synthetic speech duration or **Potentially AI** from 50% up to 75%, beside the Call details title. Silence is excluded and uncertain speech remains in the denominator. These thresholds are provisional product settings. Qualified speech survives weak or silent overlapping predictions; conflicting qualified verdicts remain uncertain. Unflagged, inconclusive, and unavailable results show no badge. Version 2 files preserve timestamped evidence and versioned duration calculations; older files remain readable. Live/partial badges identify provisional coverage in their tooltip and accessible label. Transcription confidence remains separate.
 
 ## Offline checks
 
@@ -62,7 +62,7 @@ python scripts/detect_capture.py /path/to/manifest.json
 python scripts/detect_capture.py /path/to/manifest.json --send-to-provider
 ```
 
-The batch WAV contract is mono 8 kHz PCM16, 4–60 seconds. The replay runner rejects capture quality problems before transmission. It does not backfill the dashboard automatically.
+These standalone replay tools restrict WAV inputs to mono 8 kHz PCM16, 4–60 seconds; the dashboard recording worker separately supports a complete caller WAV up to the 30-minute capture limit. The replay runner rejects capture quality problems before transmission. It does not backfill the dashboard automatically.
 
 Provider contracts were checked against the official [streaming reference](https://docs.modulate.ai/api-reference/svd/streaming) and [batch reference](https://docs.modulate.ai/api-reference/svd/batch). Streaming uses query-string authentication, raw `s16le`, and an empty text end marker; batch uses `X-API-Key` and `upload_file` multipart data. Never log authenticated WebSocket URLs.
 

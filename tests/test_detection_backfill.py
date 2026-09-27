@@ -56,6 +56,27 @@ class Provider:
                             'verdict': 'synthetic', 'confidence': .95}]}
 
 
+def seed_legacy_job(config, *, live=None, ranges=None, complete=False):
+    """Seed genuine v1 work so its paid evidence and retry budgets survive migration."""
+    recording = inspect_recordings(config)[0]
+    if ranges is None:
+        ranges = list(_chunks(recording['start_sample'], recording['end_sample']))
+    job = {'version': 1, 'fingerprint': recording['fingerprint'], 'live': live or [],
+           'quality': '', 'chunks': []}
+    for start, end in ranges:
+        job['chunks'].append({'start': start, 'end': end, 'attempts': int(complete),
+                              'status': 'complete' if complete else 'missing', 'retry_at': 0,
+                              'windows': [{'stream_id': STREAM, 'start_ms': start // 8,
+                                           'end_ms': end // 8, 'verdict': 'synthetic',
+                                           'confidence': .95}] if complete else [], 'error': ''})
+    root = Path(config.detection_storage_dir) / 'backfill'
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / (CALL + '.json')
+    path.write_text(json.dumps(job))
+    path.chmod(0o600)
+    return path, job
+
+
 def test_strip_initial_padding_preserve_offsets_cache_and_restart(tmp_path):
     async def run():
         config = settings(tmp_path); capture(config)
@@ -116,6 +137,7 @@ def test_chunks_are_between_four_and_sixty_seconds():
 def test_only_failed_chunk_retries_with_durable_attempt_budget(tmp_path):
     async def run():
         config = settings(tmp_path); capture(config, seconds=65)
+        seed_legacy_job(config)
         provider = Provider(); store = DetectionStore(config.detection_storage_dir)
         manager = BackfillManager(config, store, provider=provider)
         await manager.run_once()
@@ -160,7 +182,7 @@ def test_global_file_lock_prevents_simultaneous_workers(tmp_path):
 
 
 @pytest.mark.parametrize('reason', ['confident_synthetic', 'provider_timeout', 'provider_transport_failed'])
-def test_valid_live_coverage_only_uploads_missing_recording_tail(tmp_path, reason):
+def test_valid_live_coverage_is_audit_only_and_full_recording_is_uploaded(tmp_path, reason):
     async def run():
         config = settings(tmp_path); capture(config, seconds=10)
         store = DetectionStore(config.detection_storage_dir)
@@ -172,9 +194,11 @@ def test_valid_live_coverage_only_uploads_missing_recording_tail(tmp_path, reaso
                                 'submitted_audio_ms': 6000, 'coverage_limited': True, 'analysis': analysis})
         provider = Provider()
         await BackfillManager(config, store, provider=provider).run_once()
-        assert provider.calls[0][:2] == (6125, 32000)
-        assert store.get(CALL)['analysis']['source'] == 'combined'
+        assert provider.calls[0][:2] == (125, 80000)
+        assert store.get(CALL)['analysis']['source'] == 'recording'
         assert store.get(CALL)['analysis']['complete'] is True
+        path = Path(config.detection_storage_dir) / 'backfill' / (CALL + '.json')
+        assert json.loads(path.read_text())['live'] == analysis['windows']
     asyncio.run(run())
 
 
@@ -205,6 +229,7 @@ def test_malformed_cache_never_reauthorizes_a_paid_pass(tmp_path):
 def test_cached_ranges_are_bound_to_the_actual_recording_before_upload(tmp_path, corruption):
     async def run():
         config = settings(tmp_path); capture(config, seconds=65)
+        seed_legacy_job(config)
         provider = Provider(); store = DetectionStore(config.detection_storage_dir)
         manager = BackfillManager(config, store, provider=provider)
         await manager.run_once()
@@ -271,7 +296,7 @@ def test_wrong_live_stream_cannot_suppress_recording_analysis(tmp_path):
     asyncio.run(run())
 
 
-def test_live_coverage_covering_all_audio_needs_no_provider_request(tmp_path):
+def test_live_coverage_covering_all_audio_still_gets_one_recording_pass(tmp_path):
     async def run():
         config = settings(tmp_path); capture(config)
         store = DetectionStore(config.detection_storage_dir)
@@ -283,7 +308,9 @@ def test_live_coverage_covering_all_audio_needs_no_provider_request(tmp_path):
                          'submitted_audio_ms': 5000, 'coverage_limited': False, 'analysis': analysis})
         provider = Provider()
         await BackfillManager(config, store, provider=provider).run_once()
-        assert provider.calls == [] and store.get(CALL)['analysis']['complete']
+        assert provider.calls == [(125, 40000, b'\x01\x00')]
+        assert store.get(CALL)['analysis']['complete']
+        assert store.get(CALL)['analysis']['source'] == 'recording'
     asyncio.run(run())
 
 
@@ -316,6 +343,8 @@ def test_no_content_preserves_known_no_content_duration(tmp_path):
         assert saved['label'] == 'unknown'
         assert saved['analysis']['no_content_ms'] == 5000
         assert saved['analysis']['synthetic_share'] is None
+        assert saved['analysis']['complete'] is True
+        assert saved['reason'] == 'no_usable_content'
     asyncio.run(run())
 
 
@@ -334,6 +363,7 @@ def test_completed_cache_does_not_rewrite_result_timestamp(tmp_path):
 def test_transport_failure_has_sanitized_reason_and_preserves_partial_evidence(tmp_path):
     async def run():
         config = settings(tmp_path); capture(config, seconds=65)
+        seed_legacy_job(config)
         store = DetectionStore(config.detection_storage_dir)
         provider = Provider()
         manager = BackfillManager(config, store, provider=provider)
@@ -362,3 +392,269 @@ def test_cli_defaults_to_metadata_only_dry_run(tmp_path, monkeypatch, capsys):
     assert json.loads(output)['total_duration_ms'] == 5000
     assert 'never-print-key' not in output
     assert not Path(config.detection_storage_dir).exists()
+
+
+def save_analysis(store, analysis):
+    assert store.save(CALL, {'provider': 'modulate', 'status': 'complete', 'label': 'synthetic',
+                            'confidence': .95, 'reason': 'confident_synthetic', 'streams': 1,
+                            'observations': len(analysis['windows']), 'accepted_frames': 1,
+                            'dropped_frames': 0, 'submitted_audio_ms': analysis['analyzed_ms'],
+                            'coverage_limited': not analysis['complete'], 'analysis': analysis})
+
+
+def test_recording_longer_than_sixty_seconds_is_one_continuous_upload(tmp_path):
+    async def run():
+        config = settings(tmp_path); capture(config, seconds=130)
+        provider = Provider(); store = DetectionStore(config.detection_storage_dir)
+        manager = BackfillManager(config, store, provider=provider)
+        await manager.run_once()
+        assert provider.calls == [(125, 130 * 8000, b'\x01\x00')]
+        result = store.get(CALL)
+        assert result['submitted_audio_ms'] == 130000
+        assert result['analysis']['synthetic_ms'] == 130000
+        assert result['analysis']['complete'] is True
+        await BackfillManager(config, DetectionStore(config.detection_storage_dir), provider=provider).run_once()
+        assert len(provider.calls) == 1
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('kind', ['live_only', 'gap_fill'])
+def test_legacy_live_plans_are_archived_before_one_full_recording_pass(tmp_path, kind):
+    async def run():
+        config = settings(tmp_path); capture(config, seconds=10)
+        live = [{'stream_id': STREAM, 'start_ms': 125,
+                 'end_ms': 10125 if kind == 'live_only' else 6125,
+                 'verdict': 'synthetic', 'confidence': .95}]
+        ranges = [] if kind == 'live_only' else [(6125 * 8, 10125 * 8)]
+        path, original = seed_legacy_job(config, live=live, ranges=ranges, complete=True)
+        provider = Provider(); store = DetectionStore(config.detection_storage_dir)
+        await BackfillManager(config, store, provider=provider).run_once()
+        assert provider.calls == [(125, 80000, b'\x01\x00')]
+        archive = path.with_name(CALL + '.v1.json')
+        assert json.loads(archive.read_text()) == original
+        assert archive.stat().st_mode & 0o777 == 0o600
+        upgraded = json.loads(path.read_text())
+        assert upgraded['version'] == 2 and upgraded['live'] == live
+        assert len(upgraded['chunks']) == 1
+        assert store.get(CALL)['analysis']['source'] == 'recording'
+        await BackfillManager(config, store, provider=provider).run_once()
+        assert len(provider.calls) == 1
+        assert json.loads(archive.read_text()) == original
+    asyncio.run(run())
+
+
+def test_completed_legacy_full_batch_preserves_paid_results_without_upload(tmp_path):
+    async def run():
+        config = settings(tmp_path); capture(config, seconds=65)
+        path, original = seed_legacy_job(config, complete=True)
+        # The earlier batch workflow already paid for both halves of the caller WAV.
+        original['chunks'][1]['attempts'] = 3
+        path.write_text(json.dumps(original))
+        provider = Provider(); store = DetectionStore(config.detection_storage_dir)
+        await BackfillManager(config, store, provider=provider).run_once()
+        assert provider.calls == []
+        upgraded = json.loads(path.read_text())
+        assert upgraded['version'] == 2
+        assert upgraded['chunks'] == original['chunks']
+        result = store.get(CALL)
+        assert result['analysis']['source'] == 'recording'
+        assert result['analysis']['complete'] is True
+        assert result['analysis']['synthetic_ms'] == 65000
+    asyncio.run(run())
+
+
+def test_final_recording_verdict_replaces_contradictory_live_evidence(tmp_path):
+    async def run():
+        config = settings(tmp_path); capture(config, seconds=10)
+        store = DetectionStore(config.detection_storage_dir)
+        live = build_analysis([{'stream_id': STREAM, 'start_ms': 125, 'end_ms': 10125,
+                                'verdict': 'synthetic', 'confidence': .99}], complete=False)
+        save_analysis(store, live)
+        provider = Provider()
+        async def human(*args, **kwargs):
+            result = await provider(*args, **kwargs)
+            result['frames'][0]['verdict'] = 'non-synthetic'
+            return result
+        await BackfillManager(config, store, provider=human).run_once()
+        result = store.get(CALL)
+        assert result['label'] == 'non-synthetic'
+        assert result['analysis']['alert'] == 'none'
+        assert result['analysis']['source'] == 'recording'
+        assert result['analysis']['synthetic_ms'] == 0
+        assert result['analysis']['non_synthetic_ms'] == 10000
+        path = Path(config.detection_storage_dir) / 'backfill' / (CALL + '.json')
+        assert json.loads(path.read_text())['live'] == live['windows']
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('corruption', ['empty', 'missing_start', 'missing_end'])
+def test_incomplete_v2_plan_never_reauthorizes_spending(tmp_path, corruption):
+    async def run():
+        config = settings(tmp_path); capture(config, seconds=10)
+        provider = Provider(); store = DetectionStore(config.detection_storage_dir)
+        manager = BackfillManager(config, store, provider=provider)
+        await manager.run_once()
+        before = store.get(CALL)
+        path = Path(config.detection_storage_dir) / 'backfill' / (CALL + '.json')
+        job = json.loads(path.read_text())
+        if corruption == 'empty':
+            job['chunks'] = []
+        else:
+            chunk = job['chunks'][0]
+            chunk.update(status='missing', windows=[], attempts=0)
+            if corruption == 'missing_start':
+                chunk['start'] += 8000
+            else:
+                chunk['end'] -= 8000
+        path.write_text(json.dumps(job))
+        await BackfillManager(config, store, provider=provider).run_once()
+        assert len(provider.calls) == 1
+        assert store.get(CALL) == before
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('kind,reason', [('weak', 'insufficient_evidence'),
+                                       ('conflict', 'conflicting_evidence')])
+def test_uncertain_full_batch_is_complete_but_has_no_decisive_verdict(tmp_path, kind, reason):
+    async def run():
+        config = settings(tmp_path); capture(config, seconds=10)
+        async def uncertain(wav_bytes, *, source_start_ms):
+            frames = [{'start_ms': source_start_ms, 'end_ms': source_start_ms + 10000,
+                       'verdict': 'synthetic', 'confidence': .5}]
+            if kind == 'conflict':
+                frames = [dict(frames[0], end_ms=source_start_ms + 5000, confidence=.95),
+                          dict(frames[0], start_ms=source_start_ms + 5000,
+                               verdict='non-synthetic', confidence=.95)]
+            return {'frames': frames}
+        store = DetectionStore(config.detection_storage_dir)
+        await BackfillManager(config, store, provider=uncertain).run_once()
+        result = store.get(CALL)
+        assert result['status'] == 'unknown' and result['label'] == 'unknown'
+        assert result['reason'] == reason and result['confidence'] is None
+        assert result['analysis']['complete'] is True
+        assert result['analysis']['source'] == 'recording'
+    asyncio.run(run())
+
+
+def test_complete_recording_result_reconstructs_missing_cache_without_upload(tmp_path):
+    async def run():
+        config = settings(tmp_path); capture(config)
+        store = DetectionStore(config.detection_storage_dir)
+        recording = inspect_recordings(config)[0]
+        analysis = build_analysis([{'stream_id': STREAM, 'start_ms': 125, 'end_ms': 5125,
+                                    'verdict': 'synthetic', 'confidence': .95}], source='recording',
+                                  recording_fingerprint=recording['fingerprint'])
+        save_analysis(store, analysis)
+        provider = Provider()
+        await BackfillManager(config, store, provider=provider).run_once()
+        assert provider.calls == []
+        path = Path(config.detection_storage_dir) / 'backfill' / (CALL + '.json')
+        recovered = json.loads(path.read_text())
+        assert recovered['version'] == 2
+        assert recovered['chunks'][0]['status'] == 'complete'
+        assert recovered['chunks'][0]['attempts'] == 1
+        assert recovered['chunks'][0]['windows'] == analysis['windows']
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('source,complete', [('live', True), ('live', False), ('recording', False)])
+def test_ambiguous_same_fingerprint_without_job_does_not_reset_paid_attempts(tmp_path, source, complete):
+    async def run():
+        config = settings(tmp_path); capture(config)
+        store = DetectionStore(config.detection_storage_dir)
+        recording = inspect_recordings(config)[0]
+        analysis = build_analysis([{'stream_id': STREAM, 'start_ms': 125, 'end_ms': 5125,
+                                    'verdict': 'synthetic', 'confidence': .95}], source=source,
+                                  complete=complete, recording_fingerprint=recording['fingerprint'])
+        save_analysis(store, analysis)
+        provider = Provider()
+        await BackfillManager(config, store, provider=provider).run_once()
+        assert provider.calls == []
+        assert store.get(CALL)['analysis'] == analysis
+    asyncio.run(run())
+
+
+def test_full_recording_retry_budget_survives_repeated_restarts(tmp_path):
+    async def run():
+        config = settings(tmp_path); capture(config, seconds=70)
+        provider = Provider(); provider.fail = True
+        store = DetectionStore(config.detection_storage_dir)
+        path = Path(config.detection_storage_dir) / 'backfill' / (CALL + '.json')
+        for attempt in range(1, 4):
+            await BackfillManager(config, store, provider=provider).run_once()
+            assert len(provider.calls) == attempt
+            job = json.loads(path.read_text())
+            assert job['version'] == 2 and len(job['chunks']) == 1
+            assert job['chunks'][0]['attempts'] == attempt
+            await BackfillManager(config, store, provider=provider).run_once()
+            assert len(provider.calls) == attempt
+            job['chunks'][0]['retry_at'] = 0
+            path.write_text(json.dumps(job))
+        await BackfillManager(config, store, provider=provider).run_once()
+        assert len(provider.calls) == 3
+        assert all(call[:2] == (125, 560000) for call in provider.calls)
+        assert store.get(CALL)['analysis']['complete'] is False
+    asyncio.run(run())
+
+
+def test_migrating_exhausted_legacy_full_plan_does_not_reset_attempts(tmp_path):
+    async def run():
+        config = settings(tmp_path); capture(config)
+        path, original = seed_legacy_job(config)
+        original['chunks'][0].update(status='failed', attempts=3, error='provider_timeout')
+        path.write_text(json.dumps(original))
+        provider = Provider()
+        await BackfillManager(config, DetectionStore(config.detection_storage_dir), provider=provider).run_once()
+        assert provider.calls == []
+        job = json.loads(path.read_text())
+        assert job['version'] == 2
+        assert job['chunks'] == original['chunks']
+    asyncio.run(run())
+
+
+def test_migration_write_failure_keeps_original_and_spends_only_after_recovery(tmp_path, monkeypatch):
+    import partner_detection.backfill as backfill
+    async def run():
+        config = settings(tmp_path); capture(config)
+        live = [{'stream_id': STREAM, 'start_ms': 125, 'end_ms': 5125,
+                 'verdict': 'synthetic', 'confidence': .95}]
+        path, original = seed_legacy_job(config, live=live, ranges=[])
+        real_save = backfill._job_save
+        def fail_upgraded_save(root, sid, job):
+            if job['version'] == 2:
+                raise OSError('interrupted migration')
+            return real_save(root, sid, job)
+        monkeypatch.setattr(backfill, '_job_save', fail_upgraded_save)
+        provider = Provider(); store = DetectionStore(config.detection_storage_dir)
+        await BackfillManager(config, store, provider=provider).run_once()
+        assert provider.calls == []
+        assert json.loads(path.read_text()) == original
+        assert json.loads(path.with_name(CALL + '.v1.json').read_text()) == original
+        monkeypatch.setattr(backfill, '_job_save', real_save)
+        await BackfillManager(config, store, provider=provider).run_once()
+        assert len(provider.calls) == 1
+        assert json.loads(path.read_text())['version'] == 2
+    asyncio.run(run())
+
+
+def test_default_batch_parser_reports_malformed_frame_as_invalid_response(tmp_path, monkeypatch):
+    import httpx
+    import partner_detection.backfill as backfill
+    async def run():
+        config = settings(tmp_path); capture(config)
+        def response(request):
+            return httpx.Response(200, json={'duration_ms': 5000, 'frames': [
+                {'start_time_ms': 0, 'end_time_ms': 5000,
+                 'verdict': ['private malformed response'], 'confidence': .95}]})
+        transport = httpx.MockTransport(response)
+        client = httpx.AsyncClient
+        monkeypatch.setattr(backfill.httpx, 'AsyncClient',
+                            lambda **kwargs: client(transport=transport, **kwargs))
+        store = DetectionStore(config.detection_storage_dir)
+        await BackfillManager(config, store).run_once()
+        saved = store.get(CALL)
+        assert saved['reason'] == 'invalid_provider_response'
+        assert saved['status'] == 'unknown'
+        assert saved['analysis']['complete'] is False
+        assert 'private' not in json.dumps(saved)
+    asyncio.run(run())

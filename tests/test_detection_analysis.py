@@ -47,11 +47,96 @@ def test_overlapping_windows_count_each_millisecond_once_and_conflicts_are_uncer
     assert result["alert"] == "inconclusive"
 
 
-def test_weak_overlapping_evidence_is_uncertain_even_when_other_window_is_confident():
-    result = build_analysis([window(0, 4000), window(2000, 6000, confidence=.7)])
-    assert result["synthetic_ms"] == 2000
+@pytest.mark.parametrize("weak_verdict", ["synthetic", "non-synthetic"])
+@pytest.mark.parametrize("strong_verdict", ["synthetic", "non-synthetic"])
+def test_qualified_speech_takes_precedence_over_weak_overlapping_evidence(weak_verdict, strong_verdict):
+    result = build_analysis([window(0, 4000, strong_verdict),
+                             window(2000, 6000, weak_verdict, confidence=.7)])
+    assert result[strong_verdict.replace("-", "_") + "_ms"] == 4000
+    assert result["uncertain_ms"] == 2000
+    assert result["analyzed_ms"] == 6000
+    assert result["alert"] == ("potential_ai" if strong_verdict == "synthetic" else "none")
+
+
+@pytest.mark.parametrize("verdict", ["synthetic", "non-synthetic"])
+def test_no_content_overlap_never_vetoes_qualified_speech(verdict):
+    result = build_analysis([window(0, 8000, "no-content", confidence=1),
+                             window(2000, 6000, verdict)])
+    assert result[verdict.replace("-", "_") + "_ms"] == 4000
+    assert result["no_content_ms"] == 4000
+    assert result["uncertain_ms"] == 0
+    assert result["analyzed_ms"] == 4000
+    assert result["alert"] == ("ai_caller" if verdict == "synthetic" else "none")
+
+
+def test_weak_speech_over_no_content_stays_uncertain_and_in_denominator():
+    result = build_analysis([window(0, 4000), window(4000, 8000, confidence=.7),
+                             window(4000, 10000, "no-content", confidence=1)])
+    assert result["synthetic_ms"] == 4000
     assert result["uncertain_ms"] == 4000
+    assert result["no_content_ms"] == 2000
+    assert result["analyzed_ms"] == 8000
+    assert result["synthetic_share"] == .5
+    assert result["alert"] == "potential_ai"
+
+
+def test_conflicting_qualified_speech_remains_uncertain_despite_other_windows():
+    result = build_analysis([window(0, 4000), window(0, 4000, "non-synthetic"),
+                             window(0, 4000, confidence=.7), window(0, 4000, "no-content")])
+    assert result["uncertain_ms"] == 4000
+    assert result["synthetic_ms"] == result["non_synthetic_ms"] == result["no_content_ms"] == 0
+    assert result["analyzed_ms"] == 4000
     assert result["alert"] == "inconclusive"
+
+
+def test_rolling_windows_preserve_strong_evidence_without_double_counting():
+    result = build_analysis([window(0, 4000), window(1000, 5000, confidence=.7),
+                             window(2000, 6000), window(3000, 7000, "no-content")])
+    assert result["synthetic_ms"] == result["analyzed_ms"] == 6000
+    assert result["no_content_ms"] == 1000
+    assert result["uncertain_ms"] == 0
+    assert result["alert"] == "ai_caller"
+
+
+@pytest.mark.parametrize("confidence,expected", [(.799999, "inconclusive"), (.8, "ai_caller")])
+def test_confidence_boundary_applies_before_overlap_precedence(confidence, expected):
+    result = build_analysis([window(0, 4000, confidence=confidence),
+                             window(0, 4000, "no-content")])
+    assert result["alert"] == expected
+    assert result["analyzed_ms"] == 4000
+
+
+def legacy_analysis():
+    return {"version": 1, "track": "inbound", "source": "live", "complete": True,
+            "alert": "inconclusive", "synthetic_ms": 2000, "non_synthetic_ms": 0,
+            "uncertain_ms": 4000, "no_content_ms": 0, "analyzed_ms": 6000,
+            "synthetic_share": 1 / 3, "min_confidence": .8, "recording_fingerprint": None,
+            "windows": [window(0, 4000), window(2000, 6000, confidence=.7)]}
+
+
+def test_legacy_analysis_is_strictly_validated_without_rewriting_its_policy():
+    legacy = legacy_analysis()
+    assert validate_analysis(legacy) == legacy
+    assert build_analysis(legacy["windows"], version=1) == legacy
+    current = build_analysis(legacy["windows"])
+    assert current["version"] == 2
+    assert current["synthetic_ms"] == 4000
+    assert validate_analysis(current) == current
+
+
+@pytest.mark.parametrize("change", [{"version": 2}, {"synthetic_ms": 4000},
+                                    {"alert": "potential_ai"}, {"uncertain_ms": 2000}])
+def test_legacy_evidence_cannot_be_relabelled_or_given_new_aggregates(change):
+    with pytest.raises(ValueError):
+        validate_analysis(legacy_analysis() | change)
+
+
+@pytest.mark.parametrize("version", [True, False, 0, 3, "2", 2.0, None])
+def test_only_known_integer_analysis_versions_are_accepted(version):
+    with pytest.raises(ValueError):
+        build_analysis([], version=version)
+    with pytest.raises(ValueError):
+        validate_analysis(build_analysis([]) | {"version": version})
 
 
 @pytest.mark.parametrize("uncertain,expected", [(1000, "inconclusive"), (999, "none")])

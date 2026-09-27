@@ -37,14 +37,18 @@ def validate_windows(windows):
 
 
 def build_analysis(windows, *, min_confidence=.8, source="live", complete=True,
-                   recording_fingerprint=None):
-    """Partition observed time once, treating conflicting/weak intervals as uncertain.
+                   recording_fingerprint=None, version=2):
+    """Partition observed time once, preserving qualified speech in overlapping windows.
 
     Missing intervals are unobserved, not negative evidence. ``complete`` describes
     coverage; provisional alerts may still be useful while it is false. Different
     stream clocks cannot be combined without an explicit common recording origin.
+    Version 1 retains the historical overlap veto for validating stored evidence.
+    Version 2 lets qualified speech outrank weak speech and no-content windows;
+    disagreement between qualified speech verdicts remains uncertain.
     """
-    if (type(min_confidence) not in (int, float) or not math.isfinite(min_confidence)
+    if (type(version) is not int or version not in {1, 2}
+            or type(min_confidence) not in (int, float) or not math.isfinite(min_confidence)
             or not .5 <= min_confidence <= 1 or source not in {"live", "recording", "combined"}
             or type(complete) is not bool or (recording_fingerprint is not None
             and (not isinstance(recording_fingerprint, str) or not FINGERPRINT.fullmatch(recording_fingerprint)))):
@@ -65,7 +69,16 @@ def build_analysis(windows, *, min_confidence=.8, source="live", complete=True,
     for timestamp in sorted(events):
         categories = {key for key, count in active.items() if count > 0}
         if previous is not None and categories:
-            category = next(iter(categories)) if len(categories) == 1 else "uncertain"
+            if version == 1:
+                category = next(iter(categories)) if len(categories) == 1 else "uncertain"
+            else:
+                qualified = categories & {"synthetic", "non_synthetic"}
+                if len(qualified) == 1:
+                    category = next(iter(qualified))
+                elif qualified or "uncertain" in categories:
+                    category = "uncertain"
+                else:
+                    category = "no_content"
             totals[category] += timestamp - previous
         for category, delta in events[timestamp]:
             active[category] += delta
@@ -83,7 +96,7 @@ def build_analysis(windows, *, min_confidence=.8, source="live", complete=True,
         elif (synthetic + uncertain) * 2 < analyzed:
             alert = "none"
     return {
-        "version": 1, "track": "inbound", "source": source,
+        "version": version, "track": "inbound", "source": source,
         "complete": complete and not multiple_epochs, "alert": alert,
         "synthetic_ms": synthetic, "non_synthetic_ms": natural,
         "uncertain_ms": uncertain, "no_content_ms": totals["no_content"],
@@ -94,13 +107,14 @@ def build_analysis(windows, *, min_confidence=.8, source="live", complete=True,
 
 
 def validate_analysis(value):
-    if not isinstance(value, dict) or set(value) != ANALYSIS_FIELDS:
+    if (not isinstance(value, dict) or set(value) != ANALYSIS_FIELDS
+            or type(value["version"]) is not int or value["version"] not in {1, 2}):
         raise ValueError("Invalid detection analysis")
     rebuilt = build_analysis(value["windows"], min_confidence=value["min_confidence"],
                              source=value["source"], complete=value["complete"],
-                             recording_fingerprint=value["recording_fingerprint"])
-    if (type(value["version"]) is not int or value["version"] != 1
-            or any(type(value[key]) is not int for key in
+                             recording_fingerprint=value["recording_fingerprint"],
+                             version=value["version"])
+    if (any(type(value[key]) is not int for key in
                    ("synthetic_ms", "non_synthetic_ms", "uncertain_ms", "no_content_ms", "analyzed_ms"))
             or type(value["complete"]) is not bool
             or (value["synthetic_share"] is not None and type(value["synthetic_share"]) not in (int, float))

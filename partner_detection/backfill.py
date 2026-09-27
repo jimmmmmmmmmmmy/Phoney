@@ -17,8 +17,8 @@ import wave
 
 import httpx
 
-from .analysis import build_analysis, validate_windows, MAX_WINDOWS
-from .modulate import BATCH_URL, MAX_MESSAGE_BYTES, MAX_OBSERVATIONS, _batch_frame
+from .analysis import build_analysis, validate_windows, MAX_WINDOWS, MIN_RELIABLE_MS
+from .modulate import BATCH_URL, MAX_MESSAGE_BYTES, MAX_OBSERVATIONS, ModulateError, _batch_frame
 from .storage import SID, DIR_FLAGS, READ_FLAGS, _root
 
 MAX_SECONDS = 1800
@@ -138,7 +138,7 @@ def _wav(pcm):
 
 
 def _chunks(start, end):
-    """Balance chunks so a final remainder never creates a <4 second request."""
+    """Legacy job partitions, retained for reading already-paid batch work."""
     count = max(1, math.ceil((end - start) / 480000))
     size, remainder = divmod(end - start, count)
     for index in range(count):
@@ -159,28 +159,32 @@ def _plan(capture, existing):
                 live = proposed
         except (ValueError, TypeError):
             pass
-    intervals = sorted((w['start_ms'] * 8, w['end_ms'] * 8) for w in live)
-    missing, cursor = [], start
-    for left, right in intervals:
-        if left > cursor:
-            missing.append((cursor, left))
-        cursor = max(cursor, right)
-    if cursor < end:
-        missing.append((cursor, end))
-    # A small missing tail is analyzed with enough adjacent context for Modulate.
-    expanded = []
-    for left, right in missing:
-        if right - left < 32000:
-            left = max(start, min(left, end - 32000))
-            right = max(right, min(end, left + 32000))
-        if expanded and left <= expanded[-1][1]:
-            expanded[-1] = (expanded[-1][0], max(right, expanded[-1][1]))
-        else:
-            expanded.append((left, right))
-    return {'version': 1, 'fingerprint': capture['fingerprint'], 'live': live,
-            'quality': capture['reason'], 'chunks': [
-                {'start': left, 'end': right, 'attempts': 0, 'status': 'missing', 'retry_at': 0, 'windows': [], 'error': ''}
-                for begin, finish in expanded for left, right in _chunks(begin, finish)]}
+    # Live rolling windows are provisional. A completed recording gets its own
+    # continuous caller-only pass, regardless of live coverage. The 30-minute
+    # capture bound is <29 MB and <=450 batch frames (provider bounds: 100 MB).
+    return {'version': 2, 'fingerprint': capture['fingerprint'],
+            'live': [] if capture['reason'] else live, 'quality': capture['reason'],
+            'chunks': [] if capture['reason'] else [
+                {'start': start, 'end': end, 'attempts': 0, 'status': 'missing',
+                 'retry_at': 0, 'windows': [], 'error': ''}]}
+
+
+def _full_batch_plan(job, capture):
+    cursor = capture['start_sample']
+    for chunk in job['chunks']:
+        if chunk['start'] != cursor:
+            return False
+        cursor = chunk['end']
+    return bool(job['chunks']) and cursor == capture['end_sample']
+
+
+def _upgrade_job(job, capture):
+    """Keep paid batch evidence/retry budgets; replace old live gap-fill plans."""
+    if job['quality'] or _full_batch_plan(job, capture):
+        return {**job, 'version': 2}
+    upgraded = _plan(capture, None)
+    upgraded['live'] = job['live']
+    return upgraded
 
 
 def _job_read(root, sid, fingerprint):
@@ -193,7 +197,7 @@ def _job_read(root, sid, fingerprint):
     finally:
         os.close(fd)
     if (not isinstance(job, dict) or set(job) != {'version', 'fingerprint', 'live', 'quality', 'chunks'}
-            or job['version'] != 1 or job['fingerprint'] != fingerprint
+            or type(job['version']) is not int or job['version'] not in {1, 2} or job['fingerprint'] != fingerprint
             or job['quality'] not in {'', 'incomplete_audio', 'insufficient_evidence'}
             or not isinstance(job['chunks'], list) or len(job['chunks']) > 60):
         raise ValueError('invalid-job')
@@ -203,7 +207,7 @@ def _job_read(root, sid, fingerprint):
         if (not isinstance(chunk, dict) or set(chunk) != {'start', 'end', 'attempts', 'status', 'retry_at', 'windows', 'error'}
                 or type(chunk['start']) is not int or type(chunk['end']) is not int
                 or not 0 <= chunk['start'] < chunk['end'] <= MAX_SECONDS * 8000
-                or not 32000 <= chunk['end'] - chunk['start'] <= 480000
+                or not 32000 <= chunk['end'] - chunk['start'] <= (480000 if job['version'] == 1 else MAX_SECONDS * 8000)
                 or type(chunk['attempts']) is not int or not 0 <= chunk['attempts'] <= 3
                 or chunk['status'] not in {'missing', 'pending', 'failed', 'complete'}
                 or chunk['error'] not in {'', 'provider_transport_failed', 'provider_timeout', 'invalid_provider_response'}
@@ -256,6 +260,8 @@ def _validate_job_capture(job, capture):
                     or window['start_ms'] < chunk['start'] // 8
                     or window['end_ms'] > math.ceil(chunk['end'] / 8)):
                 raise ValueError('invalid-cached-window')
+    if job['version'] == 2 and not job['quality'] and not _full_batch_plan(job, capture):
+        raise ValueError('incomplete-recording-plan')
 
 
 class BackfillManager:
@@ -294,8 +300,8 @@ class BackfillManager:
     async def _provider(self, wav_bytes, *, source_start_ms):
         with wave.open(io.BytesIO(wav_bytes), 'rb') as wav:
             duration = wav.getnframes() / 8
-        async with asyncio.timeout(80):
-            async with httpx.AsyncClient(timeout=httpx.Timeout(75, connect=10), follow_redirects=False) as client:
+        async with asyncio.timeout(180):
+            async with httpx.AsyncClient(timeout=httpx.Timeout(175, connect=10), follow_redirects=False) as client:
                 async with client.stream('POST', BATCH_URL, headers={'X-API-Key': self.settings.modulate_api_key},
                                          files={'upload_file': ('caller.wav', wav_bytes, 'audio/wav')}) as response:
                     if response.status_code != 200:
@@ -345,19 +351,26 @@ class BackfillManager:
             raise
 
     async def _save_result(self, capture, job):
-        windows = job['live'] + [w for c in job['chunks'] for w in c['windows']]
-        complete = not job['quality'] and all(c['status'] == 'complete' for c in job['chunks'])
+        recorded = [w for c in job['chunks'] for w in c['windows']]
+        complete = not job['quality'] and bool(job['chunks']) and all(c['status'] == 'complete' for c in job['chunks'])
+        # Do not let correlated live predictions contaminate the final batch
+        # result. Preserve live evidence only as a provisional fallback.
+        windows = recorded if recorded or complete else job['live']
+        source = 'recording' if recorded or complete or not windows else 'live'
         analysis = build_analysis(windows, min_confidence=self.settings.modulate_detection_min_confidence,
-                                  source='combined' if job['live'] else 'recording', complete=complete,
+                                  source=source, complete=complete,
                                   recording_fingerprint=capture['fingerprint'])
         label = {'ai_caller': 'synthetic', 'none': 'non-synthetic'}.get(analysis['alert'], 'unknown')
         confidence = min((w['confidence'] for w in windows if w['verdict'] == label
                           and w['confidence'] >= self.settings.modulate_detection_min_confidence),
                          default=None) if label != 'unknown' else None
         failure = next((c['error'] or 'provider_transport_failed' for c in job['chunks'] if c['status'] == 'failed'), '')
+        unknown_reason = ('no_usable_content' if not analysis['analyzed_ms'] else
+                          'insufficient_evidence' if analysis['synthetic_ms'] + analysis['non_synthetic_ms'] < MIN_RELIABLE_MS
+                          else 'conflicting_evidence')
         reason = job['quality'] or failure or ({'synthetic': 'confident_synthetic',
                   'non-synthetic': 'confident_non_synthetic'}.get(label)
-                  or ('conflicting_evidence' if analysis['alert'] == 'potential_ai' else 'insufficient_evidence'))
+                  or unknown_reason)
         result = {'provider': 'modulate', 'status': 'complete' if label != 'unknown' else 'unknown',
                   'label': label, 'confidence': confidence, 'reason': reason, 'streams': 1,
                   'observations': len(windows), 'accepted_frames': 0, 'dropped_frames': 0,
@@ -387,14 +400,25 @@ class BackfillManager:
                         _validate_job_capture(job, capture)
                 except (ValueError, TypeError, KeyError, OSError):
                     continue  # Corrupt/changed cache never silently authorizes another paid pass.
+                if job is not None and job['version'] == 1:
+                    # Keep the original evidence before a one-time plan migration.
+                    await self._io(_job_save, root, sid + '.v1', job)
+                    job = _upgrade_job(job, capture)
+                    _validate_job_capture(job, capture)
+                    await self._io(_job_save, root, sid, job)
                 if job is None:
                     old = await self._io(self.store.get, sid)
                     if old and old.get('analysis', {}).get('recording_fingerprint') == capture['fingerprint']:
-                        continue
-                    job = _plan(capture, old)
-                    if job['quality']:
-                        job['chunks'] = []
-                        job['live'] = []
+                        analysis = old['analysis']
+                        if analysis['source'] != 'recording' or not analysis['complete'] or capture['reason']:
+                            # Missing attempt history is not permission to reset
+                            # a failed/provisional job's paid retry budget.
+                            continue
+                        job = _plan(capture, None)
+                        job['chunks'][0].update(status='complete', attempts=1, windows=analysis['windows'])
+                        _validate_job_capture(job, capture)
+                    else:
+                        job = _plan(capture, old)
                     await self._io(_job_save, root, sid, job)
                 if job['quality'] or all(c['status'] == 'complete' for c in job['chunks']):
                     await self._save_result(capture, job)
@@ -409,14 +433,14 @@ class BackfillManager:
                     if current['fingerprint'] != capture['fingerprint']:
                         return
                     chunk.update(attempts=chunk['attempts'] + 1, status='pending', error='',
-                                 retry_at=time.time() + 90 + RETRY_DELAYS[min(chunk['attempts'], 1)])
+                                 retry_at=time.time() + 190 + RETRY_DELAYS[min(chunk['attempts'], 1)])
                     await self._io(_job_save, root, sid, job)
                     try:
                         if not self._allowed(sid):
                             return
                         response = await asyncio.wait_for(self.provider(
                             _wav(current['pcm'][chunk['start'] * 2:chunk['end'] * 2]),
-                            source_start_ms=chunk['start'] // 8), timeout=85)
+                            source_start_ms=chunk['start'] // 8), timeout=185)
                         frames = response['frames']
                         if not isinstance(frames, list) or len(frames) > MAX_OBSERVATIONS:
                             raise ValueError('invalid-frames')
@@ -431,7 +455,7 @@ class BackfillManager:
                         raise
                     except Exception as exc:
                         error = ('provider_timeout' if isinstance(exc, (TimeoutError, httpx.TimeoutException)) else
-                                 'invalid_provider_response' if isinstance(exc, (ValueError, TypeError, KeyError)) else
+                                 'invalid_provider_response' if isinstance(exc, (ValueError, TypeError, KeyError, ModulateError)) else
                                  'provider_transport_failed')
                         chunk.update(status='failed', error=error, retry_at=(time.time() + RETRY_DELAYS[chunk['attempts'] - 1]
                                                                if chunk['attempts'] < 3 else 0))

@@ -338,3 +338,56 @@ def test_native_recording_stream_stop_recovers_missed_terminal_callbacks(tmp_pat
         assert len(dialer.replacements) == 1
         await h.close()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('phase', ['no_message', 'unconfirmed', 'complete'])
+@pytest.mark.parametrize('end_marker', [True, False])
+@pytest.mark.parametrize('activity_final', [True, False])
+def test_new_caller_speech_during_terminal_preparation_keeps_voicemail_open(
+        tmp_path, monkeypatch, phase, end_marker, activity_final):
+    quick_timers(monkeypatch, pause_seconds=.1)
+    async def run():
+        started, resume = asyncio.Event(), asyncio.Event()
+        generated = []
+        async def reply(http, key, system, contents, **kwargs):
+            generated.append((system, contents))
+            if len(generated) == 1:
+                assert f'voicemail phase: {phase}.' in system
+                started.set()
+                await resume.wait()
+                text = 'Thank you. Goodbye.' + ('\n[/END CALL]' if end_marker else '')
+            else:
+                text = 'You asked Alex to call tomorrow. Is that right?'
+            yield {'kind': 'text', 'text': text}
+            yield {'kind': 'complete'}
+        monkeypatch.setattr('operator_service.runtime.reply_events', reply)
+        h = Harness(tmp_path)
+        s = await h.incoming()
+        await h.controller.on_timeout(s, 'owner-no-answer')
+        await h.ready()
+        vm = h.controller._voicemail_agents[s.id]
+        vm.has_message = phase != 'no_message'
+        await vm._request(phase)
+        await asyncio.wait_for(started.wait(), 1)
+        caller_onset = h.controller.elapsed_ms(s.id)
+        await h.controller.transcript(s.id, REMOTE, 'Please ask Alex to call tomorrow.',
+            final=activity_final, segment_id='late-message' if activity_final else '',
+            speech_final=activity_final, timestamp_ms=caller_onset)
+        await asyncio.sleep(.01)
+        resume.set()
+        await h.ready()
+        assert s.active and REMOTE_SID not in h.dialer.ended
+        if not activity_final:
+            assert len(generated) == 1
+            assert h.controller._caller_turn_floor[s.id] > caller_onset
+            await h.controller.transcript(s.id, REMOTE, 'Please ask Alex to call tomorrow.',
+                segment_id='late-message', speech_final=True,
+                timestamp_ms=caller_onset)
+        await until(lambda: len(generated) == 2)
+        expected = 'readback' if phase == 'no_message' else 'confirm'
+        assert f'voicemail phase: {expected}.' in generated[-1][0]
+        assert 'Please ask Alex to call tomorrow.' in json.dumps(generated[-1][1])
+        await h.ready()
+        assert s.active and REMOTE_SID not in h.dialer.ended
+        await h.close()
+    asyncio.run(run())

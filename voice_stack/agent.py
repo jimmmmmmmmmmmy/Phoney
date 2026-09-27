@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from copy import deepcopy
 from dataclasses import dataclass, field
 
@@ -50,6 +51,16 @@ class GeminiError(RuntimeError):
 
 class _EmptyGeminiResponse(GeminiError):
     """No spoken output and no explicit blocked/truncated finish reason."""
+
+
+class _FirstTextTimeout(GeminiError):
+    """The phone's first-spoken-text budget elapsed before any output."""
+
+
+def _attempt_trace(stage, attempt, model, started, **fields):
+    # Deliberately exclude request/response bodies, headers, URLs, and keys.
+    return {"kind": "trace", "stage": stage, "attempt": attempt, "model": model,
+            "attempt_ms": int((time.monotonic() - started) * 1000), **fields}
 
 
 def gemini_url(model: str, method: str = "streamGenerateContent") -> str:
@@ -129,7 +140,9 @@ def _parsed_event(lines: list[str]) -> dict:
 async def reply_events(http: httpx.AsyncClient, api_key: str, system: str,
                        contents: list[dict], *, model: str = DEFAULT_MODEL,
                        max_output_tokens: int = 2048,
-                       timeout: float = GENERATION_SECONDS):
+                       timeout: float = GENERATION_SECONDS,
+                       first_text_timeout: float | None = None,
+                       trace_attempt: int | None = None):
     """Stream one reply as ``{"kind": "text"}`` deltas then one ``complete``.
 
     Only non-thought text is emitted for speech. The complete event carries
@@ -143,31 +156,47 @@ async def reply_events(http: httpx.AsyncClient, api_key: str, system: str,
     saved_parts: list[dict] = []
     finish_reason = None
     spoke = False
+    started = time.monotonic()
     async with asyncio.timeout(timeout):
-        async with http.stream(
-            "POST",
-            gemini_url(model, "streamGenerateContent"),
-            params={"alt": "sse"},
-            headers={"x-goog-api-key": api_key},
-            json=gemini_body(system, contents, max_output_tokens=max_output_tokens, model=model),
-            timeout=httpx.Timeout(READ_SECONDS, connect=CONNECT_SECONDS),
-        ) as response:
-            response.raise_for_status()
-            async for event in sse_objects(response):
-                if "error" in event or event.get("promptFeedback", {}).get("blockReason"):
-                    raise GeminiError("Gemini request failed or was blocked")
-                for candidate in event.get("candidates", []):
-                    if candidate.get("index", 0) != 0:
-                        continue
-                    if candidate.get("finishReason"):
-                        finish_reason = candidate["finishReason"]
-                    for part in candidate.get("content", {}).get("parts", []):
-                        if "functionCall" in part:
-                            raise GeminiError("Unexpected tool in the text-only adapter")
-                        saved_parts.append(deepcopy(part))
-                        if part.get("text") and not part.get("thought", False):
-                            spoke = True
-                            yield {"kind": "text", "text": part["text"]}
+        try:
+            async with asyncio.timeout(first_text_timeout) as first_text_guard:
+                async with http.stream(
+                    "POST",
+                    gemini_url(model, "streamGenerateContent"),
+                    params={"alt": "sse"},
+                    headers={"x-goog-api-key": api_key},
+                    json=gemini_body(system, contents, max_output_tokens=max_output_tokens, model=model),
+                    timeout=httpx.Timeout(READ_SECONDS, connect=CONNECT_SECONDS),
+                ) as response:
+                    if trace_attempt is not None:
+                        yield _attempt_trace("response-headers", trace_attempt, model, started,
+                                             http_status=response.status_code)
+                    response.raise_for_status()
+                    async for event in sse_objects(response):
+                        if "error" in event or event.get("promptFeedback", {}).get("blockReason"):
+                            raise GeminiError("Gemini request failed or was blocked")
+                        for candidate in event.get("candidates", []):
+                            if candidate.get("index", 0) != 0:
+                                continue
+                            if candidate.get("finishReason"):
+                                finish_reason = candidate["finishReason"]
+                            for part in candidate.get("content", {}).get("parts", []):
+                                if "functionCall" in part:
+                                    raise GeminiError("Unexpected tool in the text-only adapter")
+                                saved_parts.append(deepcopy(part))
+                                if part.get("text") and not part.get("thought", False):
+                                    if not spoke:
+                                        # Only the first spoken token has a short phone deadline.
+                                        # Normal transport/generation bounds cover the rest.
+                                        first_text_guard.reschedule(None)
+                                        if trace_attempt is not None:
+                                            yield _attempt_trace("first-text", trace_attempt, model, started)
+                                    spoke = True
+                                    yield {"kind": "text", "text": part["text"]}
+        except TimeoutError:
+            if first_text_guard.expired():
+                raise _FirstTextTimeout("Gemini did not produce spoken text in time") from None
+            raise
     if not spoke and finish_reason in {None, "STOP"}:
         raise _EmptyGeminiResponse("Gemini response incomplete, blocked, or empty")
     if finish_reason != "STOP":
@@ -175,7 +204,8 @@ async def reply_events(http: httpx.AsyncClient, api_key: str, system: str,
     yield {"kind": "complete", "content": {"role": "model", "parts": saved_parts}}
 
 
-async def reply_events_with_retry(http, api_key, system, contents, **kwargs):
+async def reply_events_with_retry(http, api_key, system, contents, *,
+                                  first_text_timeout=None, trace=False, **kwargs):
     """Retry one empty or transiently failed reply before any text was emitted.
 
     An observed provider response can be HTTP 200 + STOP with no content. Both
@@ -186,14 +216,23 @@ async def reply_events_with_retry(http, api_key, system, contents, **kwargs):
     async with asyncio.timeout(kwargs.get("timeout", GENERATION_SECONDS)):
         for attempt in range(2):
             emitted = False
+            started = time.monotonic()
+            model = kwargs.get("model", DEFAULT_MODEL)
+            if trace:
+                yield _attempt_trace("request-started", attempt + 1, model, started)
             try:
-                async for event in reply_events(http, api_key, system, contents, **kwargs):
+                async for event in reply_events(http, api_key, system, contents,
+                        first_text_timeout=first_text_timeout,
+                        trace_attempt=attempt + 1 if trace else None, **kwargs):
                     emitted = emitted or event.get("kind") == "text"
                     yield event
                 return
             except (GeminiError, httpx.TimeoutException, httpx.NetworkError,
                     httpx.HTTPStatusError) as exc:
                 reason = _reply_retry_reason(exc)
+                if trace:
+                    yield _attempt_trace("request-failed", attempt + 1, model, started,
+                                         reason=reason or "invalid-response", emitted_text=emitted)
                 if attempt or emitted or reason is None:
                     raise
                 yield {"kind": "retry", "reason": reason, "attempt": 2}
@@ -201,6 +240,8 @@ async def reply_events_with_retry(http, api_key, system, contents, **kwargs):
 
 def _reply_retry_reason(exc: Exception) -> str | None:
     """Return a bounded, non-sensitive trace reason for a retryable failure."""
+    if isinstance(exc, _FirstTextTimeout):
+        return "first-text-timeout"
     if isinstance(exc, _EmptyGeminiResponse):
         return "empty-response"
     if isinstance(exc, httpx.HTTPStatusError):

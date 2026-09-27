@@ -18,7 +18,7 @@ from voice_stack.agent import (Conversation, ReplyCommandBuffer, SentenceBuffer,
                                reply_events_with_retry as reply_events)
 from voice_stack.audio import FRAME_BYTES, iter_frames
 from voice_stack.tts import TTSError, speech, speech_bytes
-from voice_stack.prompts import (VOICE_CLONE_PROMPT, VOICEMAIL_GREETING,
+from voice_stack.prompts import (VOICEMAIL_GREETING,
                                  three_reply_phase_instruction, voicemail_phase_instruction)
 from .sessions import AGENT, ANNOUNCING, HUMAN, OWNER, PREPARING, REMOTE, OperatorRejected
 
@@ -27,6 +27,7 @@ MAX_CONTEXT_CHARS = 48_000
 MAX_REPLY_CHARS = 8_000
 MAX_AUDIO_BYTES = 8000 * 60
 PREPARATION_SECONDS = 15.0
+FIRST_TEXT_SECONDS = 3.0
 PLAYBACK_ACK_SECONDS = 5.0
 FRAME_STALL_SECONDS = 2.0
 ANNOUNCEMENT = "An AI assistant is joining this call."
@@ -128,8 +129,7 @@ class DialogueRun:
         self.owner_cue_task = None
         self.voicemail_phase = getattr(session, "voicemail_phase", "greeting")
         self.voicemail = getattr(session, "voicemail", False)
-        self.bounded_replies = (getattr(session, "agent_kind", "manual") == "ai-detected"
-                                or snapshot.prompt.strip() == VOICE_CLONE_PROMPT.strip())
+        self.bounded_replies = getattr(session, "agent_kind", "manual") == "ai-detected"
         self.caller_requested_end = False
         self.stage = "context"
         self.started = time.monotonic()
@@ -217,8 +217,7 @@ class DialogueRun:
                 # revokes this action even while its registry lookup is pending.
                 if (self.end_requested and self.current()
                         and self.takeover_request == self.controller._takeover_requests.get(self.session.id, 0)):
-                    if (self.remote_revision != self.controller._remote_revisions.get(self.session.id, 0)
-                            and not (self.bounded_replies and self.reply_number >= 3)):
+                    if self.remote_revision != self.controller._remote_revisions.get(self.session.id, 0):
                         # A final caller turn received after the context snapshot
                         # must be considered before executing a stale hangup.
                         self.end_requested = False
@@ -228,7 +227,21 @@ class DialogueRun:
                         self.trace("agent-end-call")
                         await self.controller.end(self.session.id, "agent-end-call")
                 if self.voicemail and self.current() and self.confirmed:
-                    await self.controller.voicemail_reply_completed(self.session.id, self.voicemail_phase)
+                    # Terminal voicemail phases also hang up in reply_completed,
+                    # even when Gemini omits its command. Fresh caller activity
+                    # must revoke that second ending path as well. Keep pending
+                    # finalized speech so the ordinary quiet-period policy can
+                    # read back or confirm it instead of ending the call.
+                    terminal_phase = self.voicemail_phase in {"no_message", "unconfirmed", "complete"}
+                    fresh_caller = self.remote_revision != self.controller._remote_revisions.get(self.session.id, 0)
+                    if self.end_deferred or (terminal_phase and fresh_caller):
+                        self.end_deferred = True
+                        self.trace("voicemail-resume-after-deferred-end", phase=self.voicemail_phase)
+                        voicemail = self.controller._voicemail_agents.get(self.session.id)
+                        if voicemail is not None:
+                            voicemail.resume_listening()
+                    else:
+                        await self.controller.voicemail_reply_completed(self.session.id, self.voicemail_phase)
         except asyncio.CancelledError:
             self.trace("generation-canceled", stage=self.stage)
             raise
@@ -348,7 +361,10 @@ class DialogueRun:
         async for event in reply_events(http, self.voice.gemini_api_key,
                 conversation.system, deepcopy(conversation.contents),
                 model=self.voice.gemini_model, max_output_tokens=self.voice.max_reply_tokens,
-                timeout=self.voice.request_timeout):
+                timeout=self.voice.request_timeout, first_text_timeout=FIRST_TEXT_SECONDS, trace=True):
+            if event["kind"] == "trace":
+                self.trace("gemini-attempt-" + event["stage"], **{
+                    key: value for key, value in event.items() if key not in {"kind", "stage"}})
             if event["kind"] == "retry":
                 self.trace("gemini-response-retry", reason=event.get("reason", "unknown"))
             if event["kind"] == "text":

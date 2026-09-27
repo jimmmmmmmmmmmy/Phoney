@@ -114,12 +114,12 @@ class VoicemailAgent:
             self.busy = False
             self._listen()
 
-    def transcript(self, text, *, final=True):
+    def transcript(self, text, *, final=True, activity=False):
         """Interims extend a pause, but never alone become a recorded message."""
-        if not self._active() or not str(text or "").strip():
+        if not self._active() or (not str(text or "").strip() and not activity):
             return
         self.activity_version += 1
-        if final:
+        if final and str(text or "").strip():
             self.pending_final = True
         self._cancel("pause")
         self._cancel("silence")

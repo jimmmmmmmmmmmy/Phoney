@@ -236,3 +236,26 @@ def test_hangup_or_close_cancels_all_future_replies():
         assert replies == ended == []
         assert vm._timers == {}
     asyncio.run(run())
+
+
+def test_speech_activity_extends_voicemail_pause_without_inventing_text():
+    async def run():
+        vm, replies, ended = policy()
+        await vm.reply_completed('greeting')
+        vm.transcript('I am selling a car.')
+        await asyncio.sleep(.012)
+        vm.transcript('', final=False, activity=True)
+        await asyncio.sleep(.012)
+        assert replies == []
+        vm.transcript('A 2010 Honda Civic.')
+        await until(lambda: replies)
+        assert replies == ['readback'] and ended == []
+        vm.close()
+        vm, replies, ended = policy(initial_silence_seconds=.03)
+        await vm.reply_completed('greeting')
+        vm.transcript('', final=False, activity=True)
+        assert not vm.pending_final
+        await until(lambda: replies)
+        assert replies == ['no_message']
+        vm.close()
+    asyncio.run(run())

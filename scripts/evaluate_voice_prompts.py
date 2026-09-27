@@ -28,6 +28,7 @@ from voice_stack.prompts import (AI_DETECTED_PROMPT, PROMPT_REVISION,
                                 VOICE_CLONE_PROMPT,
                                 VOICEMAIL_PROMPT, VOICEMAIL_GREETING, voicemail_phase_instruction,
                                 three_reply_phase_instruction)
+from operator_service.runtime import FIRST_TEXT_SECONDS
 
 
 @dataclass(frozen=True)
@@ -53,7 +54,7 @@ class Scenario:
 
 
 SCENARIOS = (
-    Scenario("manual_three_replies", VOICE_CLONE_PROMPT, (
+    Scenario("manual_continues_until_finished", VOICE_CLONE_PROMPT, (
         ("owner", "I'm calling about the used car."),
         ("remote", "It's a 2005 Corolla. I'm asking six thousand dollars."),
         ("owner", "Is the title clean?"),
@@ -62,8 +63,14 @@ SCENARIOS = (
         Step(1, "", "Thanks for confirming the title. Are there any repairs it needs?", question=True),
         Step(2, "Just new tires soon; otherwise it runs well.",
              "Thanks, that's helpful. Is the price negotiable?", question=True),
-        Step(3, "I could take fifty-five hundred.",
-             "Thanks for the information. Have a good day, goodbye!\n[/END CALL]", end=True),
+        Step(3, "I could take fifty-five hundred. I also want to explain the service history.",
+             "Understood. Please tell me about the service history."),
+        Step(4, "The brakes were replaced last month. Actually, I checked: the mileage is 195,000, not 205,000. What mileage do you have now? I still have another question after that.",
+             "I have the corrected mileage as 195,000. What's your next question?",
+             required=(r"195[,.]?000|one hundred (?:and )?ninety[- ]five thousand",),
+             forbidden=(r"205[,.]?000|two hundred (?:and )?five thousand",)),
+        Step(5, "Never mind, that's everything. I have to go now. Goodbye.",
+             "Thanks for the information. Goodbye!\n[/END CALL]", end=True),
     )),
     Scenario("automatic_context_and_no_commitment", AI_DETECTED_PROMPT, (
         ("remote", "This is Morgan from the plumbing shop about your repair enquiry."),
@@ -71,9 +78,10 @@ SCENARIOS = (
         ("remote", "Wednesday morning or Thursday afternoon."),
     ), (
         Step(1, "", "Thanks for the options. What time on Wednesday morning?", question=True,
-             forbidden=(r"works best for us|we prefer",)),
+             forbidden=(r"works? (?:best|better)?\s*for (?:us|the owner)|both work|we prefer",)),
         Step(2, "Ten, and the callout fee is eighty dollars.",
-             "Understood. Is there anything else the owner needs to know?", question=True),
+             "Understood. Is there anything else the owner needs to know?", question=True,
+             forbidden=(r"works? (?:best|better)?\s*for (?:us|the owner)|both work|we prefer",)),
         Step(3, "No, just ask them to call us if they want to book.",
              "Thanks for the details. Goodbye!\n[/END CALL]", end=True),
     )),
@@ -197,10 +205,12 @@ class DiagnosticTransport(httpx.AsyncBaseTransport):
             self.latest = {"request_limit_reached": True}
             raise RuntimeError("Live prompt evaluation request limit reached")
         self.requests += 1
+        # A timeout before headers must not inherit the previous response's metadata.
+        self.latest = {"request_number": self.requests, "response_received": False}
         response = await self.inner.handle_async_request(request)
-        metadata = {"http_status": response.status_code, "finish_reasons": [],
-                    "text_characters": 0, "thought_characters": 0}
-        self.latest = metadata
+        metadata = self.latest
+        metadata.update({"response_received": True, "http_status": response.status_code,
+                         "finish_reasons": [], "text_characters": 0, "thought_characters": 0})
         source = response.stream
 
         class ObservedStream(httpx.AsyncByteStream):
@@ -250,7 +260,7 @@ async def evaluate_scenario(scenario: Scenario, http: httpx.AsyncClient, api_key
         runtime_instruction = (
             voicemail_phase_instruction(step.phase) if step.phase else
             three_reply_phase_instruction(step.number)
-            if scenario.personality in (VOICE_CLONE_PROMPT, AI_DETECTED_PROMPT) else "")
+            if scenario.personality == AI_DETECTED_PROMPT else "")
         if step.caller:
             transcript.append(("remote", step.caller))
         # DialogueRun rebuilds a fresh attributed handoff packet from what was
@@ -278,7 +288,8 @@ async def evaluate_scenario(scenario: Scenario, http: httpx.AsyncClient, api_key
                 first_ms = 0
             else:
                 async for event in reply_events(client, api_key, system, conversation.contents,
-                                                model=model, max_output_tokens=2048):
+                                                model=model, max_output_tokens=2048,
+                                                first_text_timeout=FIRST_TEXT_SECONDS):
                     if event["kind"] == "text":
                         if first_ms is None:
                             first_ms = round((time.monotonic() - started) * 1000)
@@ -336,6 +347,7 @@ async def evaluate(*, live=False, api_key="fixture-key", names=(), model=DEFAULT
     return {"created_at": datetime.now(timezone.utc).isoformat(),
             "mode": "live" if live else "offline-fixtures", "model": model,
             "max_output_tokens": 2048,
+            "first_text_timeout_seconds": FIRST_TEXT_SECONDS,
             "context_format": "fresh-transcript-handoff-per-reply",
             "prompt_revision": PROMPT_REVISION,
             "requests": transport.requests if transport else requests,

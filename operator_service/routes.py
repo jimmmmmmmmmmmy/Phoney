@@ -225,6 +225,9 @@ class OperatorController:
         self._takeover_requests = {}
         self._accepted_takeovers = {}
         self._remote_revisions = {}
+        self._remote_turn_pending = set()
+        self._remote_turn_open = set()
+        self._remote_turn_onsets = {}
         self._dialogue_runs = {}
         self._agent_reply_counts = {}
         self._voicemail_agents = {}
@@ -959,6 +962,9 @@ class OperatorController:
         session.voice_id = snapshot.voice_id
         self._accepted_takeovers[session_id] = request_id
         self._agent_reply_counts[session_id] = 0
+        self._remote_turn_pending.discard(session_id)
+        self._remote_turn_open.discard(session_id)
+        self._remote_turn_onsets.pop(session_id, None)
         self._caller_turn_floor.pop(session_id, None)
         self.trace(session_id, "takeover-preparing", slot=slot,
                    agent_id=snapshot.id, agent_revision=snapshot.revision)
@@ -975,17 +981,20 @@ class OperatorController:
             if self.players.get(session.id) is finished:
                 self.players.pop(session.id, None)
                 self._dialogue_runs.pop(session.id, None)
-                # Ordinary replies wait for the caller, rather than consuming
-                # another agent turn for speech from before this reply played.
-                # A stale hangup alone needs reconsideration with newer context.
-                if (run.completed and run.current() and run.end_deferred
+                # Keep the initial handoff moving; ordinary replies must still
+                # consume a complete new caller turn received during preparation.
+                # An unfinished utterance remains gated by _schedule_reply.
+                pending_turn = (not run.announce and session.id in self._remote_turn_pending)
+                if (run.completed and run.current() and (run.end_deferred or pending_turn)
                         and run.takeover_request == self._takeover_requests.get(session.id, 0)
                         and self._remote_revisions.get(session.id, 0) > run.remote_revision):
                     self._schedule_reply(session.id)
         task.add_done_callback(done)
 
-    def _schedule_reply(self, session_id):
+    def _schedule_reply(self, session_id, *, delay=0.3):
         session = self.store.find(session_id)
+        if session_id in self._remote_turn_open:
+            return  # A deferred hangup still waits for a complete caller utterance.
         if session is not None and session.voicemail:
             # Voicemail has its own quiet-period policy. Never feed the last
             # transcript back as if the caller said it again.
@@ -993,36 +1002,64 @@ class OperatorController:
         timer = self._reply_timers.pop(session_id, None)
         if timer is not None:
             timer.cancel()
-        self._reply_timers[session_id] = self.store.spawn(self._after_remote_turn(session_id))
+        self._reply_timers[session_id] = self.store.spawn(self._after_remote_turn(session_id, delay=delay))
 
     async def transcript(self, session_id, speaker, text, *, final=True,
-                         segment_id="", timestamp_ms=None):
+                         segment_id="", timestamp_ms=None, speech_final=None,
+                         speech_started=False, turn_end_ms=None):
         """Receive canonical STT updates; only remote speech drives dialogue."""
         session = self.store.find(session_id)
         text = str(text or "").strip()
         if (session is None or not session.active or session.voicemail_fallback
-                or not text or speaker not in (OWNER, REMOTE)):
+                or (not text and not speech_started and speech_final is not True)
+                or speaker not in (OWNER, REMOTE)):
             return
-        if final and segment_id:
+        if final and text and segment_id:
             seen = self._transcript_seen.setdefault(session_id, {})
             if segment_id in seen:
                 return
             seen[segment_id] = True
             while len(seen) > 1000:
                 seen.pop(next(iter(seen)))
-        if final:
+        if final and text:
             if speaker == REMOTE:
                 self._remote_revisions[session_id] = self._remote_revisions.get(session_id, 0) + 1
             await self.store.add_turn(session_id, speaker, text)
             # Preserve new context while keeping the manual handoff moving.
         if speaker == REMOTE and session.mode == AGENT:
             floor = self._caller_turn_floor.get(session_id)
-            if timestamp_ms is not None and floor is not None and timestamp_ms < floor:
+            observed_onset = self._remote_turn_onsets.get(session_id)
+            continuing_turn = (session_id in self._remote_turn_open
+                and timestamp_ms is not None and observed_onset is not None
+                and timestamp_ms >= observed_onset)
+            if (timestamp_ms is not None and floor is not None and timestamp_ms < floor
+                    and not continuing_turn):
                 return
-            timer = self._reply_timers.pop(session_id, None)
-            if timer is not None:
-                timer.cancel()
-            if self.playing(session_id):
+            activity = bool(text or speech_started)
+            if speech_started:
+                self.trace(session_id, "caller-speech-started", speech_start_ms=timestamp_ms)
+            if speech_final is True or (speech_final is None and final and text):
+                self._remote_turn_open.discard(session_id)
+                self._remote_turn_onsets.pop(session_id, None)
+            elif speech_final is False and activity:
+                # A result keeps its original speech onset even if its final
+                # arrives after agent playback advances the old-speech floor.
+                # Remember only an onset already accepted by that floor, so a
+                # genuinely older final cannot reopen or complete a new turn.
+                if timestamp_ms is not None and (speech_started or observed_onset is None):
+                    self._remote_turn_onsets[session_id] = timestamp_ms
+                self._remote_turn_open.add(session_id)
+            if final and text:
+                self._remote_turn_pending.add(session_id)
+            if activity:
+                timer = self._reply_timers.pop(session_id, None)
+                if timer is not None:
+                    timer.cancel()
+                if not final:
+                    # Speech activity revokes a stale end-call action even before
+                    # STT has finalized the words spoken during preparation.
+                    self._remote_revisions[session_id] = self._remote_revisions.get(session_id, 0) + 1
+            if activity and self.playing(session_id):
                 run = self._dialogue_runs.get(session_id)
                 # Barge-in requires actual outgoing speech, not a running HTTP
                 # request. Delayed STT from before playback is not a new interruption.
@@ -1030,7 +1067,7 @@ class OperatorController:
                         or (timestamp_ms is not None and timestamp_ms < run.speaking_started_ms))):
                     vm = self._voicemail_agents.get(session_id)
                     if vm is not None:
-                        vm.transcript(text, final=final)
+                        vm.transcript(text, final=final, activity=speech_started)
                     return
                 self.trace(session_id, "caller-interruption")
                 await self.store.invalidate_reply(session_id)
@@ -1042,22 +1079,32 @@ class OperatorController:
                     vm.interrupted()
             vm = self._voicemail_agents.get(session_id)
             if vm is not None:
-                vm.transcript(text, final=final)
+                vm.transcript(text, final=final, activity=speech_started)
                 return
-            if final and session.agent_snapshot is not None:
-                self._schedule_reply(session_id)
+            # Production STT separates finalized chunks from an actual endpoint.
+            # None retains the contract for direct/legacy callers without this
+            # metadata; Deepgram always supplies an explicit boolean.
+            ended = speech_final is True or (speech_final is None and final and bool(text))
+            if (ended and session_id in self._remote_turn_pending
+                    and session.agent_snapshot is not None):
+                if speech_final is True:
+                    self.trace(session_id, "caller-turn-ended", boundary_ms=turn_end_ms)
+                self._schedule_reply(session_id, delay=0.1 if speech_final is True else 0.3)
         elif speaker == REMOTE and session.voicemail:
             vm = self._voicemail_agents.get(session_id)
             if vm is not None:
-                vm.transcript(text, final=final)
+                vm.transcript(text, final=final, activity=speech_started)
 
-    async def _after_remote_turn(self, session_id):
+    async def _after_remote_turn(self, session_id, *, delay=0.3):
         try:
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(delay)
             session = self.store.find(session_id)
             if (session is not None and session.active and session.mode == AGENT
                     and not self.playing(session_id)
                     and self._accepted_takeovers.get(session_id) == self._takeover_requests.get(session_id)):
+                self._remote_turn_pending.discard(session_id)
+                self._remote_turn_open.discard(session_id)
+                self._remote_turn_onsets.pop(session_id, None)
                 await self.store.invalidate_reply(session_id)
                 self._start_dialogue(session)
         finally:
@@ -1071,6 +1118,9 @@ class OperatorController:
             raise OperatorRejected('voicemail-has-no-connected-owner')
         self.trace(session_id, "return-to-human")
         self._auto_suppressed.add(session_id)
+        self._remote_turn_pending.discard(session_id)
+        self._remote_turn_open.discard(session_id)
+        self._remote_turn_onsets.pop(session_id, None)
         self._takeover_requests[session_id] = self._takeover_requests.get(session_id, 0) + 1
         self._accepted_takeovers.pop(session_id, None)
         self._stop_playback(session_id)
@@ -1167,6 +1217,9 @@ class OperatorController:
         self._takeover_requests.pop(session_id, None)
         self._accepted_takeovers.pop(session_id, None)
         self._remote_revisions.pop(session_id, None)
+        self._remote_turn_pending.discard(session_id)
+        self._remote_turn_open.discard(session_id)
+        self._remote_turn_onsets.pop(session_id, None)
         self._agent_reply_counts.pop(session_id, None)
         self._caller_turn_floor.pop(session_id, None)
         self._ai_pending.discard(session_id)

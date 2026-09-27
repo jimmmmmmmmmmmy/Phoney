@@ -315,7 +315,8 @@ def test_manual_slot_uses_frozen_registry_snapshot_and_acknowledged_agent_proven
             remote.send_json(later_audio)
         until(client, lambda: session.legs[REMOTE].counters["frames_in"] == later_ms // 20 + 1)
         client.portal.call(stt.sockets[0].push,
-                           result("What should I prepare?", start=later_ms / 1000))
+                           result("What should I prepare?", start=later_ms / 1000)
+                           | {"speech_final": True})
         second_reply, frames = until_mark(client, remote, "reply-")
         assert AGENT_FRAME in frames
         acknowledge(remote, second_reply)

@@ -13,11 +13,11 @@ from voice_stack.prompts import VOICEMAIL_GREETING, voicemail_phase_instruction
 def test_offline_conversations_drive_the_real_stream_and_end_command_parser():
     report = asyncio.run(evaluate())
     assert report["mode"] == "offline-fixtures"
-    assert report["requests"] == 18
-    assert report["logical_replies"] == 19
+    assert report["requests"] == 20
+    assert report["logical_replies"] == 21
     assert report["passed"] == report["total"]
-    manual = [row for row in report["results"] if row["scenario"] == "manual_three_replies"]
-    assert [row["end_call"] for row in manual] == [False, False, True]
+    manual = [row for row in report["results"] if row["scenario"] == "manual_continues_until_finished"]
+    assert [row["end_call"] for row in manual] == [False, False, False, False, True]
     corrected = [row for row in report["results"] if row["scenario"] == "voicemail_correction_before_hangup"]
     assert [row["end_call"] for row in corrected] == [False, False, True]
     assert "Wednesday" in corrected[1]["spoken"]
@@ -119,6 +119,27 @@ def test_physical_request_limit_includes_retries_and_blocks_before_network():
             with pytest.raises(RuntimeError, match="request limit"):
                 await transport.handle_async_request(None)
             assert transport.latest == {"request_limit_reached": True}
+        finally:
+            await transport.aclose()
+    asyncio.run(run())
+
+
+def test_diagnostic_header_timeout_does_not_reuse_previous_response_metadata():
+    import httpx
+
+    async def run():
+        transport = DiagnosticTransport(limit=1)
+        await transport.inner.aclose()
+
+        async def stalled(request):
+            raise httpx.ReadTimeout("Fixture timeout")
+
+        transport.inner = httpx.MockTransport(stalled)
+        transport.latest = {"http_status": 200, "text_characters": 99}
+        try:
+            with pytest.raises(httpx.ReadTimeout):
+                await transport.handle_async_request(httpx.Request("POST", "https://example.test"))
+            assert transport.latest == {"request_number": 1, "response_received": False}
         finally:
             await transport.aclose()
     asyncio.run(run())

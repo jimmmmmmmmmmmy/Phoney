@@ -470,3 +470,93 @@ def test_duration_ceiling_finishes_provider_streams_without_external_trigger(tmp
         assert session["status"]=="partial"
         assert all(socket.closed for socket in connector.sockets)
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('ending', ['speech-final', 'empty-final', 'utterance-end', 'repeated-final'])
+def test_turn_boundaries_are_control_only_and_final_chunks_remain_saved(tmp_path, ending):
+    async def run():
+        connector, observed = Connector(), []
+        manager = TranscriptionManager(settings(tmp_path), connector,
+            on_segment=lambda sid, segment, final: observed.append((segment, final)))
+        manager.start(CALL, STREAM)
+        manager.offer(CALL, 'inbound', 5000, b'\xff' * 160)
+        await until(lambda: len(connector.sockets) == 2)
+        sock = connector.sockets[0]
+        sock.push({'type': 'SpeechStarted', 'timestamp': 0.1})
+        first = result('90,000 miles.', start=.1, duration=1)
+        first['speech_final'] = False
+        sock.push(first)
+        second = result('And the condition is good.', start=1.1, duration=1)
+        second['speech_final'] = ending == 'speech-final'
+        sock.push(second)
+        if ending == 'empty-final':
+            last = result('', start=2.1, duration=.5)
+            last['speech_final'] = True
+            sock.push(last)
+        elif ending == 'utterance-end':
+            sock.push({'type': 'UtteranceEnd', 'last_word_end': 2.1})
+        elif ending == 'repeated-final':
+            second['speech_final'] = True
+            sock.push(second)
+        await until(lambda: any(row.get('speech_final') for row, _ in observed))
+        # A redundant utterance event cannot produce a second response.
+        sock.push({'type': 'UtteranceEnd', 'last_word_end': 2.1})
+        await complete(manager)
+        assert sum(bool(row.get('speech_final')) for row, _ in observed) == 1
+        assert observed[0][0]['speech_started'] is True
+        assert [row['text'] for row, final in observed if final] == [
+            '90,000 miles.', 'And the condition is good.']
+        rows = manager.history[0]['segments']
+        assert len(rows) == 2
+        assert all('speech_final' not in row and 'speech_started' not in row for row in rows)
+        query = parse_qs(urlsplit(connector.requests[0][0]).query)
+        assert query['endpointing'] == ['750']
+        assert query['utterance_end_ms'] == ['1000']
+        assert query['vad_events'] == ['true']
+    asyncio.run(run())
+
+
+def test_stale_utterance_end_cannot_close_new_speech(tmp_path):
+    async def run():
+        connector, observed = Connector(), []
+        manager = TranscriptionManager(settings(tmp_path), connector,
+            on_segment=lambda sid, segment, final: observed.append(segment))
+        manager.start(CALL, STREAM)
+        manager.offer(CALL, 'inbound', 5000, b'\xff' * 160)
+        await until(lambda: len(connector.sockets) == 2)
+        sock = connector.sockets[0]
+        sock.push(result('90,000 miles.', start=.1, duration=1))
+        sock.push({'type': 'SpeechStarted', 'timestamp': 2})
+        sock.push({'type': 'UtteranceEnd', 'last_word_end': 1.1})
+        await until(lambda: len(observed) == 2)
+        assert not any(row['speech_final'] for row in observed)
+        final = result('And it is in good condition.', start=2, duration=1)
+        final['speech_final'] = True
+        sock.push(final)
+        await until(lambda: len(observed) == 3)
+        assert observed[-1]['speech_final']
+        await complete(manager)
+    asyncio.run(run())
+
+
+def test_empty_endpoint_releases_speech_activity_without_a_new_final(tmp_path):
+    async def run():
+        connector, observed = Connector(), []
+        manager = TranscriptionManager(settings(tmp_path), connector,
+            on_segment=lambda sid, segment, final: observed.append(segment))
+        manager.start(CALL, STREAM)
+        manager.offer(CALL, 'inbound', 5000, b'\xff' * 160)
+        await until(lambda: len(connector.sockets) == 2)
+        sock = connector.sockets[0]
+        first = result('90,000 miles.', start=.1, duration=1)
+        first['speech_final'] = True
+        sock.push(first)
+        sock.push({'type': 'SpeechStarted', 'timestamp': 2})
+        end = result('', start=2, duration=1)
+        end['speech_final'] = True
+        sock.push(end)
+        await until(lambda: len(observed) == 3)
+        assert observed[-1]['text'] == '' and observed[-1]['speech_final']
+        await complete(manager)
+        assert len(manager.history[0]['segments']) == 1
+    asyncio.run(run())

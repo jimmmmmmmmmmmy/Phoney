@@ -826,3 +826,155 @@ def test_disconnect_live_status_or_new_stream_never_ends_call(tmp_path, monkeypa
         assert not h.controller._disconnect_checks
         await h.close()
     asyncio.run(run())
+
+
+def test_explicit_utterance_end_combines_final_chunks_into_one_reply(tmp_path):
+    async def run():
+        h = Harness(tmp_path); s = await h.joined()
+        await h.press('#1'); await h.complete()
+        def generated():
+            return [body for url, body in h.provider.requests if 'generativelanguage' in url]
+        count = len(generated())
+        await h.controller.transcript(s.id, REMOTE, '90,000 miles.', segment_id='miles',
+                                      speech_final=False)
+        await asyncio.sleep(.35)
+        assert len(generated()) == count
+        await h.controller.transcript(s.id, REMOTE, 'And the condition', final=False,
+                                      speech_final=False)
+        await h.controller.transcript(s.id, REMOTE, 'And the condition is good.',
+                                      segment_id='condition', speech_final=False)
+        await asyncio.sleep(.35)
+        assert len(generated()) == count
+        # Empty speech_final or UtteranceEnd acknowledges the whole utterance.
+        await h.controller.transcript(s.id, REMOTE, '', final=False, speech_final=True)
+        await until(lambda: len(generated()) == count + 1)
+        await h.complete()
+        contents = json.dumps(generated()[-1]['contents'])
+        assert '90,000 miles.' in contents and 'And the condition is good.' in contents
+        await h.controller.transcript(s.id, REMOTE, '', final=False, speech_final=True)
+        await asyncio.sleep(.15)
+        assert len(generated()) == count + 1
+        await h.close()
+    asyncio.run(run())
+
+
+def test_speech_started_cancels_pending_endpoint_until_fresh_boundary(tmp_path):
+    async def run():
+        h = Harness(tmp_path); s = await h.joined()
+        await h.press('#1'); await h.complete()
+        initial = len(h.delivered)
+        await h.controller.transcript(s.id, REMOTE, '90,000 miles.', segment_id='miles',
+                                      speech_final=True)
+        await h.controller.transcript(s.id, REMOTE, '', final=False, speech_final=False,
+                                      speech_started=True)
+        await asyncio.sleep(.15)
+        assert len(h.delivered) == initial and not h.controller.playing(s.id)
+        await h.controller.transcript(s.id, REMOTE, 'And it is in good condition.',
+                                      segment_id='condition', speech_final=True)
+        await until(lambda: len(h.delivered) == initial + 1)
+        await h.close()
+    asyncio.run(run())
+
+
+def test_empty_endpoint_after_noise_keeps_prior_complete_turn_usable(tmp_path):
+    async def run():
+        h = Harness(tmp_path); s = await h.joined()
+        await h.press('#1'); await h.complete()
+        initial = len(h.delivered)
+        await h.controller.transcript(s.id, REMOTE, '90,000 miles.', segment_id='miles',
+                                      speech_final=True)
+        await h.controller.transcript(s.id, REMOTE, '', final=False, speech_final=False,
+                                      speech_started=True)
+        await asyncio.sleep(.15)
+        assert len(h.delivered) == initial
+        await h.controller.transcript(s.id, REMOTE, '', final=False, speech_final=True)
+        await until(lambda: len(h.delivered) == initial + 1)
+        assert not h.controller._remote_turn_open
+        await h.close()
+    asyncio.run(run())
+
+
+def test_complete_new_caller_turn_during_ordinary_generation_gets_a_reply(tmp_path, monkeypatch):
+    from operator_service import runtime
+    original = runtime.reply_events
+    started, resume = None, None
+    async def run():
+        nonlocal started, resume
+        started, resume = asyncio.Event(), asyncio.Event()
+        h = Harness(tmp_path); s = await h.joined()
+        await h.press('#1'); await h.complete()
+        calls = 0
+        async def gated(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await resume.wait()
+            async for event in original(*args, **kwargs):
+                yield event
+        monkeypatch.setattr(runtime, 'reply_events', gated)
+        await h.controller.transcript(s.id, REMOTE, 'The mileage is ninety thousand.',
+                                      segment_id='first', speech_final=True)
+        await asyncio.wait_for(started.wait(), 1)
+        await h.controller.transcript(s.id, REMOTE, 'The condition is excellent as well.',
+                                      segment_id='addition', speech_final=True,
+                                      timestamp_ms=h.controller.elapsed_ms(s.id))
+        resume.set()
+        await until(lambda: h.controller._agent_reply_counts.get(s.id) == 3)
+        await h.complete()
+        requests = [body for url, body in h.provider.requests if 'generativelanguage' in url]
+        assert len(requests) == 3
+        assert 'condition is excellent' in json.dumps(requests[-1]['contents'])
+        await asyncio.sleep(.4)
+        assert len([url for url, _ in h.provider.requests if 'generativelanguage' in url]) == 3
+        await h.close()
+    asyncio.run(run())
+
+
+def test_observed_interim_can_finalize_with_original_onset_after_playback(tmp_path, monkeypatch):
+    from operator_service import runtime
+    original = runtime.reply_events
+    async def run():
+        started, resume = asyncio.Event(), asyncio.Event()
+        h = Harness(tmp_path); s = await h.joined()
+        await h.press('#1'); await h.complete()
+        calls = 0
+        async def gated(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await resume.wait()
+            async for event in original(*args, **kwargs):
+                yield event
+        monkeypatch.setattr(runtime, 'reply_events', gated)
+        await h.controller.transcript(s.id, REMOTE, 'The mileage is ninety thousand.',
+                                      segment_id='first', speech_final=True)
+        await asyncio.wait_for(started.wait(), 1)
+        onset = h.controller.elapsed_ms(s.id)
+        await h.controller.transcript(s.id, REMOTE, 'The condition is', final=False,
+                                      speech_final=False, timestamp_ms=onset)
+        await asyncio.sleep(.01)
+        resume.set()
+        await until(lambda: h.controller._agent_reply_counts.get(s.id) == 2)
+        await h.complete()
+        assert h.controller._caller_turn_floor[s.id] > onset
+        assert s.id in h.controller._remote_turn_open
+        # A genuinely old result does not complete this observed new utterance.
+        await h.controller.transcript(s.id, REMOTE, 'Old delayed speech.',
+            segment_id='old', speech_final=True, timestamp_ms=0)
+        await asyncio.sleep(.15)
+        assert s.id in h.controller._remote_turn_open
+        assert not h.controller._reply_timers
+        # Deepgram retains the original onset; it does not stamp finalization time.
+        await h.controller.transcript(s.id, REMOTE, 'The condition is excellent.',
+            segment_id='addition', speech_final=True, timestamp_ms=onset)
+        await until(lambda: h.controller._agent_reply_counts.get(s.id) == 3)
+        await h.complete()
+        assert not h.controller._remote_turn_open
+        assert not h.controller._remote_turn_onsets
+        requests = [body for url, body in h.provider.requests if 'generativelanguage' in url]
+        assert len(requests) == 3
+        assert 'condition is excellent' in json.dumps(requests[-1]['contents'])
+        await h.close()
+    asyncio.run(run())

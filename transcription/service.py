@@ -82,6 +82,10 @@ class _Track:
     finishing: bool = False
     close_sent: bool = False
     task: asyncio.Task | None = None
+    pending_utterance: bool = False
+    speech_active: bool = False
+    last_final_end_ms: int = 0
+    last_speech_start_ms: int = 0
 
 
 @dataclass
@@ -148,11 +152,15 @@ class TranscriptionManager:
         except (OSError, ValueError, TypeError):
             return None
 
-    def _notify_segment(self, call_sid, segment, final, *, speech_start_ms=None):
+    def _notify_segment(self, call_sid, segment, final, *, speech_start_ms=None,
+                        speech_final=False, speech_started=False):
         # Observers enqueue bounded work; provider/control I/O never runs here.
         if self.on_segment is not None:
             try:
                 event = dict(segment)
+                event["speech_final"] = speech_final
+                if speech_started:
+                    event["speech_started"] = True
                 if speech_start_ms is not None:
                     # Control-only metadata must not alter stored timing or IDs.
                     event["speech_start_ms"] = speech_start_ms
@@ -354,7 +362,7 @@ class TranscriptionManager:
                 return
             params = {"model": self.model, "encoding": "mulaw", "sample_rate": 8000,
                       "channels": 1, "interim_results": "true", "smart_format": "true",
-                      "endpointing": 300}
+                      "endpointing": 750, "utterance_end_ms": 1000, "vad_events": "true"}
             url = "wss://api.deepgram.com/v1/listen?" + urlencode(params)
             async with self.connector(url, additional_headers={
                     "Authorization": "Token " + self.settings.deepgram_api_key},
@@ -454,16 +462,40 @@ class TranscriptionManager:
                 kind = event.get("type")
                 if kind == "Error" or "err_code" in event:
                     raise TrackFailure("provider-error")
-                if kind in {"Metadata", "UtteranceEnd", "SpeechStarted"}:
+                if kind == "Metadata":
+                    continue
+                if kind in {"UtteranceEnd", "SpeechStarted"}:
+                    seconds = event.get("last_word_end" if kind == "UtteranceEnd" else "timestamp")
+                    if (type(seconds) not in (int, float) or not math.isfinite(seconds)
+                            or seconds < 0 or seconds * 1000 > min(
+                                self.settings.media_max_seconds * 1000,
+                                math.ceil(track.offered_samples / 8) + 50)):
+                        raise ValueError
+                    timestamp_ms = round(seconds * 1000)
+                    if kind == "SpeechStarted":
+                        track.speech_active = True
+                        track.last_speech_start_ms = max(track.last_speech_start_ms, timestamp_ms)
+                        self._notify_segment(session.call_sid, {"track": track.name,
+                            "text": "", "start_ms": timestamp_ms, "end_ms": timestamp_ms},
+                            False, speech_started=True)
+                    elif ((track.pending_utterance or track.speech_active) and timestamp_ms >= max(
+                            track.last_final_end_ms, track.last_speech_start_ms)):
+                        track.pending_utterance = False
+                        track.speech_active = False
+                        self._notify_segment(session.call_sid, {"track": track.name,
+                            "text": "", "start_ms": timestamp_ms, "end_ms": timestamp_ms},
+                            False, speech_final=True)
                     continue
                 if kind != "Results":
                     raise ValueError
                 alternative = event["channel"]["alternatives"][0]
                 text = alternative["transcript"]
                 final = event["is_final"]
+                speech_final = event.get("speech_final", False)
                 start, duration = event["start"], event["duration"]
                 confidence = alternative.get("confidence", 0.0)
                 if (not isinstance(text, str) or len(text) > MAX_TEXT or type(final) is not bool
+                        or type(speech_final) is not bool
                         or any(type(value) not in (int, float) or not math.isfinite(value)
                                for value in (start, duration, confidence))
                         or start < 0 or duration < 0 or not 0 <= confidence <= 1):
@@ -495,14 +527,37 @@ class TranscriptionManager:
                         session.final_keys[key] = len(session.segments)
                         session.segments.append(segment)
                     elif session.segments[existing] == segment:
+                        # An unchanged final can carry the first endpoint signal.
+                        if speech_final and (track.pending_utterance or track.speech_active):
+                            track.pending_utterance = False
+                            track.speech_active = False
+                            self._notify_segment(session.call_sid, {"track": track.name,
+                                "text": "", "start_ms": end_ms, "end_ms": end_ms},
+                                False, speech_final=True)
                         continue
                     else:
                         session.segments[existing] = segment
                     session.text_chars = total
                     self._touch()
+                    track.pending_utterance = not speech_final
+                    track.speech_active = not speech_final
+                    words = alternative.get("words")
+                    last_word_end = (words[-1].get("end") if isinstance(words, list)
+                                     and words and isinstance(words[-1], dict) else None)
+                    track.last_final_end_ms = (round(last_word_end * 1000)
+                        if type(last_word_end) in (int, float) and math.isfinite(last_word_end)
+                        and start <= last_word_end <= start + duration else start_ms)
                     self._notify_segment(session.call_sid, segment, True,
-                                         speech_start_ms=onset_ms)
+                                         speech_start_ms=onset_ms, speech_final=speech_final)
+                elif speech_final and (track.pending_utterance or track.speech_active):
+                    track.pending_utterance = False
+                    track.speech_active = False
+                    self._notify_segment(session.call_sid, {"track": track.name,
+                        "text": "", "start_ms": end_ms, "end_ms": end_ms},
+                        False, speech_final=True)
             elif track.interim != text:
+                if text:
+                    track.speech_active = True
                 track.interim = text
                 self._touch()
                 self._notify_segment(session.call_sid, {"track": track.name,

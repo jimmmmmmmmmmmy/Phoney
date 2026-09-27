@@ -1,5 +1,8 @@
 # Telephone prompt evaluation — September 27, 2026
 
+This report describes the earlier three-reply manual policy. Manual transfers now
+continue until the caller is finished; see the later [continuation evaluation](VOICE_PROMPT_CONTINUATION.md).
+
 The final prompt uses a shared telephone protocol, an editable Voice Clone
 personality, and separate internal personalities for automatic AI screening and
 voicemail. Three-reply workflows receive one explicit runtime step at a time.
@@ -70,7 +73,7 @@ Run a bounded real-model sequence using the installed private environment file:
 
 ```sh
 .venv/bin/python scripts/evaluate_voice_prompts.py --live --max-requests 12 \
-  --scenario manual_three_replies \
+  --scenario manual_continues_until_finished \
   --scenario automatic_context_and_no_commitment \
   --scenario voicemail_capture_readback_confirm \
   --scenario caller_ends_early \

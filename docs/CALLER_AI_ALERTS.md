@@ -44,3 +44,7 @@ Version 2 detection files include an `analysis` object with bounded intervals an
 The UI distinguishes **AI caller**, **Potential AI caller**, **No AI speech flagged**, **Inconclusive**, and an in-progress state. A transcript's separate confidence number is explicitly labeled **Transcription confidence**.
 
 Provider references: [Modulate streaming](https://docs.modulate.ai/api-reference/svd/streaming), [Modulate batch](https://docs.modulate.ai/api-reference/svd/batch), and [Twilio track semantics](https://www.twilio.com/docs/voice/twiml/stream#track).
+
+## Verification
+
+The integrated suite passes **1,356 tests**. Tests cover exact duration thresholds, overlap and uncertainty, live progress, restart recovery, selected-call evidence, cache and WAV boundary validation, caller-only uploads, retries, candidate isolation, and deployment draining. Desktop and 390×844 mobile browser checks show the compact badge without horizontal overflow or console errors. Provider fakes establish application behavior; they do not establish detection accuracy.

@@ -1,4 +1,4 @@
-"""Manual, cancellable Gemini/ElevenLabs dialogue over the existing audio router.
+"""Cancellable phone-agent dialogue over the existing audio router.
 
 Provider work runs outside media readers. A bounded phrase queue connects Gemini
 and streamed synthesis; frames are paced by CallRouter with real backpressure.
@@ -9,14 +9,17 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 import inspect
+import re
 import time
 
 import httpx
 
-from voice_stack.agent import Conversation, ReplyCommandBuffer, SentenceBuffer, reply_events
+from voice_stack.agent import (Conversation, ReplyCommandBuffer, SentenceBuffer,
+                               reply_events_with_retry as reply_events)
 from voice_stack.audio import FRAME_BYTES, iter_frames
 from voice_stack.tts import TTSError, speech, speech_bytes
-from .sessions import AGENT, ANNOUNCING, HUMAN, PREPARING, REMOTE, OperatorRejected
+from voice_stack.prompts import VOICE_CLONE_PROMPT, three_reply_phase_instruction, voicemail_phase_instruction
+from .sessions import AGENT, ANNOUNCING, HUMAN, OWNER, PREPARING, REMOTE, OperatorRejected
 
 PHRASE_QUEUE_SIZE = 4
 MAX_CONTEXT_CHARS = 48_000
@@ -26,6 +29,7 @@ PREPARATION_SECONDS = 15.0
 PLAYBACK_ACK_SECONDS = 5.0
 FRAME_STALL_SECONDS = 2.0
 ANNOUNCEMENT = "An AI assistant is joining this call."
+OWNER_NOTICE = "AI Detected, deploying voice agent"
 
 
 async def maybe_await(value):
@@ -75,6 +79,12 @@ class DialogueRun:
         self.cue_task = None
         self.preparation_task = None
         self.announcement_task = None
+        self.owner_cue_task = None
+        self.voicemail_phase = getattr(session, "voicemail_phase", "greeting")
+        self.voicemail = getattr(session, "voicemail", False)
+        self.bounded_replies = (getattr(session, "agent_kind", "manual") == "ai-detected"
+                                or snapshot.prompt.strip() == VOICE_CLONE_PROMPT.strip())
+        self.caller_requested_end = False
         self.stage = "context"
         self.started = time.monotonic()
 
@@ -95,12 +105,21 @@ class DialogueRun:
             async with asyncio.timeout(PREPARATION_SECONDS):
                 turns = (await maybe_await(self.controller.context_getter(self.session))
                          if self.controller.context_getter else self.session.turns)
-            conversation = Conversation.handoff(handoff_context(turns),
+            context = handoff_context(turns)
+            latest_caller = next((text for speaker, text in reversed(context) if speaker == "remote"), "")
+            self.caller_requested_end = bool(re.search(
+                r"^(?:(?:ok(?:ay)?|thanks?|thank you)[,.! ]+)*(?:goodbye|bye(?: bye)?|hang up|"
+                r"please (?:hang up|end (?:the|this) call)|end (?:the|this) call)[.! ]*$",
+                re.split(r"(?<=[.!?])\s+", latest_caller.strip())[-1], re.I))
+            instruction = (voicemail_phase_instruction(self.voicemail_phase) if self.voicemail
+                           else three_reply_phase_instruction(self.reply_number) if self.bounded_replies else "")
+            conversation = Conversation.handoff(context,
                 goal=self.session.goal, boundaries=self.snapshot.prompt,
-                agent_reply_number=self.reply_number)
+                agent_reply_number=self.reply_number, announcement_provided=not self.voicemail,
+                runtime_instruction=instruction)
             if not conversation.contents:
                 conversation.contents.append({"role": "user", "parts": [{"text":
-                    "The owner selected you for this call. Begin using the selected instructions; "
+                    "The phone runtime activated you for this call. Begin using the selected instructions; "
                     "ask a short clarifying question if the goal is not specified."}]})
             async with self.controller.provider_client(self.session.id) as http:
                 self.producer = asyncio.create_task(self._produce(http, conversation))
@@ -109,7 +128,10 @@ class DialogueRun:
                         # Play the disclosure while Gemini/TTS prepare the reply,
                         # instead of adding its whole duration after preparation.
                         # Any failure or #0 cancels both and restores human relay.
-                        self.cue_task = asyncio.create_task(self._announcement(http))
+                        if not self.voicemail:
+                            self.cue_task = asyncio.create_task(self._announcement(http))
+                        if getattr(self.session, "agent_kind", "manual") == "ai-detected":
+                            self.owner_cue_task = asyncio.create_task(self._announcement(http, OWNER_NOTICE))
                         self.preparation_task = asyncio.create_task(self._prepare_first(http))
                         self.announcement_task = asyncio.create_task(self._announce_ready())
                         prepared, _ = await asyncio.gather(self.preparation_task, self.announcement_task)
@@ -137,12 +159,20 @@ class DialogueRun:
                         and self.takeover_request == self.controller._takeover_requests.get(self.session.id, 0)):
                     self.controller._agent_reply_counts[self.session.id] = self.reply_number
                     self.trace("agent-reply-completed", agent_reply_number=self.reply_number)
+                if self.bounded_replies:
+                    if self.reply_number >= 3 and self.confirmed:
+                        self.end_requested = True
+                    elif not self.caller_requested_end:
+                        self.end_requested = False
+                if self.voicemail and self.voicemail_phase in ("greeting", "capture", "readback"):
+                    self.end_requested = self.end_requested and self.caller_requested_end
                 # The producer's successful completion and every phrase's
                 # playback mark must precede hangup. A new owner selection
                 # revokes this action even while its registry lookup is pending.
                 if (self.end_requested and self.current()
                         and self.takeover_request == self.controller._takeover_requests.get(self.session.id, 0)):
-                    if self.remote_revision != self.controller._remote_revisions.get(self.session.id, 0):
+                    if (self.remote_revision != self.controller._remote_revisions.get(self.session.id, 0)
+                            and not (self.bounded_replies and self.reply_number >= 3)):
                         # A final caller turn received after the context snapshot
                         # must be considered before executing a stale hangup.
                         self.end_requested = False
@@ -151,6 +181,8 @@ class DialogueRun:
                     else:
                         self.trace("agent-end-call")
                         await self.controller.end(self.session.id, "agent-end-call")
+                if self.voicemail and self.current() and self.confirmed:
+                    await self.controller.voicemail_reply_completed(self.session.id, self.voicemail_phase)
         except asyncio.CancelledError:
             self.trace("generation-canceled", stage=self.stage)
             raise
@@ -170,7 +202,7 @@ class DialogueRun:
             if self.current():
                 await self.controller._abandon(self.session.id, "dialogue-" + type(exc).__name__)
         finally:
-            tasks = [t for t in (self.cue_task, self.preparation_task, self.announcement_task) if t is not None]
+            tasks = [t for t in (self.cue_task, self.owner_cue_task, self.preparation_task, self.announcement_task) if t is not None]
             for task in tasks:
                 if not task.done():
                     task.cancel()
@@ -202,6 +234,8 @@ class DialogueRun:
         return first, audio, chunk
 
     async def _announce_ready(self):
+        if self.voicemail:
+            return
         cue = await self.cue_task
         # Avoid a misleading cue if reply preparation has already failed.
         if self.preparation_task.done():
@@ -211,19 +245,36 @@ class DialogueRun:
         await self.controller.store.transition(self.session.id, self.epoch, ANNOUNCING)
         self.trace("announcement-started")
         self.controller.router(self.session.id).set_mode(ANNOUNCING)
-        await self._play_chunks(_bytes(cue), kind="announcement")
-        await self._ack("announcement")
+        async def caller_notice():
+            await self._play_chunks(_bytes(cue), kind="announcement")
+            await self._ack("announcement")
+        async def owner_notice():
+            notice = await self.owner_cue_task
+            router = self.controller.router(self.session.id)
+            self.controller._note_cleared(self.session.id, router.set_owner_notice(True))
+            try:
+                await self._play_chunks(_bytes(notice), kind="announcement", role=OWNER)
+                await self._ack("owner-notice", role=OWNER)
+            finally:
+                router.set_owner_notice(False)
+        if self.owner_cue_task is not None:
+            # Both private legs finish their own cue before the shared agent reply.
+            async with asyncio.TaskGroup() as group:
+                group.create_task(caller_notice())
+                group.create_task(owner_notice())
+        else:
+            await caller_notice()
         self.trace("announcement-completed", reply_ready=self.preparation_task.done())
 
-    async def _announcement(self, http):
-        key = (self.snapshot.voice_id, self.voice.elevenlabs_model, ANNOUNCEMENT)
+    async def _announcement(self, http, text=ANNOUNCEMENT):
+        key = (self.snapshot.voice_id, self.voice.elevenlabs_model, text)
         cache = self.controller.announcement_cache
         if key in cache:
             self.trace("announcement-cache-hit")
             return cache[key]
         started = time.monotonic()
         audio = await speech(http, self.voice.elevenlabs_api_key, self.snapshot.voice_id,
-            ANNOUNCEMENT, model=self.voice.elevenlabs_model, output_format="ulaw_8000",
+            text, model=self.voice.elevenlabs_model, output_format="ulaw_8000",
             timeout=min(self.voice.request_timeout, PREPARATION_SECONDS))
         if not audio or len(audio) > MAX_AUDIO_BYTES:
             raise ValueError("Invalid announcement audio")
@@ -242,6 +293,8 @@ class DialogueRun:
                 conversation.system, deepcopy(conversation.contents),
                 model=self.voice.gemini_model, max_output_tokens=self.voice.max_reply_tokens,
                 timeout=self.voice.request_timeout):
+            if event["kind"] == "retry":
+                self.trace("gemini-empty-response-retry")
             if event["kind"] == "text":
                 if first_token:
                     self.trace("gemini-first-text")
@@ -301,12 +354,12 @@ class DialogueRun:
             self.pending = None
             self.trace("reply-played")
 
-    async def _play_chunks(self, chunks, *, kind):
+    async def _play_chunks(self, chunks, *, kind, role=REMOTE):
         # A stream that keeps returning tiny chunks must not evade the timeout.
         async with asyncio.timeout(self.voice.request_timeout):
-            await self._play_chunks_bounded(chunks, kind=kind)
+            await self._play_chunks_bounded(chunks, kind=kind, role=role)
 
-    async def _play_chunks_bounded(self, chunks, *, kind):
+    async def _play_chunks_bounded(self, chunks, *, kind, role=REMOTE):
         buffer = bytearray()
         size = 0
         try:
@@ -320,9 +373,9 @@ class DialogueRun:
                 while len(buffer) >= FRAME_BYTES:
                     frame = bytes(buffer[:FRAME_BYTES])
                     del buffer[:FRAME_BYTES]
-                    await self._frame(frame, kind)
+                    await self._frame(frame, kind, role=role)
             if buffer:
-                await self._frame(next(iter_frames(bytes(buffer))), kind)
+                await self._frame(next(iter_frames(bytes(buffer))), kind, role=role)
             if size == 0:
                 raise ValueError("No speech audio")
         finally:
@@ -330,10 +383,10 @@ class DialogueRun:
             if close:
                 await close()
 
-    async def _frame(self, frame, kind):
+    async def _frame(self, frame, kind, *, role=REMOTE):
         router = self.controller.router(self.session.id)
         deadline = time.monotonic() + FRAME_STALL_SECONDS
-        while router.pending_agent(REMOTE) >= 4:
+        while router.pending_agent(role) >= 4:
             if not self.current():
                 raise asyncio.CancelledError
             if time.monotonic() >= deadline:
@@ -341,18 +394,18 @@ class DialogueRun:
             await asyncio.sleep(0.01)
         if not self.current():
             raise asyncio.CancelledError
-        sent = (router.send_announcement(frame) if kind == "announcement"
+        sent = (router.send_announcement(frame, role=role) if kind == "announcement"
                 else router.send_agent((frame,), reply_epoch=self.epoch))
         if not sent:
             raise ValueError("Remote stream unavailable")
         if kind == "agent" and self.pending is not None:
             self.pending["frames"] += 1
 
-    async def _ack(self, kind):
+    async def _ack(self, kind, *, role=REMOTE):
         self.sequence += 1
         name = f"{kind}-{self.epoch}-{self.sequence}"
         await self.controller.wait_for_mark(self.session.id, name,
-            timeout=PLAYBACK_ACK_SECONDS + 1.0)
+            timeout=PLAYBACK_ACK_SECONDS + 1.0, role=role)
         self.trace("playback-acknowledged", kind=kind)
         if not self.current():
             raise asyncio.CancelledError

@@ -9,7 +9,7 @@ import stat
 import pytest
 
 from agent_registry import AgentRegistry, RegistryError
-from agent_registry.store import DATABASE_NAME, SESSION_SECONDS, DEFAULT_AGENT_ID, DEFAULT_PERSONALITY
+from agent_registry.store import DATABASE_NAME, SESSION_SECONDS, DEFAULT_AGENT_ID, DEFAULT_PERSONALITY, LEGACY_DEFAULT_PERSONALITY
 from workspace_store import WorkspaceStore
 
 AGENT = "agent-12345678-1234-1234-1234-123456789abc"
@@ -57,10 +57,11 @@ def test_default_waits_for_ready_owner_voice_without_inventing_a_voice(tmp_path)
     assert store.ensure_default_voice_clone().slot == 1
 
 
-def test_default_adopts_matching_agent_without_duplicate_or_lost_history(tmp_path):
+@pytest.mark.parametrize("personality", [DEFAULT_PERSONALITY, LEGACY_DEFAULT_PERSONALITY])
+def test_default_adopts_matching_agent_without_duplicate_or_lost_history(tmp_path, personality):
     store = ready_store(tmp_path)
     store.add_voice(voice(name="owner"))
-    prior = store.publish(AGENT, config(name="Tom", prompt=DEFAULT_PERSONALITY + "."))
+    prior = store.publish(AGENT, config(name="Tom", prompt=personality + "."))
     seeded = store.ensure_default_voice_clone()
     assert seeded.id == prior.id and seeded.revision == 2
     assert seeded.name == "Voice Clone" and seeded.prompt == DEFAULT_PERSONALITY

@@ -5,9 +5,9 @@ token and then delegates to ``OperatorSessions`` (state) and ``CallRouter``
 (audio). The controller is the only place that dials, and every network call it
 starts is a tracked task so deployment draining can wait for it.
 
-The controller owns manual keypad and dashboard takeover requests. Published
-agent snapshots drive cancellable dialogue; ``#0`` returns control without
-asking any provider for anything. No detection result can activate an agent.
+The controller owns manual requests and explicitly enabled detection/voicemail
+handoffs. Immutable agent snapshots drive cancellable dialogue; ``#0`` returns
+control without a provider request and suppresses further automatic takeover.
 
 The owner-first callback needs no conference: each phone gets its own inline
 ``<Connect><Stream>`` and Python joins the two audio directions.
@@ -25,6 +25,8 @@ import json
 from contextlib import asynccontextmanager
 
 import httpx
+from partner_detection.analysis import validate_analysis
+from .internal_agents import internal_snapshot
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, Response
@@ -40,6 +42,7 @@ from .controls import (DIGITS, HASH, PROFILE, RELEASE, REPORTED, Command, Keypad
 from .sessions import (AGENT, ANNOUNCING, PREPARING, CALL_SID, CONNECTED, HUMAN, MODES, OWNER, OWNER_PROMPT, REMOTE, ROLES,
                        OperatorRejected, OperatorSession, OperatorSessions)
 from .runtime import DialogueRun, maybe_await
+from .voicemail_agent import VoicemailAgent
 
 log = logging.getLogger("uvicorn.error")
 
@@ -172,6 +175,9 @@ class OperatorController:
         self.agent_turn_callback = on_agent_turn
         self.provider_transport = provider_transport
         self._provider_clients = {}
+        self._ai_pending = set()
+        self._auto_consumed = set()
+        self._auto_suppressed = set()
         self._started = set()
         self._mark_waiters = {}
         self._transcript_seen = {}
@@ -181,6 +187,9 @@ class OperatorController:
         self._remote_revisions = {}
         self._dialogue_runs = {}
         self._agent_reply_counts = {}
+        self._voicemail_agents = {}
+        self._voicemail_resume_reply = {}
+        self._retired_owner_calls = set()
         self._caller_turn_floor = {}
         self._output_clocks = {}
         self._agent_frames_sent = {}
@@ -211,6 +220,155 @@ class OperatorController:
                                    keepalive_expiry=120))
             self._provider_clients[session_id] = client
         yield client
+
+    def on_detection(self, session_id, result):
+        """Accept only validated live caller evidence from the in-process detector."""
+        if (not self.settings.automatic_takeover_enabled or not isinstance(result, dict)
+                or result.get('provider') != 'modulate'):
+            return
+        session = self.store.find(session_id)
+        if session is None or not session.active or getattr(session, 'voicemail', False):
+            return
+        try:
+            analysis = validate_analysis(result.get('analysis'))
+        except (TypeError, ValueError, KeyError):
+            return
+        if (analysis['version'] != 3 or analysis['source'] != 'live'
+                or analysis['track'] != 'inbound'
+                or analysis['min_confidence'] < self.settings.modulate_detection_min_confidence):
+            return
+        if analysis['alert'] != 'ai_detected':
+            # An invalidated provider stream can retract provisional evidence
+            # while the owner is ringing. Do not activate from that stale flag.
+            self._ai_pending.discard(session_id)
+            return
+        self._ai_pending.add(session_id)
+        self._maybe_auto_takeover(session_id)
+
+    def _maybe_auto_takeover(self, session_id):
+        session = self.store.find(session_id)
+        if (not self.settings.automatic_takeover_enabled or session_id not in self._ai_pending
+                or session_id in self._auto_consumed or session_id in self._auto_suppressed
+                or session is None or not session.active or session.phase != CONNECTED
+                or session.mode != HUMAN or getattr(session, 'voicemail', False)
+                or not self.voice_ready or not all(self.router(session_id).attached(r) for r in ROLES)):
+            return
+        # Consume before the first await: repeated streaming verdicts cannot
+        # race a slow voice lookup or retry failed provider work indefinitely.
+        self._auto_consumed.add(session_id)
+        request_id = self._takeover_requests.get(session_id, 0) + 1
+        self._takeover_requests[session_id] = request_id
+        self.store.spawn(self._activate_internal(session_id, 'ai-detected', request_id))
+
+    async def _internal_snapshot(self, kind):
+        return await asyncio.to_thread(internal_snapshot, self.registry, kind)
+
+    async def _activate_internal(self, session_id, kind, request_id):
+        session = self.store.find(session_id)
+        def current():
+            return bool(session and session.active
+                and self._takeover_requests.get(session_id) == request_id
+                and (kind == 'voicemail' or session_id not in self._auto_suppressed))
+        try:
+            async with asyncio.timeout(3):
+                snapshot = await self._internal_snapshot(kind)
+                if self.context_getter is not None:
+                    await maybe_await(self.context_getter(session))
+            if not current() or (kind == 'ai-detected' and session_id not in self._ai_pending):
+                return False
+            router = self.router(session_id)
+            roles = (REMOTE,) if kind == 'voicemail' else ROLES
+            if session.phase != CONNECTED or not all(router.attached(role) for role in roles):
+                raise OperatorRejected('call-not-connected')
+            await self.store.select_profile(session_id, 'voiceml' if kind == 'voicemail' else 'aiwatch', mode=PREPARING)
+            if not current():
+                return False
+            if kind == 'ai-detected' and session_id not in self._ai_pending:
+                # select_profile may await the session lock. If evidence was
+                # withdrawn meanwhile, undo only this still-authorized change;
+                # a newer manual command must retain its own mode and profile.
+                await self._release(session_id)
+                return False
+            self._stop_playback(session_id)
+            timer = self._reply_timers.pop(session_id, None)
+            if timer:
+                timer.cancel()
+            self._note_cleared(session_id, router.set_mode(PREPARING))
+            session.agent_snapshot, session.agent_name, session.voice_id = snapshot, snapshot.name, snapshot.voice_id
+            session.agent_kind = kind
+            self._accepted_takeovers[session_id] = request_id
+            self._agent_reply_counts[session_id] = 0
+            self._caller_turn_floor.pop(session_id, None)
+            if kind == 'voicemail':
+                self._voicemail_agents[session_id].reply_started('greeting')
+            self.trace(session_id, 'internal-takeover', kind=kind, agent_revision=snapshot.revision)
+            self._start_dialogue(session, announce=True)
+            return True
+        except Exception as exc:
+            self.trace(session_id, 'internal-takeover-failed', kind=kind, error=type(exc).__name__)
+            if current():
+                await self._abandon(session_id, 'internal-agent-unavailable')
+            return False
+
+    async def _retire_voicemail_owner(self, call_sid):
+        if call_sid and call_sid not in self._retired_owner_calls:
+            self._retired_owner_calls.add(call_sid)
+            await self._safe_end_call(OWNER, call_sid)
+
+    async def _begin_voicemail(self, session_id, reason):
+        session = self.store.find(session_id)
+        if session is None or not session.active:
+            return False
+        if session.voicemail:
+            return True
+        if not self.voice_ready or not await self.store.claim_voicemail(session_id, reason):
+            return False
+        self.trace(session_id, 'voicemail-started', reason=reason)
+        self.router(session_id).stop_cue()
+        vm = VoicemailAgent(session,
+            on_reply=lambda phase: self._voicemail_reply(session_id, phase),
+            on_end=lambda why: self.end(session_id, why))
+        self._voicemail_agents[session_id] = vm
+        vm.start()
+        if session.legs[OWNER].call_sid:
+            self.store.spawn(self._retire_voicemail_owner(session.legs[OWNER].call_sid))
+        if self.router(session_id).attached(REMOTE):
+            await self._resume_voicemail(session_id)
+        return True
+
+    async def _resume_voicemail(self, session_id):
+        session = self.store.find(session_id)
+        vm = self._voicemail_agents.get(session_id)
+        if session is None or not session.active or vm is None:
+            return
+        self.router(session_id).stop_cue()
+        if session.agent_snapshot is None:
+            request = self._takeover_requests.get(session_id, 0) + 1
+            self._takeover_requests[session_id] = request
+            self.store.spawn(self._activate_internal(session_id, 'voicemail', request))
+        elif self._voicemail_resume_reply.pop(session_id, False):
+            await self.store.set_mode(session_id, PREPARING)
+            self.router(session_id).set_mode(PREPARING)
+            vm.reply_started(session.voicemail_phase or 'greeting')
+            self._start_dialogue(session, announce=True)
+        else:
+            vm.resume_listening()
+
+    async def _voicemail_reply(self, session_id, phase):
+        session = self.store.find(session_id)
+        if (session is None or not session.active or not session.voicemail
+                or not self.router(session_id).attached(REMOTE)):
+            return
+        if self.playing(session_id):
+            raise OperatorRejected('voicemail-reply-already-playing')
+        session.voicemail_phase = phase
+        await self.store.invalidate_reply(session_id)
+        self._start_dialogue(session)
+
+    async def voicemail_reply_completed(self, session_id, phase):
+        vm = self._voicemail_agents.get(session_id)
+        if vm is not None:
+            await vm.reply_completed(phase)
 
     # ------------------------------------------------------------------ routing
 
@@ -308,19 +466,19 @@ class OperatorController:
         if state == "played" and self.store.mark_state(session_id, role, name) == "cleared":
             recorded = "played-after-clear"
         self.store.note_mark(session_id, role, name, recorded)
-        waiter = self._mark_waiters.get((session_id, name))
-        if role == REMOTE and waiter is not None and not waiter.done():
+        waiter = self._mark_waiters.get((session_id, role, name))
+        if waiter is not None and not waiter.done():
             if recorded == "played":
                 waiter.set_result(True)
             elif recorded != "pending":
                 waiter.set_exception(OperatorRejected("playback-interrupted"))
 
-    async def wait_for_mark(self, session_id, name, *, timeout=6.0):
+    async def wait_for_mark(self, session_id, name, *, timeout=6.0, role=REMOTE):
         future = asyncio.get_running_loop().create_future()
-        key = (session_id, name)
+        key = (session_id, role, name)
         self._mark_waiters[key] = future
         try:
-            if not await self.router(session_id).mark(REMOTE, name):
+            if not await self.router(session_id).mark(role, name):
                 raise OperatorRejected("remote-unavailable")
             return await asyncio.wait_for(future, timeout=timeout)
         finally:
@@ -384,6 +542,10 @@ class OperatorController:
         except OperatorRejected as exc:
             log.warning("operator_dial_rejected session=%s role=%s reason=%s",
                         session_id, role, exc.reason)
+            if session.voicemail and role == OWNER:
+                if isinstance(call_sid, str) and CALL_SID.fullmatch(call_sid):
+                    self.store.spawn(self._retire_voicemail_owner(call_sid))
+                return
             if (isinstance(call_sid, str) and CALL_SID.fullmatch(call_sid)
                     and session.legs[role].call_sid != call_sid):
                 # A terminal callback can win the race with calls.create. The
@@ -403,6 +565,11 @@ class OperatorController:
         session = self.store.sessions.get(session_id)
         if session is None or not session.active:
             return
+        if session.voicemail:
+            if role == REMOTE:
+                await self._notify_started(session)
+                await self._resume_voicemail(session_id)
+            return
         if session.direction == "inbound":
             if role == REMOTE:
                 await self._notify_started(session)
@@ -415,6 +582,7 @@ class OperatorController:
                 if await self.store.mark_connected(session_id):
                     router.stop_cue()
                     log.info("operator_connected session=%s", session_id)
+                self._maybe_auto_takeover(session_id)
             elif role == REMOTE and session.phase != CONNECTED:
                 router.start_cue(REMOTE)
             return
@@ -427,6 +595,7 @@ class OperatorController:
         if await self.store.mark_connected(session_id):
             self.router(session_id).stop_cue()
             log.info("operator_connected session=%s", session_id)
+        self._maybe_auto_takeover(session_id)
 
     async def stream_stopped(self, session_id: str, role: str, reason: str):
         # A stream ending is not a hangup: Twilio may still be running the
@@ -434,7 +603,22 @@ class OperatorController:
         log.info("operator_stream_stopped session=%s role=%s reason=%s",
                  session_id, role, reason)
         session = self.store.sessions.get(session_id)
-        if session is not None and session.mode != HUMAN:
+        if session is not None and session.voicemail:
+            if role == OWNER:
+                return  # A retired/late owner socket cannot affect voicemail.
+            vm = self._voicemail_agents.get(session_id)
+            if vm is not None:
+                self._voicemail_resume_reply[session_id] = vm.suspend()
+            if session.agent_snapshot is None:
+                # Revoke an in-flight initial voice/context lookup. It must
+                # not interpret this recoverable transport gap as a failed call.
+                self._takeover_requests[session_id] = self._takeover_requests.get(session_id, 0) + 1
+            if session.active:
+                await self.store.invalidate_reply(session_id)
+                self._stop_playback(session_id)
+                self._note_cleared(session_id, self.router(session_id).clear(*ROLES))
+                self._note_interrupted(session_id)
+        elif session is not None and session.mode != HUMAN:
             await self._release(session_id)
         if session is not None and session.active and hasattr(self.dialer, "read_status"):
             leg = session.legs[role]
@@ -483,6 +667,8 @@ class OperatorController:
                 if result["action"] == "terminal":
                     log.info("operator_missed_status_recovered session=%s role=%s status=%s",
                              session_id, role, status["status"])
+                    if role == OWNER and await self._begin_voicemail(session_id, result['reason']):
+                        return
                     await self.end(session_id, f"{role}-{result['reason']}")
                 return
         finally:
@@ -585,6 +771,7 @@ class OperatorController:
             return False
 
     async def takeover(self, session_id, slot, *, request_id=None):
+        self._auto_suppressed.add(session_id)
         expected = request_id if request_id is not None else self._takeover_requests.get(session_id, 0) + 1
         try:
             return await self._prepare_takeover(session_id, slot, request_id=request_id)
@@ -648,6 +835,7 @@ class OperatorController:
         self._note_cleared(session_id, router.set_mode(PREPARING))
         self._note_interrupted(session_id)
         session.agent_snapshot = snapshot
+        session.agent_kind = 'manual'
         session.agent_name = snapshot.name
         session.voice_id = snapshot.voice_id
         self._accepted_takeovers[session_id] = request_id
@@ -678,6 +866,11 @@ class OperatorController:
         task.add_done_callback(done)
 
     def _schedule_reply(self, session_id):
+        session = self.store.find(session_id)
+        if session is not None and session.voicemail:
+            # Voicemail has its own quiet-period policy. Never feed the last
+            # transcript back as if the caller said it again.
+            return
         timer = self._reply_timers.pop(session_id, None)
         if timer is not None:
             timer.cancel()
@@ -715,14 +908,28 @@ class OperatorController:
                 # request. Delayed STT from before playback is not a new interruption.
                 if (run is not None and (run.speaking_started_ms is None
                         or (timestamp_ms is not None and timestamp_ms < run.speaking_started_ms))):
+                    vm = self._voicemail_agents.get(session_id)
+                    if vm is not None:
+                        vm.transcript(text, final=final)
                     return
                 self.trace(session_id, "caller-interruption")
                 await self.store.invalidate_reply(session_id)
                 self._stop_playback(session_id)
                 self._note_cleared(session_id, self.router(session_id).clear(*ROLES))
                 self._note_interrupted(session_id)
+                vm = self._voicemail_agents.get(session_id)
+                if vm is not None:
+                    vm.interrupted()
+            vm = self._voicemail_agents.get(session_id)
+            if vm is not None:
+                vm.transcript(text, final=final)
+                return
             if final and session.agent_snapshot is not None:
                 self._schedule_reply(session_id)
+        elif speaker == REMOTE and session.voicemail:
+            vm = self._voicemail_agents.get(session_id)
+            if vm is not None:
+                vm.transcript(text, final=final)
 
     async def _after_remote_turn(self, session_id):
         try:
@@ -739,7 +946,11 @@ class OperatorController:
 
     async def _release(self, session_id: str):
         """``#0`` returns control immediately and never waits on a provider."""
+        session = self.store.find(session_id)
+        if session is not None and session.voicemail:
+            raise OperatorRejected('voicemail-has-no-connected-owner')
         self.trace(session_id, "return-to-human")
+        self._auto_suppressed.add(session_id)
         self._takeover_requests[session_id] = self._takeover_requests.get(session_id, 0) + 1
         self._accepted_takeovers.pop(session_id, None)
         self._stop_playback(session_id)
@@ -763,6 +974,10 @@ class OperatorController:
     async def _abandon(self, session_id, reason):
         self.trace(session_id, "takeover-failed", reason=reason)
         log.warning("operator_takeover_abandoned session=%s reason=%s", session_id, reason)
+        session = self.store.find(session_id)
+        if session is not None and session.voicemail:
+            await self.end(session_id, 'voicemail-' + reason)
+            return
         await self._release(session_id)
 
     async def _queue_ivr(self, session_id: str, digits: str):
@@ -812,6 +1027,13 @@ class OperatorController:
 
     def _stop_session_tasks(self, session_id: str):
         """Drop a session's keypad state and cancel its playback work."""
+        vm = self._voicemail_agents.pop(session_id, None)
+        if vm is not None:
+            vm.close()
+        self._voicemail_resume_reply.pop(session_id, None)
+        session = self.store.find(session_id)
+        if session is not None:
+            self._retired_owner_calls.discard(session.legs[OWNER].call_sid)
         for role in ROLES:
             self._cancel_disconnect_check(session_id, role)
         for table in (self.keys, self._reply_timers):
@@ -826,6 +1048,9 @@ class OperatorController:
         self._remote_revisions.pop(session_id, None)
         self._agent_reply_counts.pop(session_id, None)
         self._caller_turn_floor.pop(session_id, None)
+        self._ai_pending.discard(session_id)
+        self._auto_consumed.discard(session_id)
+        self._auto_suppressed.discard(session_id)
         self._output_clocks.pop(session_id, None)
 
     async def _on_session_end(self, session_id: str):
@@ -859,6 +1084,8 @@ class OperatorController:
         return changed
 
     async def on_timeout(self, session: OperatorSession, reason: str):
+        if reason == 'owner-no-answer' and await self._begin_voicemail(session.id, reason):
+            return
         await self.end(session.id, reason)
 
     async def end(self, session_id: str, reason: str = "admin-end"):
@@ -990,9 +1217,13 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
         except OperatorRejected as exc:
             raise HTTPException(400, f"Call callback does not match: {exc.reason}") from None
         if result["action"] == "terminal":
+            if role == OWNER and await controller._begin_voicemail(session_id, result['reason']):
+                return Response(status_code=204)
             await controller.end(session_id, f"{role}-{result['reason']}")
             log.info("operator_call_ended session=%s role=%s reason=%s",
                      session_id, role, result["reason"])
+        elif result['action'] == 'retired' and result.get('status') not in TERMINAL_STATUSES:
+            store.spawn(controller._retire_voicemail_owner(call_sid))
         return Response(status_code=204)
 
     @app.post("/twilio/reconnect/{session_id}/{role}")
@@ -1008,6 +1239,10 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
         leg = session.legs[role]
         if leg.call_sid and leg.call_sid != call_sid:
             raise HTTPException(400, "Recovery callback does not match the leg")
+        if session.voicemail and role == OWNER:
+            response = VoiceResponse()
+            response.hangup()
+            return _xml(response)
         try:
             leg = await store.rotate_token(session_id, role)
         except OperatorRejected as exc:

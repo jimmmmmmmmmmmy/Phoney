@@ -92,6 +92,11 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
                 detection_last_write.pop(call_sid, None)
 
         task.add_done_callback(saved)
+        # Only live provider events can control a current call. Reading stored
+        # analysis or recording backfill must never activate a phone agent.
+        session = bridge_pipeline.calls.get(call_sid)
+        if session is not None:
+            controller.on_detection(session.id, result)
 
     async def call_ended(call_sid):
         await asyncio.to_thread(call_details.finish, call_sid)
@@ -218,7 +223,8 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
             result["agent_management_enabled"] = True
             result["manual_takeover_enabled"] = bool(settings.voice_agent_enabled and operator_voice)
             result["inbound_operator_enabled"] = settings.operator_inbound_enabled
-            result["automatic_takeover_enabled"] = False
+            result["automatic_takeover_enabled"] = bool(settings.automatic_takeover_enabled and operator_voice)
+            result["voicemail_agent_enabled"] = bool(settings.voicemail_agent_enabled and operator_voice)
         if summaries.enabled:
             result["summaries_enabled"] = True
         if live_detection.enabled:

@@ -49,6 +49,9 @@ class Settings:
     agent_management_enabled: bool = False
     agent_demo_mode: bool = False
     operator_inbound_enabled: bool = False
+    automatic_takeover_enabled: bool = False
+    voicemail_agent_enabled: bool = False
+    voicemail_agent_ring_seconds: int = 15
     modulate_detection_enabled: bool = False
     modulate_backfill_enabled: bool = False
     modulate_api_key: str = field(default="", repr=False)
@@ -153,6 +156,17 @@ class Settings:
                 raise ValueError("Configure the operator bridge and VOICE_AGENT_ENABLED before inbound routing.")
             if not self.agent_management_enabled or not self.transcription_enabled:
                 raise ValueError("Inbound operator calls require agent management and transcription.")
+        for name, flag in (("AUTOMATIC_TAKEOVER_ENABLED", self.automatic_takeover_enabled),
+                           ("VOICEMAIL_AGENT_ENABLED", self.voicemail_agent_enabled)):
+            if type(flag) is not bool:
+                raise ValueError(f"{name} must be true or false.")
+            if flag and not self.operator_inbound_enabled:
+                raise ValueError(f"Enable OPERATOR_INBOUND_ENABLED before {name}.")
+        if self.automatic_takeover_enabled and not self.modulate_detection_enabled:
+            raise ValueError("Automatic takeover requires live Modulate detection.")
+        if (type(self.voicemail_agent_ring_seconds) is not int
+                or not 5 <= self.voicemail_agent_ring_seconds <= 60):
+            raise ValueError("VOICEMAIL_AGENT_RING_SECONDS must be between 5 and 60.")
         if type(self.modulate_detection_enabled) is not bool:
             raise ValueError("MODULATE_DETECTION_ENABLED must be true or false.")
         if type(self.modulate_backfill_enabled) is not bool:
@@ -229,6 +243,12 @@ class Settings:
         inbound_flag = os.getenv("OPERATOR_INBOUND_ENABLED", "false").strip().lower()
         if inbound_flag not in {"true", "false"}:
             raise ValueError("OPERATOR_INBOUND_ENABLED must be true or false.")
+        auto_flag = os.getenv("AUTOMATIC_TAKEOVER_ENABLED", "false").strip().lower()
+        voicemail_agent_flag = os.getenv("VOICEMAIL_AGENT_ENABLED", "false").strip().lower()
+        if auto_flag not in {"true", "false"}:
+            raise ValueError("AUTOMATIC_TAKEOVER_ENABLED must be true or false.")
+        if voicemail_agent_flag not in {"true", "false"}:
+            raise ValueError("VOICEMAIL_AGENT_ENABLED must be true or false.")
         detection_flag = os.getenv("MODULATE_DETECTION_ENABLED", "false").strip().lower()
         if detection_flag not in {"true", "false"}:
             raise ValueError("MODULATE_DETECTION_ENABLED must be true or false.")
@@ -273,6 +293,9 @@ class Settings:
             agent_management_enabled=management_flag == "true",
             agent_demo_mode=demo_flag == "true",
             operator_inbound_enabled=inbound_flag == "true",
+            automatic_takeover_enabled=auto_flag == "true",
+            voicemail_agent_enabled=voicemail_agent_flag == "true",
+            voicemail_agent_ring_seconds=int(os.getenv("VOICEMAIL_AGENT_RING_SECONDS", "15")),
             modulate_detection_enabled=detection_flag == "true",
             modulate_backfill_enabled=backfill_flag == "true",
             modulate_api_key=os.getenv("MODULATE_API_KEY", "").strip(),

@@ -40,12 +40,12 @@ class Provider:
         return voice(name=name, ready=False, requiresVerification=True)
 
 
-def client_for(tmp_path, *, enabled=True, provider=None, demo=False):
+def client_for(tmp_path, *, enabled=True, provider=None, demo=False, automatic=False):
     app = FastAPI()
     registry = AgentRegistry(str(tmp_path))
     settings = SimpleNamespace(public_base_url=BASE, agent_management_enabled=enabled,
                                voice_agent_enabled=False, operator_inbound_enabled=False,
-                               agent_demo_mode=demo)
+                               agent_demo_mode=demo, automatic_takeover_enabled=automatic)
     register_agent_routes(app, settings, registry, provider=provider)
     return TestClient(app, base_url=BASE), registry
 
@@ -64,6 +64,18 @@ def test_unauthed_config_reveals_no_agent_prompts_or_voice_ids(tmp_path):
     assert data["authenticated"] is False
     assert data["agents"] == data["voices"] == []
     assert data["automaticEnabled"] is data["manualEnabled"] is data["inboundEnabled"] is False
+    assert "Ask how" not in result.text and "voiceABC" not in result.text
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+def test_config_reports_automatic_handoff_flag_without_revealing_prompts(tmp_path, automatic):
+    client, registry = client_for(tmp_path, automatic=automatic)
+    registry.add_voice(voice())
+    registry.publish(AGENT, config())
+    result = client.get("/api/agents/config")
+    assert result.status_code == 200
+    assert result.json()["automaticEnabled"] is automatic
+    assert result.json()["agents"] == result.json()["voices"] == []
     assert "Ask how" not in result.text and "voiceABC" not in result.text
 
 

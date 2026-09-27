@@ -95,6 +95,10 @@ class BridgePipeline:
             delivery=metadata.get("delivery", "played"))
 
     def context(self, session):
+        if getattr(session, "voicemail", False):
+            # A silent caller still needs the voicemail greeting. Start the
+            # existing recorder/STT pipeline before asking it for empty context.
+            self._ensure(session)
         live = self.transcription.sessions.get(session.canonical_call_sid)
         if (live is None or live.finishing or any(
                 track.error or track.finishing for track in live.tracks.values())):
@@ -135,7 +139,11 @@ class BridgePipeline:
 
     async def _release(self, session_id):
         try:
-            await self.controller.set_mode(session_id, "human")
+            session = next((call for call in self.calls.values() if call.id == session_id), None)
+            if session is not None and getattr(session, "voicemail", False):
+                await self.controller.end(session_id, "voicemail-transcription-unavailable")
+            else:
+                await self.controller.set_mode(session_id, "human")
         except Exception:
             log.warning("bridge_transcript_release_failed")
         finally:

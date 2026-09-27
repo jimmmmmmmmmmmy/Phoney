@@ -19,6 +19,7 @@ import time
 
 from workspace_store import _directory, WorkspaceError
 from voice_stack.settings import VOICE_ID
+from voice_stack.prompts import VOICE_CLONE_PROMPT
 
 DATABASE_NAME = "agent-execution.sqlite3"
 AGENT_ID = re.compile(r"agent-[A-Za-z0-9-]{8,80}\Z")
@@ -28,7 +29,8 @@ MAX_AGENTS = 50
 MAX_VOICES = 500
 LOCK = threading.RLock()
 DEFAULT_AGENT_ID = "agent-voice-clone-default"
-DEFAULT_PERSONALITY = "Tries to hang the call up asap"
+DEFAULT_PERSONALITY = VOICE_CLONE_PROMPT
+LEGACY_DEFAULT_PERSONALITY = "Tries to hang the call up asap"
 
 
 class RegistryError(ValueError):
@@ -272,7 +274,8 @@ class AgentRegistry:
             if occupied:
                 other = AgentSnapshot.from_dict(json.loads(occupied[0]))
                 if (other.voice_profile_id == voice["id"]
-                        and other.prompt.rstrip(". ") == DEFAULT_PERSONALITY):
+                        and other.prompt.rstrip(". ") in {
+                            DEFAULT_PERSONALITY.rstrip(". "), LEGACY_DEFAULT_PERSONALITY}):
                     ident = other.id
                 else:
                     self._save_revision(db, other.id, other.name, other.prompt,

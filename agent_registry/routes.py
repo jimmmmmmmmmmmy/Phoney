@@ -140,7 +140,7 @@ def register_agent_routes(app, settings, registry, voice_settings=None, *, provi
                   "enabled": enabled(), "agents": [], "voices": [],
                   "manualEnabled": bool(getattr(settings, "voice_agent_enabled", False)),
                   "inboundEnabled": bool(getattr(settings, "operator_inbound_enabled", False)),
-                  "automaticEnabled": False,
+                  "automaticEnabled": bool(getattr(settings, "automatic_takeover_enabled", False)),
                   "capabilities": {"voiceCatalog": bool(voice_provider and enabled()), "voiceCloning": bool(voice_provider and enabled())}}
         if authorized or demo:
             result.update(await operation("snapshot"))

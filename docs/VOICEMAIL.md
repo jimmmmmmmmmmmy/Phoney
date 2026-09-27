@@ -1,4 +1,21 @@
-# Unanswered-call voicemail — Twilio placeholder
+# Unanswered-call voicemail
+
+## Current operator bridge: conversational assistant
+
+Enable `VOICEMAIL_AGENT_ENABLED=true` alongside `OPERATOR_INBOUND_ENABLED=true` to use the internal voicemail assistant. The default `VOICEMAIL_AGENT_RING_SECONDS=15` waits 15 seconds for the owner; carrier ring cadence varies. Busy/no-answer can fall back sooner. This path uses Gemini Flash-Lite, ElevenLabs with the ready `owner` voice, and the existing Deepgram/recording pipeline. It is independent of the legacy `VOICEMAIL_ENABLED` flow below.
+
+1. The owner answers before fallback: the call remains a normal human conversation.
+2. The owner does not answer: retire the owner leg and invite the caller to leave a message on the existing caller leg.
+3. After finalized caller speech and approximately two seconds without new transcription activity, repeat the important details and ask for confirmation.
+4. Apply corrections or ask a brief clarification. After confirmation or explicit goodbye, finish the farewell playback and hang up.
+
+The shared prompt receives an explicit runtime phase: greeting, readback, confirmation, empty-message timeout, or unconfirmed-message timeout. It never decides a pause happened from missing text, and silence does not mean confirmation. Initial silence is bounded to 20 seconds, confirmation silence to 15 seconds, each listening period to 60 seconds, and the entire voicemail session to 180 seconds. Failed providers or transcription end the call cleanly because there is no connected human to resume it. Late owner answers/callbacks cannot join after voicemail claims the call.
+
+The caller's original CallSid remains canonical for stored WAVs, transcripts, and summaries. The model does not promise the owner has heard the message or will call back. The ordinary dashboard recording remains a whole-call recording, including prompts and readback, not a separately cropped voicemail file. [Phone-agent configuration and prompt evaluation](MANUAL_AGENTS.md) covers deployment flags and simulated conversations.
+
+## Legacy conference: Twilio Say/Record placeholder
+
+The remainder of this document describes the earlier conference fallback selected by `VOICEMAIL_ENABLED`, including its original acceptance record. It applies when new calls use the conference route instead of the operator bridge. Its provider-free behavior and Twilio cloud-recording callbacks do not describe the conversational assistant above.
 
 Open the public dashboard with `.venv/bin/python scripts/open_dashboard.py`. Leave the teammate phone unanswered during the next phone test to exercise the voicemail path.
 

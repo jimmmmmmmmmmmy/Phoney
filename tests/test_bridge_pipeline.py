@@ -114,6 +114,26 @@ def test_transcription_failure_releases_agent_and_rejects_stale_context(tmp_path
     asyncio.run(run())
 
 
+def test_silent_voicemail_initializes_capture_and_transcript_before_first_audio(tmp_path):
+    async def run():
+        config = settings(tmp_path)
+        transcript = TranscriptionManager(config, Connector())
+        capture = CaptureManager(config)
+        detection = Detection()
+        pipeline = BridgePipeline(config, capture, transcript, detection, CallDetailsStore(""))
+        call = session()
+        call.voicemail = True
+        await pipeline.start(call)
+        assert CALL not in transcript.sessions
+        assert pipeline.context(call) == []
+        assert CALL in transcript.sessions and detection.starts == [(CALL, STREAM)]
+        assert CALL in pipeline.started
+        await pipeline.close()
+        await capture.close()
+        await transcript.close()
+    asyncio.run(run())
+
+
 def test_bridge_preserves_wavs_excludes_our_voice_and_persists_agent_attribution(tmp_path):
     async def run():
         config = settings(tmp_path / "transcripts")

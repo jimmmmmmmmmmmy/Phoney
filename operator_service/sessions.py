@@ -169,6 +169,9 @@ class OperatorSession:
     canonical_call_sid: str = ""
     duration_seconds: int | None = None
     agent_name: str = ""
+    agent_kind: str = "manual"
+    voicemail: bool = False
+    voicemail_phase: str = ""
     agent_snapshot: object = field(default=None, repr=False)
     legs: dict[str, SessionLeg] = field(default_factory=dict, repr=False)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -188,6 +191,8 @@ class OperatorSession:
                 "goal": self.goal[:MAX_GOAL_CHARS], "phase": self.phase, "mode": self.mode,
                 "profile": self.profile, "reply_epoch": self.reply_epoch,
                 "canonical_call_sid": self.canonical_call_sid, "agent_name": self.agent_name,
+                "agent_kind": self.agent_kind, "voicemail": self.voicemail,
+                "voicemail_phase": self.voicemail_phase,
                 "created_at": self.created_at, "elapsed_ms": int((now - self.created) * 1000),
                 "setup_deadline_ms": (int((self.deadline - self.created) * 1000)
                                       if self.deadline is not None else None),
@@ -278,6 +283,10 @@ class OperatorSessions:
         timeout = self.deadlines.get(key, self.deadlines.get(key.split(":", 1)[0]))
         if timeout is None:
             timeout = float(self.settings.max_call_seconds) if key == "call" else DEFAULT_SECONDS[key]
+            session = self.sessions.get(session_id)
+            if (key == "owner_ring" and session and session.direction == "inbound"
+                    and getattr(self.settings, "voicemail_agent_enabled", False)):
+                timeout = float(getattr(self.settings, "voicemail_agent_ring_seconds", 15))
         task = asyncio.create_task(self._deadline(session_id, key, float(timeout), reason))
         self._timers[(session_id, key)] = task
         return float(timeout)
@@ -474,6 +483,40 @@ class OperatorSessions:
                 leg.connected_at = leg.connected_at or time.monotonic()
             return True
 
+    async def claim_voicemail(self, session_id, reason="owner-no-answer") -> bool:
+        """Retire an unanswered owner atomically while preserving the caller.
+
+        An authenticated owner stream or answered status wins the race. Once
+        voicemail wins, no late owner callback may reconnect that microphone or
+        tear down the caller. The controller cancels the retired phone leg.
+        """
+        async with self._lock:
+            session = self._require(session_id)
+            if (not getattr(self.settings, "voicemail_agent_enabled", False)
+                    or not session.active or session.direction != "inbound"
+                    or session.voicemail or session.phase not in {RESERVED, OWNER_RINGING}):
+                return False
+            owner, remote = session.legs[OWNER], session.legs[REMOTE]
+            if owner.answered or owner.attached or remote.ended:
+                return False
+            if reason not in {"owner-no-answer", "no-answer", "busy", "failed", "canceled"}:
+                return False
+            session.voicemail = True
+            session.voicemail_phase = "greeting"
+            session.agent_kind = "voicemail"
+            session.phase = CONNECTED
+            owner.ended = True
+            owner.state = LEG_ENDED
+            owner.token = ""
+            owner.token_used = True
+            owner.uncertain = False
+            for key in ("setup", "owner_ring", "owner_accept", "remote_setup", "reconcile:owner"):
+                self._cancel(session_id, key)
+            session.deadline = time.monotonic() + float(self.settings.max_call_seconds)
+            self._arm(session_id, "call", "call-time-limit")
+            remote.connected_at = remote.connected_at or time.monotonic()
+            return True
+
     async def bind_call_sid(self, session_id, role, call_sid, *, duration=None) -> str:
         """Bind or verify the Call SID of one leg; returns ``bound`` or ``matched``.
 
@@ -487,6 +530,11 @@ class OperatorSessions:
             sid = str(call_sid or "")
             if not CALL_SID.fullmatch(sid):
                 raise OperatorRejected("invalid-call-sid")
+            if session.voicemail and role == OWNER:
+                if leg.call_sid and leg.call_sid != sid:
+                    raise OperatorRejected("call-sid-mismatch")
+                leg.call_sid = sid
+                raise OperatorRejected("voicemail-owner-retired")
             if not session.active or leg.ended:
                 raise OperatorRejected("session-ended")
             if leg.call_sid:
@@ -598,13 +646,18 @@ class OperatorSessions:
             raw = str(status or "")
             if raw not in CALL_STATUSES:
                 raise OperatorRejected("invalid-status")
-            if leg.ended:
-                return {"action": "ignored", "reason": "leg-ended"}
             sid = str(call_sid or "")
             if not CALL_SID.fullmatch(sid):
                 raise OperatorRejected("invalid-call-sid")
             if leg.call_sid and leg.call_sid != sid:
                 raise OperatorRejected("call-sid-mismatch")
+            if session.voicemail and role == OWNER:
+                leg.call_sid = sid
+                leg.status = raw
+                return {"action": "retired", "reason": "voicemail-owner-retired",
+                        "call_sid": sid, "status": raw}
+            if leg.ended:
+                return {"action": "ignored", "reason": "leg-ended"}
             if not leg.call_sid:
                 leg.call_sid = sid
                 leg.uncertain = False

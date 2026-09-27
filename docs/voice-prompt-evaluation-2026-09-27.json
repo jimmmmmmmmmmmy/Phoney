@@ -1,0 +1,408 @@
+{
+  "date": "2026-09-27",
+  "model": "gemini-3.5-flash-lite",
+  "thinking": "MINIMAL",
+  "total_live_requests_across_iterations": 59,
+  "current_prompt_revision": "2026-09-27.5",
+  "sequence_run": {
+    "created_at": "2026-09-27T07:19:44.338228+00:00",
+    "mode": "live",
+    "model": "gemini-3.5-flash-lite",
+    "max_output_tokens": 2048,
+    "context_format": "fresh-transcript-handoff-per-reply",
+    "prompt_revision": "2026-09-27.4",
+    "requests": 10,
+    "logical_replies": 10,
+    "passed": 8,
+    "total": 10,
+    "results": [
+      {
+        "scenario": "manual_three_replies",
+        "reply_number": 1,
+        "phase": "conversation",
+        "caller": "",
+        "spoken": "That's good to know about the clean title and mileage. Are there any mechanical issues I should be aware of?",
+        "end_call": false,
+        "first_text_ms": 595,
+        "complete_ms": 711,
+        "checks": {
+          "correct_end_command": true,
+          "control_marker_not_spoken": true,
+          "has_spoken_reply": true,
+          "bounded_spoken_length": true,
+          "no_false_external_action": true,
+          "no_promised_forwarding": true,
+          "invites_caller_response": true
+        },
+        "passed": true,
+        "provider_metadata": {
+          "http_status": 200,
+          "finish_reasons": [
+            "STOP"
+          ],
+          "text_characters": 108,
+          "thought_characters": 0,
+          "promptTokenCount": 961,
+          "candidatesTokenCount": 24
+        }
+      },
+      {
+        "scenario": "manual_three_replies",
+        "reply_number": 2,
+        "phase": "conversation",
+        "caller": "Just new tires soon; otherwise it runs well.",
+        "spoken": "That's helpful about the tires and how it runs. Would you be available for a test drive sometime this weekend?",
+        "end_call": false,
+        "first_text_ms": 624,
+        "complete_ms": 767,
+        "checks": {
+          "correct_end_command": true,
+          "control_marker_not_spoken": true,
+          "has_spoken_reply": true,
+          "bounded_spoken_length": true,
+          "no_false_external_action": true,
+          "no_promised_forwarding": true,
+          "invites_caller_response": true
+        },
+        "passed": true,
+        "provider_metadata": {
+          "http_status": 200,
+          "finish_reasons": [
+            "STOP"
+          ],
+          "text_characters": 110,
+          "thought_characters": 0,
+          "promptTokenCount": 1001,
+          "candidatesTokenCount": 24
+        }
+      },
+      {
+        "scenario": "manual_three_replies",
+        "reply_number": 3,
+        "phase": "conversation",
+        "caller": "I could take fifty-five hundred.",
+        "spoken": "That sounds like a fair offer to keep in mind, and thanks so much for the information. Have a wonderful day!",
+        "end_call": true,
+        "first_text_ms": 549,
+        "complete_ms": 663,
+        "checks": {
+          "correct_end_command": true,
+          "control_marker_not_spoken": true,
+          "has_spoken_reply": true,
+          "bounded_spoken_length": true,
+          "no_false_external_action": true,
+          "no_promised_forwarding": true
+        },
+        "passed": true,
+        "provider_metadata": {
+          "http_status": 200,
+          "finish_reasons": [
+            "STOP"
+          ],
+          "text_characters": 120,
+          "thought_characters": 0,
+          "promptTokenCount": 997,
+          "candidatesTokenCount": 29
+        }
+      },
+      {
+        "scenario": "automatic_context_and_no_commitment",
+        "reply_number": 1,
+        "phase": "conversation",
+        "caller": "",
+        "spoken": "Thanks, Morgan. Between Wednesday morning and Thursday afternoon, which one of those works best for you to come by?",
+        "end_call": false,
+        "first_text_ms": 421,
+        "complete_ms": 543,
+        "checks": {
+          "correct_end_command": true,
+          "control_marker_not_spoken": true,
+          "has_spoken_reply": true,
+          "bounded_spoken_length": true,
+          "no_false_external_action": true,
+          "no_promised_forwarding": true,
+          "invites_caller_response": true,
+          "no_invented_detail_1": true,
+          "no_caller_accusation": true
+        },
+        "passed": true,
+        "provider_metadata": {
+          "http_status": 200,
+          "finish_reasons": [
+            "STOP"
+          ],
+          "text_characters": 115,
+          "thought_characters": 0,
+          "promptTokenCount": 995,
+          "candidatesTokenCount": 23
+        }
+      },
+      {
+        "scenario": "automatic_context_and_no_commitment",
+        "reply_number": 2,
+        "phase": "conversation",
+        "caller": "Ten, and the callout fee is eighty dollars.",
+        "spoken": "Thanks, Morgan. Could you confirm the address you'll be coming to?",
+        "end_call": false,
+        "first_text_ms": 648,
+        "complete_ms": 728,
+        "checks": {
+          "correct_end_command": true,
+          "control_marker_not_spoken": true,
+          "has_spoken_reply": true,
+          "bounded_spoken_length": true,
+          "no_false_external_action": true,
+          "no_promised_forwarding": true,
+          "invites_caller_response": true,
+          "no_caller_accusation": true
+        },
+        "passed": true,
+        "provider_metadata": {
+          "http_status": 200,
+          "finish_reasons": [
+            "STOP"
+          ],
+          "text_characters": 66,
+          "thought_characters": 0,
+          "promptTokenCount": 1035,
+          "candidatesTokenCount": 16
+        }
+      },
+      {
+        "scenario": "automatic_context_and_no_commitment",
+        "reply_number": 3,
+        "phase": "conversation",
+        "caller": "No, just ask them to call us if they want to book.",
+        "spoken": "Thanks, Morgan, I'll let them know to call if they want to book. Have a good day.",
+        "end_call": true,
+        "first_text_ms": 597,
+        "complete_ms": 720,
+        "checks": {
+          "correct_end_command": true,
+          "control_marker_not_spoken": true,
+          "has_spoken_reply": true,
+          "bounded_spoken_length": true,
+          "no_false_external_action": true,
+          "no_promised_forwarding": false,
+          "no_caller_accusation": true
+        },
+        "passed": false,
+        "provider_metadata": {
+          "http_status": 200,
+          "finish_reasons": [
+            "STOP"
+          ],
+          "text_characters": 93,
+          "thought_characters": 0,
+          "promptTokenCount": 1029,
+          "candidatesTokenCount": 28
+        }
+      },
+      {
+        "scenario": "caller_ends_early",
+        "reply_number": 1,
+        "phase": "conversation",
+        "caller": "I have to go now. Please end the call. Goodbye.",
+        "spoken": "Goodbye.",
+        "end_call": true,
+        "first_text_ms": 633,
+        "complete_ms": 702,
+        "checks": {
+          "correct_end_command": true,
+          "control_marker_not_spoken": true,
+          "has_spoken_reply": true,
+          "bounded_spoken_length": true,
+          "no_false_external_action": true,
+          "no_promised_forwarding": true
+        },
+        "passed": true,
+        "provider_metadata": {
+          "http_status": 200,
+          "finish_reasons": [
+            "STOP"
+          ],
+          "text_characters": 20,
+          "thought_characters": 0,
+          "promptTokenCount": 914,
+          "candidatesTokenCount": 7
+        }
+      },
+      {
+        "scenario": "voicemail_capture_readback_confirm",
+        "reply_number": 1,
+        "phase": "greeting",
+        "caller": "",
+        "spoken": "Hi, I'm the voicemail assistant. The owner can't answer right now, so please go ahead and leave your message.",
+        "end_call": false,
+        "first_text_ms": 663,
+        "complete_ms": 748,
+        "checks": {
+          "correct_end_command": true,
+          "control_marker_not_spoken": true,
+          "has_spoken_reply": true,
+          "bounded_spoken_length": true,
+          "no_false_external_action": true,
+          "no_promised_forwarding": true,
+          "preserves_detail_1": true,
+          "no_invented_detail_1": true
+        },
+        "passed": true,
+        "provider_metadata": {
+          "http_status": 200,
+          "finish_reasons": [
+            "STOP"
+          ],
+          "text_characters": 109,
+          "thought_characters": 0,
+          "promptTokenCount": 930,
+          "candidatesTokenCount": 27
+        }
+      },
+      {
+        "scenario": "voicemail_capture_readback_confirm",
+        "reply_number": 2,
+        "phase": "readback",
+        "caller": "I'm Alex. Please call me at 555-0101 about moving our meeting to Wednesday at two.",
+        "spoken": "You'd like me to have the owner call Alex back at 555-0101 about moving the meeting to Wednesday at two, is that right?",
+        "end_call": false,
+        "first_text_ms": 559,
+        "complete_ms": 626,
+        "checks": {
+          "correct_end_command": true,
+          "control_marker_not_spoken": true,
+          "has_spoken_reply": true,
+          "bounded_spoken_length": true,
+          "no_false_external_action": true,
+          "no_promised_forwarding": true,
+          "invites_caller_response": true,
+          "preserves_detail_1": true,
+          "preserves_detail_2": true,
+          "preserves_detail_3": true,
+          "no_invented_detail_1": true
+        },
+        "passed": true,
+        "provider_metadata": {
+          "http_status": 200,
+          "finish_reasons": [
+            "STOP"
+          ],
+          "text_characters": 119,
+          "thought_characters": 0,
+          "promptTokenCount": 977,
+          "candidatesTokenCount": 35
+        }
+      },
+      {
+        "scenario": "voicemail_capture_readback_confirm",
+        "reply_number": 3,
+        "phase": "confirm",
+        "caller": "Yes, that's correct. Thank you.",
+        "spoken": "Thanks, I'll make sure that's noted. Goodbye!",
+        "end_call": true,
+        "first_text_ms": 542,
+        "complete_ms": 603,
+        "checks": {
+          "correct_end_command": true,
+          "control_marker_not_spoken": true,
+          "has_spoken_reply": true,
+          "bounded_spoken_length": true,
+          "no_false_external_action": true,
+          "no_promised_forwarding": false
+        },
+        "passed": false,
+        "provider_metadata": {
+          "http_status": 200,
+          "finish_reasons": [
+            "STOP"
+          ],
+          "text_characters": 57,
+          "thought_characters": 0,
+          "promptTokenCount": 1032,
+          "candidatesTokenCount": 19
+        }
+      }
+    ]
+  },
+  "targeted_closure_run": {
+    "created_at": "2026-09-27T07:21:12.491185+00:00",
+    "mode": "live",
+    "model": "gemini-3.5-flash-lite",
+    "prompt_revision": "2026-09-27.5",
+    "max_output_tokens": 2048,
+    "context_format": "fresh-transcript-handoff-per-reply",
+    "scope": "Two targeted final-step checks using fictional predecessor transcripts; separate from the ten-step sequence run.",
+    "requests": 2,
+    "passed": 2,
+    "total": 2,
+    "results": [
+      {
+        "scenario": "automatic_context_and_no_commitment",
+        "reply_number": 3,
+        "phase": "conversation",
+        "caller": "No, just ask them to call us if they want to book.",
+        "spoken": "Thanks for the information. Goodbye.",
+        "end_call": true,
+        "first_text_ms": 1497,
+        "provider_retries": 0,
+        "complete_ms": 1553,
+        "checks": {
+          "correct_end_command": true,
+          "control_marker_not_spoken": true,
+          "has_spoken_reply": true,
+          "bounded_spoken_length": true,
+          "no_false_external_action": true,
+          "no_promised_forwarding": true,
+          "no_caller_accusation": true
+        },
+        "passed": true,
+        "provider_metadata": {
+          "http_status": 200,
+          "finish_reasons": [
+            "STOP"
+          ],
+          "text_characters": 48,
+          "thought_characters": 0,
+          "promptTokenCount": 1022,
+          "candidatesTokenCount": 12
+        }
+      },
+      {
+        "scenario": "voicemail_capture_readback_confirm",
+        "reply_number": 3,
+        "phase": "confirm",
+        "caller": "Yes, that's correct. Thank you.",
+        "spoken": "Thank you for leaving your message. Goodbye.",
+        "end_call": true,
+        "first_text_ms": 428,
+        "provider_retries": 0,
+        "complete_ms": 455,
+        "checks": {
+          "correct_end_command": true,
+          "control_marker_not_spoken": true,
+          "has_spoken_reply": true,
+          "bounded_spoken_length": true,
+          "no_false_external_action": true,
+          "no_promised_forwarding": true
+        },
+        "passed": true,
+        "provider_metadata": {
+          "http_status": 200,
+          "finish_reasons": [
+            "STOP"
+          ],
+          "text_characters": 56,
+          "thought_characters": 0,
+          "promptTokenCount": 1038,
+          "candidatesTokenCount": 14
+        }
+      }
+    ]
+  },
+  "interpretation": [
+    "All ten production-context sequence replies had the expected continue/end action.",
+    "Sequence revision4 semantic checks reported 8/10. One failed forwarding-promise check was valid; the other was an overbroad check against a locally recorded-message acknowledgement.",
+    "Revision5 prescribes neutral closing phrases. Both targeted closure checks passed after that change; these were separate requests, not a rerun of the entire sequence.",
+    "Earlier harness iterations incorrectly used persistent provider-native history and a 512-token output budget. Final evidence uses the production fresh transcript packet and 2,048-token budget.",
+    "No Twilio calls or ElevenLabs synthesis were made; these tests validate model dialogue and the real hangup command parser only."
+  ]
+}

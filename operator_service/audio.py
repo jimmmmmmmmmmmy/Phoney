@@ -261,6 +261,7 @@ class CallRouter:
         self.channels = {OWNER: OutputChannel(OWNER), REMOTE: OutputChannel(REMOTE)}
         self.generations = {OWNER: 0, REMOTE: 0}
         self.mode = HUMAN
+        self.owner_notice = False
         self.closed = False
         self.cue: asyncio.Task | None = None
         self.counters = {"routed": 0, "owner_muted": 0, "dtmf_ignored": 0,
@@ -298,7 +299,8 @@ class CallRouter:
         destination = REMOTE if source == OWNER else OWNER
         # The caller can be captured while waiting, but neither microphone is
         # sent to the other phone until the owner has accepted the call.
-        delivered = relay_ready and self.channels[destination].send(frame)
+        delivered = (relay_ready and not (destination == OWNER and self.owner_notice)
+                     and self.channels[destination].send(frame))
         if delivered:
             self.counters["routed"] += 1
         if timestamp_ms is None:
@@ -315,12 +317,21 @@ class CallRouter:
                 raise ValueError("Agent audio must be complete μ-law frames.")
             if self.channels[REMOTE].send(frame, kind="agent", reply_epoch=reply_epoch):
                 sent += 1
-            self.channels[OWNER].send_agent(frame, reply_epoch=reply_epoch)
+            if self.channels[OWNER].attached:
+                self.channels[OWNER].send_agent(frame, reply_epoch=reply_epoch)
         return sent
 
-    def send_announcement(self, frame):
-        """A takeover announcement is audible only to the remote participant."""
+    def send_announcement(self, frame, *, role=REMOTE):
+        """Deliver a disclosure or private owner notice to exactly one leg."""
+        if role == OWNER:
+            return self.channels[OWNER].send_agent(frame)
         return self.channels[REMOTE].send(frame, kind="announcement")
+
+    def set_owner_notice(self, active):
+        self.owner_notice = bool(active)
+        if active:
+            return self.clear(OWNER)
+
 
     def clear(self, *roles):
         """Drop queued speech on the named outputs and record invalidated marks."""
@@ -334,6 +345,8 @@ class CallRouter:
 
     def set_mode(self, mode: str):
         """Change who is speaking; buffered speech from the old role goes first."""
+        if mode == HUMAN:
+            self.owner_notice = False
         if mode == self.mode:
             return None
         previous = self.mode

@@ -25,6 +25,8 @@ import secrets
 import time
 import uuid
 
+import phonenumbers
+
 from .codecs import valid_media_format
 
 log = logging.getLogger("uvicorn.error")
@@ -237,11 +239,32 @@ class OperatorSessions:
         """Whether an outbound session could be reserved at all."""
         return bool(self.settings.owner_number and self.settings.twilio_number
                     and self.settings.operator_admin_token and (self.settings.allowed_destinations
+                    or self.allowed_countries
                     or getattr(self.settings, "operator_inbound_enabled", False)))
 
     @property
     def allowed(self) -> frozenset[str]:
         return frozenset(self.settings.allowed_destinations or ())
+
+    @property
+    def allowed_countries(self) -> frozenset[str]:
+        return frozenset(getattr(self.settings, "allowed_destination_countries", ()) or ())
+
+    def destination_allowed(self, destination: str) -> bool:
+        """Apply the explicit dialing policy without treating every +1 as US."""
+        if (not E164.fullmatch(destination)
+                or destination in {self.settings.owner_number, self.settings.twilio_number}):
+            return False
+        if destination in self.allowed:
+            return True
+        if not self.allowed_countries:
+            return False
+        try:
+            number = phonenumbers.parse(destination, None)
+        except phonenumbers.NumberParseException:
+            return False
+        return (phonenumbers.is_valid_number(number)
+                and phonenumbers.region_code_for_number(number) in self.allowed_countries)
 
     @property
     def active_count(self) -> int:
@@ -355,12 +378,12 @@ class OperatorSessions:
             if self.draining:
                 raise OperatorRejected("draining")
             if not self.ready:
-                # No owner number, admin token, or allowlist means this store
+                # No owner number, admin token, or dialing policy means this store
                 # must not reserve anything, whichever route asks.
                 raise OperatorRejected("not-configured")
             if len(text) > MAX_GOAL_CHARS:
                 raise OperatorRejected("goal-too-long")
-            if not E164.fullmatch(destination) or destination not in self.allowed:
+            if not self.destination_allowed(destination):
                 raise OperatorRejected("destination-not-allowed")
             self._prune()
             if len(self.sessions) >= self.MAX_SESSIONS or self.active_count >= self.max_active:

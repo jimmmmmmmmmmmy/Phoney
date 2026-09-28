@@ -43,6 +43,7 @@ class Settings:
     gemini_summary_model: str = "gemini-3.8-flash"
     owner_number: str = field(default="", repr=False)
     allowed_destinations: tuple[str, ...] = ()
+    allowed_destination_countries: tuple[str, ...] = ()
     operator_admin_token: str = field(default="", repr=False)
     max_call_seconds: int = 1800
     voice_agent_enabled: bool = False
@@ -135,6 +136,10 @@ class Settings:
             # Loops are prevented at configuration time, not only per request.
             if destination in {self.owner_number, self.twilio_number}:
                 raise ValueError("ALLOWED_DESTINATIONS cannot contain OWNER_NUMBER or TWILIO_NUMBER.")
+        if (not isinstance(self.allowed_destination_countries, tuple)
+                or any(country != "US" for country in self.allowed_destination_countries)
+                or len(set(self.allowed_destination_countries)) != len(self.allowed_destination_countries)):
+            raise ValueError("ALLOWED_DESTINATION_COUNTRIES supports US only, listed once, or an empty value.")
         if self.operator_admin_token and len(self.operator_admin_token) < 32:
             raise ValueError("OPERATOR_ADMIN_TOKEN must contain at least 32 characters.")
         if type(self.max_call_seconds) is not int or not 30 <= self.max_call_seconds <= 14400:
@@ -212,12 +217,14 @@ class Settings:
     def operator_ready(self):
         """Whether an explicitly configured bridge can reserve call sessions.
 
-        Outbound destinations still require the allowlist; inbound routing is
-        independently opted in. Keep this in step with OperatorSessions.ready.
+        Outbound destinations require an explicit number or country policy;
+        inbound routing is independently opted in. Keep this in step with
+        OperatorSessions.ready.
         """
         return bool(self.owner_number and self.twilio_number
                     and self.operator_admin_token
-                    and (self.allowed_destinations or self.operator_inbound_enabled))
+                    and (self.allowed_destinations or self.allowed_destination_countries
+                         or self.operator_inbound_enabled))
 
     @classmethod
     def from_env(cls):
@@ -286,6 +293,9 @@ class Settings:
             owner_number=os.getenv("OWNER_NUMBER", "").strip(),
             allowed_destinations=tuple(
                 value.strip() for value in os.getenv("ALLOWED_DESTINATIONS", "").split(",")
+                if value.strip()),
+            allowed_destination_countries=tuple(
+                value.strip().upper() for value in os.getenv("ALLOWED_DESTINATION_COUNTRIES", "").split(",")
                 if value.strip()),
             operator_admin_token=os.getenv("OPERATOR_ADMIN_TOKEN", "").strip(),
             max_call_seconds=int(os.getenv("MAX_CALL_SECONDS", "1800")),

@@ -1,7 +1,7 @@
 """Generate a local one-time dashboard unlock code, or revoke owner sessions.
 
 This command never prints OPERATOR_ADMIN_TOKEN or provider keys. A code expires
-in five minutes and can be redeemed once in the dashboard's Agents tab.
+in five minutes and can be redeemed once in the dashboard's New call dialog.
 """
 
 import argparse
@@ -34,7 +34,7 @@ def main(argv=None):
         print("Owner sessions and pending access codes revoked.")
     else:
         code = registry.grant(ttl=args.expires_in)
-        print(f"Paste this one-time code into Agents → Unlock owner controls (expires in {args.expires_in} seconds):")
+        print(f"Paste this one-time code into New call → Unlock calling (expires in {args.expires_in} seconds):")
         print(code)
 
 

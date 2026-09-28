@@ -32,6 +32,8 @@ WORKSPACE_ASSETS = {
     "dashboard-toolbar.css": "text/css",
     "dashboard-agents.js": "text/javascript",
     "dashboard-agents.css": "text/css",
+    "dashboard-dialer.js": "text/javascript",
+    "dashboard-dialer.css": "text/css",
 }
 MAX_WORKSPACE_BODY_BYTES = 2 * 1024 * 1024
 

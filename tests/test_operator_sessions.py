@@ -508,3 +508,57 @@ def test_readiness_requires_owner_number_admin_token_and_allowlist():
             assert rejected.value.reason == "not-configured"
 
     asyncio.run(run())
+
+
+def test_us_policy_reserves_valid_us_numbers_without_a_number_allowlist():
+    async def run():
+        settings = replace(SETTINGS, allowed_destinations=(), allowed_destination_countries=("US",))
+        store = OperatorSessions(settings)
+        assert store.ready and settings.operator_ready
+        assert store.allowed == frozenset() and store.allowed_countries == frozenset({"US"})
+        for destination in (DESTINATION, "+12025559999", "+18005550123"):
+            session, duplicate = await store.reserve_outbound(destination, "", key())
+            assert not duplicate and session.to == destination
+            assert session.legs[OWNER].destination == OWNER_NUMBER
+            await store.end(session.id, "test-finished")
+        await store.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("destination", [
+    "+14165550123",  # Canada also uses +1.
+    "+18095550123",  # Dominican Republic also uses +1.
+    "+17875550123",  # Puerto Rico is a separate dialing region.
+    "+442083661177", "+12001230101", "+19995550123", "+120255501", "+99912345678",
+    "2025550103", "+1 202 555 0103", "+12025550103x123", OWNER_NUMBER, CALLEE,
+])
+def test_us_policy_rejects_non_us_invalid_and_looping_destinations(destination):
+    async def run():
+        store = OperatorSessions(replace(SETTINGS, allowed_destinations=(),
+                                         allowed_destination_countries=("US",)))
+        with pytest.raises(OperatorRejected) as rejected:
+            await store.reserve_outbound(destination, "", key())
+        assert rejected.value.reason == "destination-not-allowed"
+        assert store.sessions == {}
+        await store.close()
+
+    asyncio.run(run())
+
+
+def test_explicit_number_allowlist_remains_authoritative_alongside_country_policy():
+    async def run():
+        explicit = "+442083661177"
+        store = OperatorSessions(replace(SETTINGS, allowed_destinations=(explicit,),
+                                         allowed_destination_countries=("US",)))
+        session, _ = await store.reserve_outbound(explicit, "", key())
+        assert session.to == explicit
+        await store.close()
+        default = OperatorSessions(SETTINGS)
+        assert default.allowed_countries == frozenset()
+        with pytest.raises(OperatorRejected) as rejected:
+            await default.reserve_outbound("+12025559999", "", key())
+        assert rejected.value.reason == "destination-not-allowed"
+        await default.close()
+
+    asyncio.run(run())

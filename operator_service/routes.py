@@ -25,6 +25,7 @@ import json
 from contextlib import asynccontextmanager
 
 import httpx
+from agent_registry.auth import SAFE_HEADERS, owner_authenticated
 from caller_id import forwarding_identity
 from partner_detection.analysis import validate_analysis
 from .internal_agents import internal_snapshot
@@ -1362,6 +1363,29 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
             if authorized is False:
                 raise HTTPException(403, "Owner authentication required")
 
+    @app.get("/api/calls/config")
+    async def call_config(request: Request):
+        # Public demo access to agent settings never confers calling authority.
+        # A read needs no Origin header; the existing write routes still require
+        # the real owner cookie plus the same-origin request marker.
+        managed = bool(getattr(settings, "agent_management_enabled", False)
+                       and registry is not None and registry.enabled)
+        authenticated = managed and await asyncio.to_thread(owner_authenticated, request, registry)
+        result = {"authenticated": bool(authenticated),
+                  "enabled": bool(managed and store.ready and (store.allowed or store.allowed_countries)),
+                  "owner_label": None, "destinations": [], "countries": [],
+                  "active_session": None, "busy": False}
+        if authenticated:
+            active = next((session for session in store.sessions.values()
+                           if session.active and session.direction == "outbound"), None)
+            result.update(owner_label=("•••• " + settings.owner_number[-4:]
+                                       if settings.owner_number else None),
+                          destinations=list(settings.allowed_destinations),
+                          countries=sorted(store.allowed_countries),
+                          active_session=active.to_status() if active is not None else None,
+                          busy=store.active_count > 0)
+        return JSONResponse(result, headers=SAFE_HEADERS)
+
     @app.get("/api/operator/sessions", dependencies=[Depends(require_admin)])
     async def active_sessions():
         return JSONResponse({"sessions": [session.to_status() for session in store.sessions.values()
@@ -1397,7 +1421,7 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
         if (not isinstance(payload, dict) or "to" not in payload
                 or set(payload) - {"to", "goal"} or not isinstance(payload["to"], str)
                 or not isinstance(payload.get("goal", ""), str)):
-            raise HTTPException(400, 'Expected {"to": "<allowlisted E.164>", "goal": "..."}')
+            raise HTTPException(400, 'Expected {"to": "<permitted E.164>", "goal": "..."}')
         try:
             session, reused = await controller.start_outbound(
                 payload["to"], payload.get("goal", ""), request.headers.get("idempotency-key", ""))

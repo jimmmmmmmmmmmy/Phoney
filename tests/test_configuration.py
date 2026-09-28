@@ -40,6 +40,12 @@ BASE = dict(account_sid="AC" + "1" * 32, auth_token="test-auth",
     {"owner_number": "12025550101"},
     {"allowed_destinations": ("+12025550103", "12025550103")},
     {"allowed_destinations": ("+12025550103", "+12025550103")},
+    {"allowed_destination_countries": ("US", "US")},
+    {"allowed_destination_countries": ("CA",)},
+    {"allowed_destination_countries": ("US", "GB")},
+    {"allowed_destination_countries": ("us",)},
+    {"allowed_destination_countries": "US"},
+    {"allowed_destination_countries": True},
     {"twilio_number": "+15555550100", "allowed_destinations": ("+15555550100",)},
     {"owner_number": "+15555550100", "twilio_number": "+15555550101",
      "allowed_destinations": ("+15555550100",)},
@@ -125,3 +131,21 @@ def test_the_operator_bridge_needs_an_owner_number_a_token_and_an_allowlist():
     for key, value in (("owner_number", ""), ("operator_admin_token", ""),
                        ("allowed_destinations", ()), ("twilio_number", "")):
         assert Settings(**BASE, **{**bridge, key: value}).operator_ready is False
+
+
+def test_country_dialing_requires_explicit_us_configuration(monkeypatch):
+    env = {"TWILIO_ACCOUNT_SID": BASE["account_sid"], "TWILIO_AUTH_TOKEN": BASE["auth_token"],
+           "PUBLIC_BASE_URL": BASE["public_base_url"], "OWNER_NUMBER": "+12025550101",
+           "TWILIO_NUMBER": "+12025550102", "OPERATOR_ADMIN_TOKEN": "operator-admin-token-" * 2}
+    monkeypatch.setattr("config.load_dotenv", lambda *args: None)
+    monkeypatch.setattr("config.os.getenv", lambda name, default=None: env.get(name, default))
+    assert Settings.from_env().allowed_destination_countries == ()
+    assert Settings.from_env().operator_ready is False
+    env["ALLOWED_DESTINATION_COUNTRIES"] = " us "
+    configured = Settings.from_env()
+    assert configured.allowed_destination_countries == ("US",)
+    assert configured.allowed_destinations == ()
+    assert configured.operator_ready is True
+    env["ALLOWED_DESTINATION_COUNTRIES"] = "US,CA"
+    with pytest.raises(ValueError, match="ALLOWED_DESTINATION_COUNTRIES"):
+        Settings.from_env()

@@ -268,6 +268,81 @@ def test_invalid_port_blocks_recovery_before_process_changes(supervisor, monkeyp
     assert "APP_PORT" in supervisor.state["last_error"]
 
 
+@pytest.mark.parametrize("fails", [False, True])
+def test_app_launcher_exec_refreshes_owned_child_before_persist_or_cleanup(supervisor, monkeypatch, fails):
+    record = {"pid": 1234, "identity": "python launcher"}
+    process = Mock(pid=1234)
+    process.poll.return_value = None
+    monkeypatch.setattr(deploy.dev, "identity", lambda pid: "framework Python")
+    monkeypatch.setattr(deploy.dev, "available", lambda port: True)
+    monkeypatch.setattr(supervisor, "spawn", lambda *args: (process, record))
+    monkeypatch.setattr(supervisor, "wait_healthy", Mock(side_effect=RuntimeError("startup failed") if fails else None))
+    def terminate(child, saved, timeout):
+        assert child is process
+        assert saved["identity"] == "framework Python"
+        assert deploy.dev.owned(saved)
+        assert deploy.dev.read_state()["app"]["identity"] == "framework Python"
+    cleanup = Mock(side_effect=terminate)
+    monkeypatch.setattr(deploy.dev, "terminate_child", cleanup)
+
+    if fails:
+        with pytest.raises(RuntimeError, match="startup failed"):
+            supervisor.launch(supervisor.releases / NEW, NEW, {})
+        cleanup.assert_called_once_with(process, record, timeout=40)
+    else:
+        supervisor.launch(supervisor.releases / NEW, NEW, {})
+        cleanup.assert_not_called()
+    assert deploy.dev.read_state()["app"]["identity"] == "framework Python"
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_candidate_launcher_exec_refreshes_owned_child_even_on_probe_failure(supervisor, monkeypatch, fails):
+    record = {"pid": 1234, "identity": "python launcher"}
+    process = Mock(pid=1234)
+    process.poll.return_value = None
+    monkeypatch.setattr(deploy.dev, "identity", lambda pid: "framework Python")
+    monkeypatch.setattr(deploy.dev, "available", lambda port: True)
+    monkeypatch.setattr(supervisor, "spawn", lambda *args: (process, record))
+    monkeypatch.setattr(supervisor, "wait_healthy", Mock(side_effect=RuntimeError("probe failed") if fails else None))
+    def terminate(child, saved, timeout):
+        assert child is process
+        assert deploy.dev.owned(saved)
+        persisted = json.loads(supervisor.state_path.read_text())
+        assert persisted["candidate_process"]["identity"] == "framework Python"
+    cleanup = Mock(side_effect=terminate)
+    monkeypatch.setattr(deploy.dev, "terminate_child", cleanup)
+
+    if fails:
+        with pytest.raises(RuntimeError, match="probe failed"):
+            supervisor.probe(supervisor.releases / NEW, NEW)
+    else:
+        supervisor.probe(supervisor.releases / NEW, NEW)
+    cleanup.assert_called_once_with(process, record, timeout=40)
+    assert supervisor.state["candidate_process"] is None
+
+
+def test_first_deploy_rollback_waits_for_framework_identity(supervisor, monkeypatch):
+    previous = {"pid": 1234, "identity": "old dev app"}
+    deploy.dev.write_state({"app": previous, "public_url": "https://operator.example"})
+    monkeypatch.setattr(deploy.dev, "owned", lambda record: record == previous)
+    monkeypatch.setattr(deploy.dev, "terminate", Mock())
+    monkeypatch.setattr(supervisor, "launch", Mock(side_effect=RuntimeError("new release failed")))
+    python = supervisor.root / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.touch()
+    process = Mock(pid=5678)
+    process.poll.return_value = None
+    def spawn(name, args, state):
+        state["app"] = {"pid": process.pid, "identity": "python launcher"}
+        return process
+    monkeypatch.setattr(deploy.dev, "spawn", spawn)
+    monkeypatch.setattr(deploy.dev, "identity", lambda pid: "framework Python")
+    monkeypatch.setattr(supervisor, "health", Mock(return_value={"status": "ok"}))
+    with pytest.raises(RuntimeError, match="new release failed"):
+        supervisor.activate(supervisor.releases / NEW, NEW)
+    assert deploy.dev.read_state()["app"]["identity"] == "framework Python"
+
+
 def test_activation_refuses_untracked_port(supervisor, monkeypatch):
     monkeypatch.setattr(deploy.dev, "owned", lambda record: False)
     monkeypatch.setattr(deploy.dev, "available", lambda port: False)

@@ -298,7 +298,11 @@ class Supervisor:
         try:
             self.wait_healthy(process, sha, port)
         finally:
-            dev.terminate(record, timeout=40)
+            try:
+                dev.refresh_child_identity(process, record)
+                self.save(candidate_process=record)
+            finally:
+                dev.terminate_child(process, record, timeout=40)
             process.wait(timeout=2)
             self.save(candidate_process=None)
 
@@ -311,8 +315,14 @@ class Supervisor:
         dev.write_state(state)  # Record ownership before waiting so a crash remains recoverable.
         try:
             self.wait_healthy(process, sha, port)
+            dev.refresh_child_identity(process, record)
+            dev.write_state(state)
         except BaseException:
-            dev.terminate(record, timeout=40)
+            try:
+                dev.refresh_child_identity(process, record)
+                dev.write_state(state)
+            finally:
+                dev.terminate_child(process, record, timeout=40)
             process.wait(timeout=2)
             raise
 
@@ -335,9 +345,22 @@ class Supervisor:
                 # First deployment may be adopting the original dev.py checkout.
                 python = self.root / ".venv/bin/python"
                 if python.exists():
-                    dev.spawn("app", [str(python), "-m", "uvicorn", "main:app", "--host", "127.0.0.1",
+                    process = dev.spawn("app", [str(python), "-m", "uvicorn", "main:app", "--host", "127.0.0.1",
                                       "--port", str(port), "--no-access-log",
                                       "--ws-max-size", "65536", "--ws-max-queue", "16"], state)
+                    try:
+                        deadline = time.monotonic() + 20
+                        while process.poll() is None and time.monotonic() < deadline:
+                            if self.health() is not None:
+                                dev.refresh_child_identity(process, state["app"])
+                                dev.write_state(state)
+                                break
+                            time.sleep(0.25)
+                        else:
+                            raise RuntimeError("The previous app did not recover health after rollback.")
+                    except BaseException:
+                        dev.terminate_child(process, state["app"], timeout=40)
+                        raise
             raise
         self.save(active_commit=sha, active_release=str(release), status="running", failed_commit=None,
                   deployed_at=timestamp(), last_error=None, candidate_commit=None)

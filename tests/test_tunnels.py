@@ -14,6 +14,80 @@ URL = "https://current-demo.trycloudflare.com"
 OLD_URL = "https://previous-demo.trycloudflare.com"
 
 
+@pytest.mark.parametrize("pid,code", [(1234, 0), (1234, -9), (9876, None)])
+def test_identity_refresh_cannot_adopt_exited_or_mismatched_child(monkeypatch, pid, code):
+    record = {"pid": 1234, "identity": "original"}
+    process = SimpleNamespace(pid=pid, poll=lambda: code)
+    identity = Mock(return_value="unrelated replacement")
+    monkeypatch.setattr(dev, "identity", identity)
+    assert dev.refresh_child_identity(process, record) is False
+    identity.assert_not_called()
+    assert record["identity"] == "original"
+
+
+def test_identity_refresh_requires_live_child_but_recovery_keeps_exact_comparison(monkeypatch):
+    record = {"pid": 1234, "identity": "python launcher"}
+    monkeypatch.setattr(dev, "identity", lambda pid: "framework Python")
+    assert not dev.owned(record)
+    process = SimpleNamespace(pid=1234, poll=lambda: None)
+    assert dev.refresh_child_identity(process, record)
+    assert dev.owned(record)
+    monkeypatch.setattr(dev, "identity", lambda pid: "unrelated replacement")
+    assert not dev.owned(record)
+
+
+def test_live_child_cleanup_survives_another_argv_change_and_waits_before_escalation(monkeypatch):
+    process = Mock(pid=1234)
+    process.poll.return_value = None
+    process.wait.side_effect = [dev.subprocess.TimeoutExpired("child", 5), 0]
+    record = {"pid": 1234, "identity": "stale launcher"}
+    monkeypatch.setattr(dev.os, "getpgid", lambda pid: pid)
+    signals = Mock()
+    monkeypatch.setattr(dev.os, "killpg", signals)
+    identity = Mock(return_value="changed again")
+    monkeypatch.setattr(dev, "identity", identity)
+    dev.terminate_child(process, record)
+    assert [item.args for item in signals.call_args_list] == [(1234, dev.signal.SIGTERM), (1234, dev.signal.SIGKILL)]
+    assert [item.kwargs for item in process.wait.call_args_list] == [{"timeout": 5}, {"timeout": 1}]
+    identity.assert_not_called()
+
+
+def test_child_cleanup_reports_a_child_that_survives_kill(monkeypatch):
+    process = Mock(pid=1234)
+    process.poll.return_value = None
+    process.wait.side_effect = dev.subprocess.TimeoutExpired("child", 1)
+    monkeypatch.setattr(dev.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(dev.os, "killpg", Mock())
+    with pytest.raises(dev.subprocess.TimeoutExpired):
+        dev.terminate_child(process, {"pid": 1234})
+
+
+@pytest.mark.parametrize("pid,code", [(1234, 0), (9876, None)])
+def test_child_cleanup_never_signals_exited_or_mismatched_process(monkeypatch, pid, code):
+    process = SimpleNamespace(pid=pid, poll=lambda: code)
+    signals = Mock()
+    monkeypatch.setattr(dev.os, "killpg", signals)
+    if pid == 1234:
+        dev.terminate_child(process, {"pid": 1234})
+    else:
+        with pytest.raises(RuntimeError, match="mismatched"):
+            dev.terminate_child(process, {"pid": 1234})
+    signals.assert_not_called()
+
+
+def test_manual_start_preserves_original_spawn_error(sandbox, monkeypatch):
+    python = dev.ROOT / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.touch()
+    monkeypatch.setattr(dev, "ensure_tunnel", lambda environment: URL)
+    monkeypatch.setattr(dev, "spawn", Mock(side_effect=RuntimeError("original spawn failure")))
+    cleanup = Mock()
+    monkeypatch.setattr(dev, "terminate_child", cleanup)
+    with pytest.raises(RuntimeError, match="original spawn failure"):
+        dev.start()
+    cleanup.assert_not_called()
+
+
 def write_log_record(path, prefix=b"", content=None, pid=123):
     path.parent.mkdir(exist_ok=True)
     path.write_bytes(prefix + (content if content is not None else (URL + "\n").encode()))

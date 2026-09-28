@@ -47,6 +47,22 @@ def owned(record):
     return bool(record and record.get("identity") and identity(record["pid"]) == record["identity"])
 
 
+def refresh_child_identity(process, record):
+    """Follow launcher exec only while Popen proves this is our unreaped child.
+
+    macOS framework Python can replace its argv[0] after Popen returns. A
+    matching live child cannot have its PID recycled, unlike a recovered PID.
+    Recovered state must continue to pass the full, unchanged owned() check.
+    """
+    if process.pid != record.get("pid") or process.poll() is not None:
+        return False
+    current = identity(process.pid)
+    if not current:
+        return False
+    record["identity"] = current
+    return True
+
+
 def read_state():
     return json.loads(STATE.read_text()) if STATE.exists() else {}
 
@@ -157,6 +173,27 @@ def terminate(record, timeout=5):
         deadline = time.monotonic() + delay
         while time.monotonic() < deadline and owned(record):
             time.sleep(0.1)
+
+
+def terminate_child(process, record, timeout=5):
+    """Stop our live Popen child even if a launcher changes argv during cleanup."""
+    if process.pid != record.get("pid"):
+        raise RuntimeError("Refusing to stop a mismatched child process.")
+    for sig, delay in ((signal.SIGTERM, timeout), (signal.SIGKILL, 1)):
+        if process.poll() is not None:
+            return
+        try:
+            if os.getpgid(process.pid) != process.pid:
+                raise RuntimeError("Refusing to stop a child without its own process group.")
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=delay)
+            return
+        except subprocess.TimeoutExpired:
+            if sig == signal.SIGKILL:
+                raise
 
 
 def tunnel_environment():
@@ -463,6 +500,7 @@ def start():
         raise RuntimeError(f"Port {port} is occupied by an untracked process; no processes were stopped.")
     url = ensure_tunnel(environment)
     state = read_state()
+    app = None
     try:
         app = spawn("app", [str(python), "-m", "uvicorn", "main:app", "--host", "127.0.0.1",
                             "--port", str(port), "--no-access-log",
@@ -470,13 +508,19 @@ def start():
         deadline = time.monotonic() + 20
         while app.poll() is None and time.monotonic() < deadline:
             if request(base + "/health") is not None:
+                refresh_child_identity(app, state["app"])
+                write_state(state)
                 if status() == 0:
                     return 0
                 raise RuntimeError("App started but the tunnel changed; start again.")
             time.sleep(0.3)
         raise RuntimeError("App did not become healthy; inspect .runtime/app.log.")
     except BaseException:
-        terminate(state.get("app"), timeout=40)
+        if app is not None:
+            try:
+                refresh_child_identity(app, state["app"])
+            finally:
+                terminate_child(app, state["app"], timeout=40)
         state.pop("app", None)
         write_state(state)  # Keep the ready connector and URL for a later start.
         raise

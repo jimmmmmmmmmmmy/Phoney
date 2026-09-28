@@ -8,6 +8,14 @@ Set `CALLEE_NUMBER` in the active server `.env` to enable forwarding. `/health` 
 
 Success is one incoming call to the Twilio number, one outbound call to a fixed teammate, and intelligible two-way conversation. There is no AI, detector, transcription, recording, media WebSocket, or Redis in this milestone.
 
+## Forwarded caller ID
+
+Both the conference switchboard and inbound operator bridge preserve the original caller's number using the `From` and `CallToken` values from the authenticated `/voice` webhook. The token is held only in session memory and is excluded from session representations and public status responses. Duplicate webhooks cannot replace the original forwarding identity or dial again. New outbound calls still use `TWILIO_NUMBER`.
+
+If Twilio supplies no token or no usable E.164 caller number, the REST adapter retains `TWILIO_NUMBER` as caller ID. The operator bridge's existing inbound validation still rejects anonymous/non-E.164 callers. Carrier and country restrictions can affect the displayed number. A matching saved contact should appear by name on the receiving phone; arbitrary dashboard names are not sent to the cellular call screen. See [Twilio immutable call forwarding](https://www.twilio.com/docs/voice/trusted-calling-with-shakenstir).
+
+After deploying this code, test with a second phone whose number is saved in the receiving phone's contacts: call the Twilio number, confirm the contact name appears, answer, and check two-way audio. Allow about two minutes. Automated checks mock Twilio and cannot verify carrier caller-ID presentation.
+
 ## Call flow
 
 ```mermaid
@@ -55,7 +63,7 @@ Run one Uvicorn worker without reload during calls. State uses a dictionary plus
 | --- | --- |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | Account identity and mandatory verification of every Twilio webhook. |
 | `TWILIO_API_KEY` / `TWILIO_API_SECRET` | Optional REST credentials, supplied together; otherwise use account SID/Auth Token. Match the names already used in local configuration. |
-| `TWILIO_NUMBER` | The owned, voice-capable Twilio number used as outbound `from`, in E.164 format. |
+| `TWILIO_NUMBER` | The owned, voice-capable Twilio number used for outbound calls and as the fallback caller ID, in E.164 format. |
 | `CALLEE_NUMBER` | One explicitly allowlisted teammate number, in E.164 format; reject the Twilio number itself. |
 | `PUBLIC_BASE_URL` | Current ngrok HTTPS origin for TwiML and callbacks; already managed by the development runner. |
 
@@ -81,7 +89,7 @@ Return TwiML only where Twilio expects call instructions. Event receivers acknow
 
 Use `operator-{inbound CallSid}` as the conference name and stable labels `caller` and `callee`. The caller has `startConferenceOnEnter=false`; the callee has `startConferenceOnEnter=true`. Set `endConferenceOnExit=true` for both in Build 1, `beep=false`, and `maxParticipants=2`. Configure callback URL/events on the caller, who joins first. Twilio uses the first participant’s conference callback configuration. Labels must be unique within the room; leaving with `endConferenceOnExit=true` ends it for everyone. [Twilio Conference reference](https://www.twilio.com/docs/voice/twiml/conference).
 
-After the caller’s join event, create the outbound participant using `client.conferences(conference_sid).participants.create(...)`: `from_=TWILIO_NUMBER`, `to=CALLEE_NUMBER`, `label="callee"`, matching start/end flags, a 25-second ringing timeout (20 seconds with the later voicemail option enabled), and the call-status URL. Subscribe to `initiated`, `ringing`, `answered`, and `completed`. Participant creation initiates the outbound call; no separate callee TwiML route is needed for this design. Twilio adds a small timeout buffer, so the configured timeout is not an exact stopwatch deadline. [Conference Participants API](https://www.twilio.com/docs/voice/api/conference-participant-resource).
+After the caller’s join event, create the outbound participant using `client.conferences(conference_sid).participants.create(...)`: `from_=inbound From` and `call_token=inbound CallToken` when available (otherwise `from_=TWILIO_NUMBER`), `to=CALLEE_NUMBER`, `label="callee"`, matching start/end flags, a 25-second ringing timeout (20 seconds with the later voicemail option enabled), and the call-status URL. Subscribe to `initiated`, `ringing`, `answered`, and `completed`. Participant creation initiates the outbound call; no separate callee TwiML route is needed for this design. Twilio adds a small timeout buffer, so the configured timeout is not an exact stopwatch deadline. [Conference Participants API](https://www.twilio.com/docs/voice/api/conference-participant-resource).
 
 An `answered` event alone is not proof that both people can talk. Mark the session connected only when both labeled participants have joined and the conference has started. A voicemail system can answer; the live test must establish that the teammate actually answered. Call-progress event subscriptions differ from the `CallStatus` values carried in those events. Handle `busy`, `no-answer`, `failed`, `canceled`, and `completed` as terminal outcomes. [Twilio Call resource](https://www.twilio.com/docs/voice/api/call-resource).
 

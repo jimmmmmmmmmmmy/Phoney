@@ -77,9 +77,92 @@ def test_fetch_failure_does_not_change_active_or_block_a_commit(supervisor, monk
     assert supervisor.state.get("failed_commit") is None
 
 
-def test_failed_activation_rolls_back_previous_release(supervisor, monkeypatch):
+def test_offline_start_recovers_saved_release_before_waiting_for_tunnel(supervisor, monkeypatch):
     supervisor.save(active_commit=OLD)
-    record = {"pid": 1234, "identity": "old process", "commit": OLD}
+    monkeypatch.setattr(deploy.dev, "owned", lambda record: False)
+    monkeypatch.setattr(deploy.dev, "terminate", Mock())
+    launch = Mock()
+    monkeypatch.setattr(supervisor, "launch", launch)
+
+    def offline_tunnel():
+        launch.assert_called_once_with(supervisor.releases / OLD, OLD, {})
+        raise RuntimeError("network unavailable")
+
+    monkeypatch.setattr(supervisor, "ensure_tunnel", offline_tunnel)
+    fetch = Mock()
+    monkeypatch.setattr(supervisor, "fetch", fetch)
+    supervisor.check()
+
+    fetch.assert_not_called()
+    assert supervisor.state["active_commit"] == OLD
+    assert supervisor.state.get("failed_commit") is None
+    assert supervisor.state["last_error"] == "network unavailable"
+
+
+def test_tunnel_outage_preserves_healthy_app(supervisor, monkeypatch):
+    supervisor.save(active_commit=OLD)
+    url = "https://operator.example"
+    (supervisor.root / ".env").write_text("PUBLIC_BASE_URL=" + url + "\n")
+    record = {"pid": 1234, "identity": "old process", "commit": OLD, "public_url": url}
+    deploy.dev.write_state({"app": record})
+    monkeypatch.setattr(deploy.dev, "owned", lambda item: item == record)
+    monkeypatch.setattr(supervisor, "health", lambda: {"status": "ok", "commit": OLD})
+    terminate, launch, control = Mock(), Mock(), Mock()
+    monkeypatch.setattr(deploy.dev, "terminate", terminate)
+    monkeypatch.setattr(supervisor, "launch", launch)
+    monkeypatch.setattr(supervisor, "deployment_control", control)
+    monkeypatch.setattr(supervisor, "ensure_tunnel", Mock(side_effect=RuntimeError("network unavailable")))
+
+    supervisor.check()
+
+    terminate.assert_not_called()
+    launch.assert_not_called()
+    control.assert_not_called()
+    assert deploy.dev.read_state()["app"] == record
+    assert supervisor.state["active_commit"] == OLD
+
+
+def test_tunnel_origin_change_reconciles_app_after_local_recovery(supervisor, monkeypatch):
+    supervisor.save(active_commit=OLD)
+    previous_url, new_url = "https://old.example", "https://new.example"
+    (supervisor.root / ".env").write_text("PUBLIC_BASE_URL=" + previous_url + "\n")
+    record = {"pid": 1234, "identity": "old process", "commit": OLD, "public_url": previous_url}
+    deploy.dev.write_state({"app": record})
+    monkeypatch.setattr(deploy.dev, "owned", lambda item: item == record)
+    monkeypatch.setattr(supervisor, "health", lambda: {"status": "ok", "commit": OLD,
+                                                     "build": 1, "switchboard_ready": True})
+    control = Mock(return_value={"draining": True, "active_sessions": 0, "pending_work": 0})
+    monkeypatch.setattr(supervisor, "deployment_control", control)
+    terminate, launch = Mock(), Mock()
+    monkeypatch.setattr(deploy.dev, "terminate", terminate)
+    monkeypatch.setattr(supervisor, "launch", launch)
+
+    def ready_tunnel():
+        terminate.assert_not_called()
+        launch.assert_not_called()
+        deploy.dev.persist_url(new_url)
+        return new_url
+
+    def hooks(url):
+        assert url == new_url
+        launch.assert_called_once_with(supervisor.releases / OLD, OLD, {"app": record})
+
+    monkeypatch.setattr(supervisor, "ensure_tunnel", ready_tunnel)
+    monkeypatch.setattr(supervisor, "configure_hooks", hooks)
+    monkeypatch.setattr(supervisor, "fetch", lambda: OLD)
+    supervisor.check()
+
+    terminate.assert_called_once_with(record, timeout=40)
+    assert control.call_args_list == [call(True), call(False)]
+    assert supervisor.state["status"] == "running"
+    assert supervisor.environment()["PUBLIC_BASE_URL"] == new_url
+
+
+@pytest.mark.parametrize("port", [8000, 18000])
+def test_failed_activation_rolls_back_previous_release(supervisor, monkeypatch, port):
+    (supervisor.root / ".env").write_text(f"APP_PORT={port}\n")
+    supervisor.save(active_commit=OLD)
+    record = {"pid": 1234, "identity": "old process", "commit": OLD, "port": port}
     deploy.dev.write_state({"app": record, "ngrok": {"pid": 5678}, "public_url": "https://example.com"})
     monkeypatch.setattr(deploy.dev, "owned", lambda item: item == record)
     terminate = Mock()
@@ -92,6 +175,97 @@ def test_failed_activation_rolls_back_previous_release(supervisor, monkeypatch):
     assert launch.call_args_list[1].args[1] == OLD
     assert supervisor.state["active_commit"] == OLD
     terminate.assert_called_once_with(record, timeout=40)
+
+
+def test_nondefault_port_recovers_probes_activates_and_controls_app(supervisor, monkeypatch):
+    (supervisor.root / ".env").write_text("APP_PORT=18000\nDEPLOY_CONTROL_TOKEN=test-token\n")
+    supervisor.save(active_commit=OLD)
+    available = Mock(return_value=True)
+    monkeypatch.setattr(deploy.dev, "available", available)
+    monkeypatch.setattr(deploy.dev, "owned", lambda record: False)
+    monkeypatch.setattr(deploy.dev, "identity", lambda pid: "owned")
+    terminate = Mock()
+    monkeypatch.setattr(deploy.dev, "terminate", terminate)
+    process = Mock(pid=1234)
+    popen = Mock(return_value=process)
+    monkeypatch.setattr(deploy.subprocess, "Popen", popen)
+    wait = Mock()
+    monkeypatch.setattr(supervisor, "wait_healthy", wait)
+
+    supervisor.recover()
+    supervisor.probe(supervisor.releases / NEW, NEW)
+    supervisor.activate(supervisor.releases / NEW, NEW)
+
+    commands = [item.args[0] for item in popen.call_args_list]
+    assert [command[command.index("--port") + 1] for command in commands] == ["18000", "18001", "18000"]
+    assert [item.args[2] for item in wait.call_args_list] == [18000, 18001, 18000]
+    assert {item.args[0] for item in available.call_args_list} == {18000, 18001}
+    assert deploy.dev.read_state()["app"]["port"] == 18000
+    assert (supervisor.runtime / "app.log").exists()
+    assert (supervisor.directory / "candidate.log").exists()
+
+    request = Mock(return_value={"status": "ok", "commit": NEW})
+    monkeypatch.setattr(deploy.dev, "request", request)
+    assert supervisor.healthy(NEW)
+    request.assert_called_with("http://127.0.0.1:18000/health")
+    assert supervisor.healthy(NEW, supervisor.candidate_port())
+    request.assert_called_with("http://127.0.0.1:18001/health")
+    opener = Mock(return_value=io.StringIO(json.dumps(drain_state())))
+    monkeypatch.setattr(deploy, "urlopen", opener)
+    supervisor.deployment_control(True)
+    assert opener.call_args.args[0].full_url == "http://127.0.0.1:18000/internal/deploy"
+
+
+def test_port_change_preserves_app_on_previous_port(supervisor, monkeypatch):
+    (supervisor.root / ".env").write_text("APP_PORT=18000\n")
+    supervisor.save(active_commit=OLD)
+    record = {"pid": 1234, "identity": "owned", "port": 8000}
+    deploy.dev.write_state({"app": record})
+    monkeypatch.setattr(deploy.dev, "owned", lambda item: item == record)
+    terminate, launch, health = Mock(), Mock(), Mock()
+    monkeypatch.setattr(deploy.dev, "terminate", terminate)
+    monkeypatch.setattr(supervisor, "launch", launch)
+    monkeypatch.setattr(supervisor, "health", health)
+    with pytest.raises(deploy.DeploymentDeferred, match="APP_PORT changed"):
+        supervisor.recover()
+    terminate.assert_not_called()
+    launch.assert_not_called()
+    health.assert_not_called()
+
+
+def test_adopting_old_port_preserves_tunnel_before_any_drain(supervisor, monkeypatch):
+    (supervisor.root / ".env").write_text("APP_PORT=18000\nTUNNEL_PROVIDER=cloudflare\n")
+    record = {"pid": 1234, "identity": "owned"}  # Legacy dev app defaults to 8000.
+    state = {"app": record, "tunnel_provider": "ngrok", "ngrok": {"pid": 5678}}
+    deploy.dev.write_state(state)
+    monkeypatch.setattr(deploy.dev, "owned", lambda item: item == record)
+    tunnel, control, terminate = Mock(), Mock(), Mock()
+    monkeypatch.setattr(deploy.dev, "ensure_tunnel", tunnel)
+    monkeypatch.setattr(supervisor, "deployment_control", control)
+    monkeypatch.setattr(deploy.dev, "terminate", terminate)
+
+    assert supervisor.state.get("active_commit") is None
+    with pytest.raises(deploy.DeploymentDeferred, match="APP_PORT changed"):
+        supervisor.ensure_tunnel()
+
+    tunnel.assert_not_called()
+    control.assert_not_called()
+    terminate.assert_not_called()
+    assert deploy.dev.read_state() == state
+
+
+def test_invalid_port_blocks_recovery_before_process_changes(supervisor, monkeypatch):
+    (supervisor.root / ".env").write_text("APP_PORT=65535\n")
+    supervisor.save(active_commit=OLD)
+    terminate, launch, tunnel = Mock(), Mock(), Mock()
+    monkeypatch.setattr(deploy.dev, "terminate", terminate)
+    monkeypatch.setattr(supervisor, "launch", launch)
+    monkeypatch.setattr(supervisor, "ensure_tunnel", tunnel)
+    supervisor.check()
+    terminate.assert_not_called()
+    launch.assert_not_called()
+    tunnel.assert_not_called()
+    assert "APP_PORT" in supervisor.state["last_error"]
 
 
 def test_activation_refuses_untracked_port(supervisor, monkeypatch):

@@ -328,7 +328,8 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
             if form.get("To") != settings.twilio_number:
                 raise HTTPException(400, "Unexpected destination")
             try:
-                session = await controller.start_inbound(call_sid, str(form.get("From", "")))
+                session = await controller.start_inbound(
+                    call_sid, str(form.get("From", "")), str(form.get("CallToken", "")))
             except OperatorRejected:
                 # A rejected reservation must not create a second call through
                 # the conference path or bypass the bridge's capacity/drain gate.
@@ -340,7 +341,8 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
             if form.get("To") != settings.twilio_number:
                 raise HTTPException(400, "Unexpected destination")
             try:
-                session = await switchboard.start(call_sid, str(form.get("From", "")))
+                session = await switchboard.start(
+                    call_sid, str(form.get("From", "")), str(form.get("CallToken", "")))
             except SessionRejected:
                 response.say("The team is unavailable right now. Please try again later.")
                 response.hangup()

@@ -11,6 +11,8 @@ Construction is side-effect free. Only create_participant places a call.
 import asyncio
 import threading
 
+from caller_id import forwarding_identity
+
 from twilio.base.exceptions import TwilioRestException
 from twilio.http.http_client import TwilioHttpClient
 from twilio.rest import Client
@@ -34,10 +36,10 @@ class TwilioGateway:
             )
         return self._local.client
 
-    async def create_participant(self, conference_sid, parent_sid):
+    async def create_participant(self, conference_sid, parent_sid, *, caller_number="", call_token=""):
         def create():
             result = self._client().conferences(conference_sid).participants.create(
-                from_=self.settings.twilio_number,
+                **forwarding_identity(self.settings.twilio_number, caller_number, call_token),
                 to=self.settings.callee_number,
                 label="callee",
                 timeout=20 if getattr(self.settings, "voicemail_enabled", False) else 25,

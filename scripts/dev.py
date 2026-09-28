@@ -73,12 +73,29 @@ def available(port):
         return False
 
 
-def public_url(data):
+def app_port(environment=None):
+    environment = tunnel_environment() if environment is None else environment
+    value = environment.get("APP_PORT", "8000")
+    if (not isinstance(value, str) or not re.fullmatch(r"[0-9]{4,5}", value)
+            or not 1024 <= int(value) <= 65534):
+        raise RuntimeError("APP_PORT must be an integer from 1024 through 65534.")
+    port = int(value)
+    if port in (4039, 4040, 4041):
+        raise RuntimeError("APP_PORT and its candidate port must not overlap tunnel ports 4040 or 4041.")
+    return port
+
+
+def base_url(environment=None):
+    return "http://127.0.0.1:" + str(app_port(environment))
+
+
+def public_url(data, environment=None):
+    port = app_port(environment)
     for tunnel in (data or {}).get("tunnels", []):
         target = tunnel.get("config", {}).get("addr", "")
         target = urlparse(target if "://" in target else "http://" + target)
         public = tunnel.get("public_url", "")
-        if (target.hostname in ("127.0.0.1", "localhost") and target.port == 8000
+        if (target.hostname in ("127.0.0.1", "localhost") and target.port == port
                 and public.startswith("https://")):
             return public.rstrip("/")
     return None
@@ -114,6 +131,8 @@ def spawn(name, command, state, environment=None):
                                    stdout=output, stderr=subprocess.STDOUT,
                                    start_new_session=True, env=environment)
     record = {"pid": process.pid, "identity": identity(process.pid)}
+    if name == "app":
+        record["port"] = app_port()
     if name == "cloudflared":
         record.update(log_offset=log_stat.st_size, log_inode=log_stat.st_ino,
                       log_device=log_stat.st_dev)
@@ -145,7 +164,7 @@ def tunnel_environment():
     environment = dict(os.environ)
     path = ROOT / ".env"
     for line in path.read_text().splitlines() if path.exists() else []:
-        match = re.match(r"^\s*(?:export\s+)?(TUNNEL_PROVIDER|TUNNEL_TRANSPORT_PROTOCOL|CLOUDFLARE_TUNNEL_CONFIG|CLOUDFLARE_PUBLIC_URL)\s*=\s*(.*?)\s*$", line)
+        match = re.match(r"^\s*(?:export\s+)?(APP_PORT|TUNNEL_PROVIDER|TUNNEL_TRANSPORT_PROTOCOL|CLOUDFLARE_TUNNEL_CONFIG|CLOUDFLARE_PUBLIC_URL)\s*=\s*(.*?)\s*$", line)
         if match:
             value = match.group(2).split(" #", 1)[0].strip().strip("\"'")
             environment[match.group(1)] = value
@@ -161,13 +180,17 @@ def tunnel_provider(environment):
 
 def cloudflare_configuration(environment):
     """Validate connector inputs without putting tunnel credentials in state or argv."""
+    port = app_port(environment)
     protocol = environment.get("TUNNEL_TRANSPORT_PROTOCOL", "auto").strip().lower()
     if protocol not in ("auto", "http2", "quic"):
         raise RuntimeError("TUNNEL_TRANSPORT_PROTOCOL must be auto, http2, or quic.")
     config = environment.get("CLOUDFLARE_TUNNEL_CONFIG", "").strip()
     public = environment.get("CLOUDFLARE_PUBLIC_URL", "").strip()
     if not config and not public:
-        return {"mode": "quick", "protocol": protocol}
+        configuration = {"mode": "quick", "protocol": protocol}
+        if port != 8000:
+            configuration["origin"] = base_url(environment)
+        return configuration
     if not config or not public:
         raise RuntimeError("CLOUDFLARE_TUNNEL_CONFIG and CLOUDFLARE_PUBLIC_URL must be set together.")
     try:
@@ -204,7 +227,8 @@ def cloudflare_matches(record, configuration):
         return False
     saved = record.get("configuration")
     # Older versions recorded only Quick Tunnels; preserve those healthy processes.
-    return saved == configuration or (saved is None and configuration["mode"] == "quick")
+    return saved == configuration or (saved is None and configuration["mode"] == "quick"
+                                     and "origin" not in configuration)
 
 
 def tunnel_change_requires_drain(environment, state):
@@ -295,7 +319,7 @@ def check_stopping(stopping):
 def _ensure_ngrok(state, environment, stopping):
     record = state.get("ngrok")
     data = request(TUNNELS)
-    url = public_url(data)
+    url = public_url(data, environment)
     if url:
         if record and not owned(record):
             state.pop("ngrok", None)  # Reuse the unowned tunnel without claiming its PID.
@@ -307,12 +331,12 @@ def _ensure_ngrok(state, environment, stopping):
         if not executable:
             raise RuntimeError("ngrok is not installed or is not on PATH.")
         check_stopping(stopping)
-        spawn("ngrok", [executable, "http", BASE, "--log", "stdout", "--log-format", "json"],
+        spawn("ngrok", [executable, "http", base_url(environment), "--log", "stdout", "--log-format", "json"],
               state, environment=environment)
     deadline = time.monotonic() + 25
     while owned(state.get("ngrok")) and time.monotonic() < deadline:
         check_stopping(stopping)
-        url = public_url(request(TUNNELS))
+        url = public_url(request(TUNNELS), environment)
         if url:
             return url
         time.sleep(0.3)
@@ -356,7 +380,7 @@ def _ensure_cloudflare(state, environment, stopping):
             state.pop("cloudflared", None)
             write_state(state)
         command = [executable, "tunnel", "--no-autoupdate", "--protocol", protocol]
-        command += ["--config", configuration["config"]] if named else ["--url", BASE]
+        command += ["--config", configuration["config"]] if named else ["--url", base_url(environment)]
         command += ["--metrics", "127.0.0.1:4041", "--output", "json"]
         if named:
             command.append("run")
@@ -382,6 +406,7 @@ def ensure_tunnel(environment, stopping=None):
     Existing owned connectors survive app deploys and supervisor restarts. The
     callback may raise the supervisor's stop exception, or return True to stop.
     """
+    app_port(environment)  # Reject invalid configuration before writing state or stopping processes.
     provider = tunnel_provider(environment)
     check_stopping(stopping)
     with tunnel_lock():
@@ -403,6 +428,7 @@ def ensure_tunnel(environment, stopping=None):
 def status():
     state = read_state()
     environment = tunnel_environment()
+    port, base = app_port(environment), base_url(environment)
     provider = tunnel_provider(environment)
     if provider == "cloudflare":
         configuration = cloudflare_configuration(environment)
@@ -412,17 +438,19 @@ def status():
                else cloudflare_url(record)) if ready else None
         tunnel_alive = bool(url)
     else:
-        url = public_url(request(TUNNELS))
+        url = public_url(request(TUNNELS), environment)
         tunnel_alive = "ngrok" not in state or owned(state["ngrok"])
-    healthy = owned(state.get("app")) and request(BASE + "/health") is not None
-    print("App: " + ("healthy at " + BASE if healthy else "not running or unhealthy"))
-    print(provider + ": " + (url if url else "no ready HTTPS tunnel to port 8000"))
+    healthy = owned(state.get("app")) and request(base + "/health") is not None
+    print("App: " + ("healthy at " + base if healthy else "not running or unhealthy"))
+    print(provider + ": " + (url if url else "no ready HTTPS tunnel to port " + str(port)))
     if url:
         print("Voice webhook: " + url + "/voice")
     return 0 if healthy and tunnel_alive and url and url == state.get("public_url") else 1
 
 
 def start():
+    environment = tunnel_environment()
+    port, base = app_port(environment), base_url(environment)
     previous = read_state()
     if owned(previous.get("app")):
         if status() == 0:
@@ -431,17 +459,17 @@ def start():
     python = ROOT / ".venv/bin/python"
     if not python.exists():
         raise RuntimeError("Missing .venv/bin/python; install the project dependencies first.")
-    if not available(8000):
-        raise RuntimeError("Port 8000 is occupied by an untracked process; no processes were stopped.")
-    url = ensure_tunnel(tunnel_environment())
+    if not available(port):
+        raise RuntimeError(f"Port {port} is occupied by an untracked process; no processes were stopped.")
+    url = ensure_tunnel(environment)
     state = read_state()
     try:
         app = spawn("app", [str(python), "-m", "uvicorn", "main:app", "--host", "127.0.0.1",
-                            "--port", "8000", "--no-access-log",
+                            "--port", str(port), "--no-access-log",
                             "--ws-max-size", "65536", "--ws-max-queue", "16"], state)
         deadline = time.monotonic() + 20
         while app.poll() is None and time.monotonic() < deadline:
-            if request(BASE + "/health") is not None:
+            if request(base + "/health") is not None:
                 if status() == 0:
                     return 0
                 raise RuntimeError("App started but the tunnel changed; start again.")

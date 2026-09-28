@@ -287,6 +287,52 @@ def test_provider_dotenv_precedence_and_validation(sandbox, monkeypatch):
     assert sandbox.launched == []
 
 
+@pytest.mark.parametrize("value", ["", "1023", "65535", "4039", "4040", "4041", "-1", "1.2", "8000/health", "localhost:8000"])
+def test_invalid_app_port_preserves_processes_and_state(sandbox, value):
+    with pytest.raises(RuntimeError, match="APP_PORT"):
+        dev.ensure_tunnel({"TUNNEL_PROVIDER": "cloudflare", "APP_PORT": value})
+    assert sandbox.launched == []
+    assert sandbox.stopped == []
+    assert not dev.STATE.exists()
+
+
+def test_app_port_dotenv_precedence_and_ngrok_target_matching(sandbox, monkeypatch):
+    monkeypatch.setenv("APP_PORT", "18002")
+    (dev.ROOT / ".env").write_text("export APP_PORT='18000' # local listener\n")
+    assert dev.app_port() == 18000
+    assert dev.base_url() == "http://127.0.0.1:18000"
+    assert dev.public_url({"tunnels": [{"config": {"addr": dev.BASE}, "public_url": URL}]}) is None
+    assert dev.public_url({"tunnels": [{"config": {"addr": dev.base_url()}, "public_url": URL}]}) == URL
+
+
+def test_nondefault_quick_tunnel_targets_app_and_replaces_default_connector(sandbox):
+    dev.ensure_tunnel({"TUNNEL_PROVIDER": "cloudflare"})
+    environment = {"TUNNEL_PROVIDER": "cloudflare", "APP_PORT": "18000"}
+    assert dev.tunnel_change_requires_drain(environment, dev.read_state())
+    assert dev.ensure_tunnel(environment) == URL
+    command = sandbox.launched[-1][1]
+    assert command[command.index("--url") + 1] == "http://127.0.0.1:18000"
+    assert len(sandbox.stopped) == 1
+    assert not dev.tunnel_change_requires_drain(environment, dev.read_state())
+
+
+def test_nondefault_ngrok_launch_and_status(sandbox, monkeypatch, capsys):
+    (dev.ROOT / ".env").write_text("APP_PORT=18000\nTUNNEL_PROVIDER=ngrok\n")
+    def request(url):
+        if url == "http://127.0.0.1:18000/health":
+            return {"status": "ok"}
+        if url == dev.TUNNELS and sandbox.ngrok_url:
+            return {"tunnels": [{"config": {"addr": "http://127.0.0.1:18000"}, "public_url": sandbox.ngrok_url}]}
+    monkeypatch.setattr(dev, "request", request)
+    assert dev.ensure_tunnel(dev.tunnel_environment()) == "https://example.ngrok-free.app"
+    assert sandbox.launched[0][1][2] == "http://127.0.0.1:18000"
+    state = dev.read_state()
+    state["app"] = {"pid": 900, "identity": "owned", "port": 18000}
+    dev.write_state(state)
+    assert dev.status() == 0
+    assert "healthy at http://127.0.0.1:18000" in capsys.readouterr().out
+
+
 def test_status_supports_cloudflare(sandbox, monkeypatch, capsys):
     dev.ensure_tunnel({"TUNNEL_PROVIDER": "cloudflare"})
     state = dev.read_state()

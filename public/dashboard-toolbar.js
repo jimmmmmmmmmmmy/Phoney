@@ -326,7 +326,12 @@
     liveNotice.setAttribute("aria-live", "polite");
     document.body.append(liveNotice);
     window.addEventListener("dashboard-contacts-changed", renderNotifications);
-    window.addEventListener("focus", () => syncNotifications(true));
+    const refreshVisible = () => {
+      if (!document.hidden) syncNotifications(true);
+    };
+    window.addEventListener("focus", refreshVisible);
+    window.addEventListener("online", refreshVisible);
+    document.addEventListener("visibilitychange", refreshVisible);
     renderNotifications();
     syncNotifications(true);
     document.addEventListener("pointerdown", event => {

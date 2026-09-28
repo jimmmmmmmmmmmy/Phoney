@@ -152,6 +152,7 @@ class OperatorSession:
 
     id: str
     direction: str = "outbound"
+    call_token: str = field(default="", repr=False)
     to: str = field(default="", repr=False)
     goal: str = ""
     voice_id: str = ""
@@ -373,7 +374,7 @@ class OperatorSessions:
             session.deadline = session.created + self._arm(session.id, "setup", "setup-timeout")
             return session, False
 
-    async def reserve_inbound(self, call_sid: str, caller: str):
+    async def reserve_inbound(self, call_sid: str, caller: str, call_token: str = ""):
         """Bind an existing inbound remote call without dialing it again."""
         if not CALL_SID.fullmatch(str(call_sid)) or not E164.fullmatch(str(caller)):
             raise OperatorRejected("invalid-inbound-call")
@@ -391,7 +392,7 @@ class OperatorSessions:
             if len(self.sessions) >= self.MAX_SESSIONS or self.active_count >= self.max_active:
                 raise OperatorRejected("capacity")
             session = OperatorSession(id=uuid.uuid4().hex, direction="inbound", to=caller,
-                                      canonical_call_sid=call_sid)
+                                      canonical_call_sid=call_sid, call_token=call_token)
             session.legs[OWNER] = self._new_leg(OWNER, self.settings.owner_number)
             session.legs[REMOTE] = self._new_leg(REMOTE, caller)
             session.legs[REMOTE].call_sid = call_sid

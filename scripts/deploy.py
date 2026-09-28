@@ -99,7 +99,14 @@ class Supervisor:
         environment["DEPLOY_TRIGGER_PATH"] = str(self.trigger)
         if sha:
             environment["DEPLOY_COMMIT"] = validate_sha(sha)
+        dev.app_port(environment)
         return environment
+
+    def app_port(self):
+        return dev.app_port(self.environment())
+
+    def candidate_port(self):
+        return self.app_port() + 1
 
     def build_environment(self):
         # Test/install subprocesses do not inherit the application's production secrets.
@@ -153,6 +160,7 @@ class Supervisor:
 
         environment = self.environment()
         state = dev.read_state()
+        self.validate_record_port(state.get("app"), dev.app_port(environment))
         if dev.tunnel_change_requires_drain(environment, state):
             # Keep the old connector carrying media until active calls finish.
             with self.drain(state.get("app")):
@@ -191,7 +199,7 @@ class Supervisor:
         return release
 
     def spawn(self, release, sha, port):
-        log = self.runtime / ("app.log" if port == 8000 else "deploy/candidate.log")
+        log = self.runtime / ("app.log" if port == self.app_port() else "deploy/candidate.log")
         descriptor = os.open(log, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
         with os.fdopen(descriptor, "ab") as output:
             process = subprocess.Popen([str(release / ".venv/bin/python"), "-m", "uvicorn", "main:app",
@@ -200,24 +208,25 @@ class Supervisor:
                                        cwd=release, env=self.environment(sha), stdin=subprocess.DEVNULL,
                                        stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
         record = {"pid": process.pid, "identity": dev.identity(process.pid), "release": str(release),
-                  "commit": sha, "public_url": self.environment().get("PUBLIC_BASE_URL")}
+                  "commit": sha, "public_url": self.environment().get("PUBLIC_BASE_URL"), "port": port}
         return process, record
 
-    def health(self, port=8000):
+    def health(self, port=None):
+        port = self.app_port() if port is None else port
         return dev.request("http://127.0.0.1:" + str(port) + "/health")
 
     @staticmethod
     def matches_health(result, sha):
         return isinstance(result, dict) and result.get("status") == "ok" and result.get("commit") == sha
 
-    def healthy(self, sha, port=8000):
+    def healthy(self, sha, port=None):
         return self.matches_health(self.health(port), sha)
 
     def deployment_control(self, draining=None):
         token = self.environment().get("DEPLOY_CONTROL_TOKEN", "").strip()
         if not token:
             raise DeploymentDeferred("DEPLOY_CONTROL_TOKEN is required before replacing the active switchboard.")
-        request = Request(dev.BASE + "/internal/deploy", headers={"Authorization": "Bearer " + token})
+        request = Request(dev.base_url(self.environment()) + "/internal/deploy", headers={"Authorization": "Bearer " + token})
         if draining is not None:
             request.method = "POST"
             request.add_header("Content-Type", "application/json")
@@ -273,7 +282,7 @@ class Supervisor:
     def wait_healthy(self, process, sha, port):
         deadline = time.monotonic() + 20
         while process.poll() is None and time.monotonic() < deadline:
-            if port == 8001 and self.stopping:
+            if port == self.candidate_port() and self.stopping:
                 raise DeploymentStopped()
             if self.healthy(sha, port):
                 return
@@ -281,36 +290,40 @@ class Supervisor:
         raise RuntimeError("Release did not become healthy; inspect .runtime/app.log or deploy/candidate.log.")
 
     def probe(self, release, sha):
-        if not dev.available(8001):
-            raise RuntimeError("Candidate port 8001 is in use; the active app was left running.")
-        process, record = self.spawn(release, sha, 8001)
+        port = self.candidate_port()
+        if not dev.available(port):
+            raise RuntimeError(f"Candidate port {port} is in use; the active app was left running.")
+        process, record = self.spawn(release, sha, port)
         self.save(candidate_process=record)
         try:
-            self.wait_healthy(process, sha, 8001)
+            self.wait_healthy(process, sha, port)
         finally:
             dev.terminate(record, timeout=40)
             process.wait(timeout=2)
             self.save(candidate_process=None)
 
     def launch(self, release, sha, state):
-        if not dev.available(8000):
-            raise RuntimeError("Port 8000 is occupied; no untracked process was stopped.")
-        process, record = self.spawn(release, sha, 8000)
+        port = self.app_port()
+        if not dev.available(port):
+            raise RuntimeError(f"Port {port} is occupied; no untracked process was stopped.")
+        process, record = self.spawn(release, sha, port)
         state["app"] = record
         dev.write_state(state)  # Record ownership before waiting so a crash remains recoverable.
         try:
-            self.wait_healthy(process, sha, 8000)
+            self.wait_healthy(process, sha, port)
         except BaseException:
             dev.terminate(record, timeout=40)
             process.wait(timeout=2)
             raise
 
     def activate(self, release, sha):
+        port = self.app_port()
         state = dev.read_state()
         previous = self.state.get("active_commit")
         previous_record = state.get("app")
-        if not dev.owned(previous_record) and not dev.available(8000):
-            raise RuntimeError("Port 8000 belongs to an untracked process; deployment was not activated.")
+        self.validate_record_port(previous_record, port)
+        if not dev.owned(previous_record) and not dev.available(port):
+            raise RuntimeError(f"Port {port} belongs to an untracked process; deployment was not activated.")
         with self.drain(previous_record):
             dev.terminate(previous_record, timeout=40)
         try:
@@ -323,18 +336,26 @@ class Supervisor:
                 python = self.root / ".venv/bin/python"
                 if python.exists():
                     dev.spawn("app", [str(python), "-m", "uvicorn", "main:app", "--host", "127.0.0.1",
-                                      "--port", "8000", "--no-access-log",
+                                      "--port", str(port), "--no-access-log",
                                       "--ws-max-size", "65536", "--ws-max-queue", "16"], state)
             raise
         self.save(active_commit=sha, active_release=str(release), status="running", failed_commit=None,
                   deployed_at=timestamp(), last_error=None, candidate_commit=None)
 
+    @staticmethod
+    def validate_record_port(record, port):
+        if dev.owned(record) and record.get("port", 8000) != port:
+            raise DeploymentDeferred("APP_PORT changed while the previous app is running. "
+                                     "Stop and restart the service after calls finish to change ports.")
+
     def recover(self):
+        port = self.app_port()
         sha = self.state.get("active_commit")
         if not sha:
             return
         state = dev.read_state()
         record = state.get("app")
+        self.validate_record_port(record, port)
         health = self.health() if dev.owned(record) else None
         if dev.owned(record) and self.state.get("drain_reset_required"):
             self.deployment_control(False)
@@ -354,8 +375,15 @@ class Supervisor:
             self.save(failed_commit=None)
         sha = None
         try:
-            url = self.ensure_tunnel()
+            # A saved release can serve locally even while the connector or
+            # internet is unavailable. Do not make crash recovery wait for it.
+            previous_url = self.environment().get("PUBLIC_BASE_URL")
             self.recover()
+            url = self.ensure_tunnel()
+            if self.environment().get("PUBLIC_BASE_URL") != previous_url:
+                # Quick Tunnels can publish a new origin. Reconcile the app's
+                # callback URLs after readiness, preserving the usual drain.
+                self.recover()
             if self.state.get("active_commit"):
                 self.configure_hooks(url)
             sha = self.fetch()

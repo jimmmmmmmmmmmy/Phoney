@@ -1,4 +1,4 @@
-"""Small, single-process call state; no phone numbers or credentials are retained."""
+"""Small, single-process call state; forwarding identity is kept only in memory and excluded from repr."""
 
 from dataclasses import dataclass, field
 import time
@@ -12,6 +12,8 @@ class SessionRejected(Exception):
 class CallSession:
     parent_sid: str
     conference_name: str
+    caller_number: str = field(default="", repr=False)
+    call_token: str = field(default="", repr=False)
     phase: str = "waiting"
     conference_sid: str = ""
     outbound_sid: str = ""

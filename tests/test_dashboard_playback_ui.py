@@ -111,7 +111,7 @@ def test_calls_categories_have_keyboard_accessible_tab_and_panel_relationships()
 
 HARNESS = r'''
 const assert = require('node:assert/strict');
-const elements = new Map(), handlers = new Map();
+const elements = new Map(), handlers = new Map(), documentHandlers = new Map();
 class Element {
  constructor(tag='div') {Object.assign(this,{tag,dataset:{},attributes:{},children:[],textContent:'',hidden:false,
   checked:true,open:false,scrollTop:0,scrollHeight:100,clientHeight:100,events:{},paused:true,ended:false,currentTime:0,duration:120,loads:0,pauses:0,plays:0,rect:{top:10,bottom:50}});
@@ -130,7 +130,8 @@ class Element {
  play() {this.plays++;this.paused=false;this.events.play?.();}
 }
 const document = {activeElement:null,getElementById(id) {assert.ok(markupIds.has(id),'Markup is missing #'+id);if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},
- createElement(tag) {return new Element(tag);},createDocumentFragment() {return new Element('fragment');}};
+ createElement(tag) {return new Element(tag);},createDocumentFragment() {return new Element('fragment');},
+ addEventListener(name,fn) {documentHandlers.set(name,fn);}};
 const historyEntries=[];
 const location={hash:'',pathname:'/dashboard',search:''};
 const history={state:null,pushState(state,unused,url){this.state=state;location.hash=url.includes('#')?'#'+url.split('#')[1]:'';historyEntries.push({state,url});},

@@ -1276,6 +1276,12 @@
       });
     }
     window.addEventListener("pagehide", stopPolling);
+    const refreshVisible = () => {
+      if (!document.hidden) refresh();
+    };
+    window.addEventListener("online", refreshVisible);
+    window.addEventListener("focus", refreshVisible);
+    document.addEventListener("visibilitychange", refreshVisible);
     window.addEventListener("pageshow", event => {
       if (event.persisted) {
         state.paused = false;

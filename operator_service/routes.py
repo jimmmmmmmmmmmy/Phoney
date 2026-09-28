@@ -25,6 +25,7 @@ import json
 from contextlib import asynccontextmanager
 
 import httpx
+from caller_id import forwarding_identity
 from partner_detection.analysis import validate_analysis
 from .internal_agents import internal_snapshot
 
@@ -130,11 +131,12 @@ class TwilioLegs:
             )
         return self._local.client
 
-    async def create_leg(self, *, to: str, twiml: str, status_callback: str) -> str:
+    async def create_leg(self, *, to: str, twiml: str, status_callback: str,
+                         caller_number: str = "", call_token: str = "") -> str:
         def create():
             return self._client().calls.create(
                 to=to,
-                from_=self.settings.twilio_number,
+                **forwarding_identity(self.settings.twilio_number, caller_number, call_token),
                 twiml=twiml,
                 timeout=RING_TIMEOUT_SECONDS,
                 time_limit=int(self.settings.max_call_seconds),
@@ -601,8 +603,8 @@ class OperatorController:
             self.store.spawn(self._dial_owner(session.id))
         return session, reused
 
-    async def start_inbound(self, call_sid, caller):
-        session, reused = await self.store.reserve_inbound(call_sid, caller)
+    async def start_inbound(self, call_sid, caller, call_token=""):
+        session, reused = await self.store.reserve_inbound(call_sid, caller, call_token)
         if not reused:
             self.store.spawn(self._dial_owner(session.id))
             if getattr(self.settings, 'voicemail_agent_enabled', False) and self.voice_ready:
@@ -669,10 +671,13 @@ class OperatorController:
             return
         call_sid = None
         try:
+            forwarding = ({"caller_number": session.to, "call_token": session.call_token}
+                          if session.direction == "inbound" and role == OWNER
+                          and session.call_token else {})
             call_sid = await self.dialer.create_leg(
                 to=destination, twiml=twiml,
                 status_callback=self.settings.public_base_url
-                + f"/twilio/status/{session_id}/{role}")
+                + f"/twilio/status/{session_id}/{role}", **forwarding)
             await self.store.bind_call_sid(session_id, role, call_sid)
         except OperatorRejected as exc:
             log.warning("operator_dial_rejected session=%s role=%s reason=%s",

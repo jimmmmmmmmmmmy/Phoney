@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -14,6 +15,7 @@ from dotenv import load_dotenv
 from config import Settings
 from partner_detection.backfill import BackfillManager, inspect_recordings
 from partner_detection.storage import DetectionStore
+from scripts.dev import base_url
 
 
 def main():
@@ -25,6 +27,7 @@ def main():
     if not args.env_file.is_file():
         raise ValueError('Environment file is unavailable')
     load_dotenv(args.env_file, override=True)
+    local_origin = base_url(os.environ)
     settings = Settings.from_env()
     recordings = inspect_recordings(settings, args.call_sid)
     print(json.dumps({'mode': 'send' if args.send_to_provider else 'dry-run',
@@ -46,7 +49,7 @@ def main():
             # Observe active calls afresh; never infer safety from stale saved files.
             try:
                 async with httpx.AsyncClient(timeout=3) as client:
-                    response = await client.get('http://127.0.0.1:8000/api/transcripts')
+                    response = await client.get(local_origin + '/api/transcripts')
                     response.raise_for_status()
                     snapshot = response.json()
                 active.clear()
@@ -68,6 +71,6 @@ def main():
 if __name__ == '__main__':
     try:
         raise SystemExit(main())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         print('Analysis unavailable; check the explicit environment file and private recording configuration.', file=sys.stderr)
         raise SystemExit(2)

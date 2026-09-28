@@ -336,3 +336,27 @@ $('notifications-button').click();await tick();
 assert.equal(notificationData[0].unread,false);
 assert.equal($('notification-count').hidden,true);
 """,before=PERSISTED_NOTIFICATIONS)
+
+
+def test_notification_history_refreshes_after_network_return_without_overlapping_requests():
+    run_toolbar(r"""
+await tick();
+const original=window.fetch;let release;
+window.fetch=async(...args)=>{await new Promise(resolve=>{release=resolve;});return original(...args);};
+document.hidden=true;
+window.dispatch('online');document.dispatch('visibilitychange',{});await tick();
+assert.equal(release,undefined);
+document.hidden=false;
+window.dispatch('online');
+const first=release;
+window.dispatch('focus');document.dispatch('visibilitychange',{});window.dispatch('online');
+assert.equal(release,first,'Recovery events must share the in-flight notification request');
+notificationData.unshift({...notificationData[0],id:call(10).call_sid});
+release();await tick();
+assert.equal(notificationRequests.length,2);assert.equal(notificationRows().length,2);
+assert.ok(notificationRequests.every(item=>item.method==='GET'),'Reconnect only reads notification history');
+window.fetch=original;
+notificationData.unshift({...notificationData[0],id:call(11).call_sid});
+document.dispatch('visibilitychange',{});await tick();
+assert.equal(notificationRequests.length,3);assert.equal(notificationRows().length,3);
+""",before=PERSISTED_NOTIFICATIONS)

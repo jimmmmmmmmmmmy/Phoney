@@ -1,8 +1,10 @@
 ```sh
-python3 scripts/server.py status
+ssh macmini 'cd "$HOME/Library/Application Support/NewCollegeOperator" && .venv/bin/python scripts/server.py status'
 ```
 
-Run this from the project checkout on the server Mac to check the service location, supervisor, tunnel, and deployed revision. The source repository is [jimmmmmmmmmmmy/fictional-rotary-phone](https://github.com/jimmmmmmmmmmmy/fictional-rotary-phone); the deployment branch is `main`.
+**Permanent production host: Mac mini.** `https://phoney.dev` reaches the mini; the MacBook's old login service is disabled after migration. The mini uses `APP_PORT=18000` with candidate port `18001` because other services already occupy `8000` and `8001`. Run the remaining local server commands below on the mini over SSH. See [network resilience and migration storage](NETWORK_RESILIENCE.md).
+
+Run `python3 scripts/server.py status` from a project checkout on the server Mac to check the service location, supervisor, tunnel, and deployed revision. The source repository is [jimmmmmmmmmmmy/fictional-rotary-phone](https://github.com/jimmmmmmmmmmmy/fictional-rotary-phone); the deployment branch is `main`.
 
 The installed service lives at `~/Library/Application Support/NewCollegeOperator`, independently of your editable project folder. Its logs, releases, and configuration live there. The project's private `.runtime/server-root.json` records that location so `scripts/server.py` commands continue to manage the installed service from the project.
 
@@ -18,6 +20,8 @@ To compare GitHub directly with the running application from this Mac:
 git ls-remote https://github.com/jimmmmmmmmmmmy/fictional-rotary-phone.git refs/heads/main
 curl --silent http://127.0.0.1:8000/health
 ```
+
+The examples use the default app port `8000` and candidate port `8001`. Substitute `18000` and `18001` for the permanent mini installation. `APP_PORT` accepts an integer from 1024 through 65534, excluding overlap with tunnel ports 4040/4041; its candidate always uses the next port. A named Cloudflare ingress configuration must target the same app port. Changing a running app's port requires stopping the service after calls finish and restarting it; the supervisor refuses to replace a live app through the wrong control endpoint.
 
 The GitHub SHA and the health response's `commit` value must match after deployment finishes. A different SHA during `preparing` means the previous healthy app is still serving while the candidate is checked.
 

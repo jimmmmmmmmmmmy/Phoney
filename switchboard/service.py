@@ -7,6 +7,7 @@ import re
 import time
 
 from twilio.base.exceptions import TwilioRestException
+from caller_id import forwarding_identity
 
 from .gateway import TERMINAL_STATUSES, TwilioGateway
 from .models import CallSession, SessionRejected
@@ -60,7 +61,7 @@ class Switchboard:
             # Exception text from providers can contain phone numbers or tokens.
             log.error("switchboard task failed type=%s", type(task.exception()).__name__)
 
-    async def start(self, call_sid, from_number=""):
+    async def start(self, call_sid, from_number="", call_token=""):
         if not CALL_SID.fullmatch(call_sid):
             raise SessionRejected("invalid_call")
         async with self._lock:
@@ -83,7 +84,8 @@ class Switchboard:
                     del self.sessions[sid]
             if len(self.sessions) >= self.MAX_SESSIONS or self.active_count >= self.MAX_ACTIVE:
                 raise SessionRejected("capacity")
-            session = CallSession(call_sid, f"operator-{call_sid}")
+            session = CallSession(call_sid, f"operator-{call_sid}",
+                                  caller_number=from_number, call_token=call_token)
             self.sessions[call_sid] = session
             self._deadlines[call_sid] = asyncio.create_task(self._deadline(call_sid))
             return session
@@ -187,7 +189,8 @@ class Switchboard:
                 return
             if not s.outbound_sid:
                 verified_endpoints = (
-                    form.get("From") == self.settings.twilio_number
+                    form.get("From") == forwarding_identity(
+                        self.settings.twilio_number, s.caller_number, s.call_token)["from_"]
                     and form.get("To") == self.settings.callee_number
                     and form.get("Direction") in {"outbound-api", "outbound-dial"}
                 )
@@ -265,7 +268,10 @@ class Switchboard:
             if s.phase in {"ended", "voicemail"}:
                 return
         try:
-            sid = await self.gateway.create_participant(s.conference_sid, s.parent_sid)
+            forwarding = ({"caller_number": s.caller_number, "call_token": s.call_token}
+                          if s.call_token else {})
+            sid = await self.gateway.create_participant(
+                s.conference_sid, s.parent_sid, **forwarding)
             if not isinstance(sid, str) or not CALL_SID.fullmatch(sid) or sid == s.parent_sid:
                 raise ValueError("invalid outbound SID")
         except asyncio.CancelledError:

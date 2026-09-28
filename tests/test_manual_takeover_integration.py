@@ -380,6 +380,34 @@ def test_signed_global_terminal_status_cleans_operator_and_pipeline(manual_app, 
         assert dialer.ended == [session.legs[OWNER].call_sid]
 
 
+def test_terminal_status_during_stream_start_does_not_recreate_router(manual_app, monkeypatch):
+    client, settings, dialer, stt, providers = manual_app
+    controller = client.app.state.operator_controller
+    original = controller._notify_started
+    entered, release, resumed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def delayed_start(session):
+        await original(session)
+        entered.set()
+        await release.wait()
+        resumed.set()
+
+    monkeypatch.setattr(controller, "_notify_started", delayed_start)
+    try:
+        with inbound_sockets(client, settings) as (session, owner, remote):
+            until(client, entered.is_set)
+            assert terminal(client, settings).status_code == 204
+            assert session.phase == ENDED
+            assert session.id not in controller.routers
+            client.portal.call(release.set)
+            until(client, resumed.is_set)
+            settle(client)
+            assert session.id not in controller.routers
+            assert not client.app.state.bridge_pipeline.active_call_ids
+    finally:
+        client.portal.call(release.set)
+
+
 def test_default_flags_keep_existing_passive_conference_flow(tmp_path):
     settings = replace(SETTINGS, callee_number=OWNER_NUMBER,
                        workspace_storage_dir=str(tmp_path / "workspace"))

@@ -24,6 +24,9 @@ def write_log_record(path, prefix=b"", content=None, pid=123):
 
 @pytest.fixture
 def sandbox(tmp_path, monkeypatch):
+    # Quick Tunnel discovery must inspect the test's home, not the developer's
+    # existing named-tunnel configuration on the deployment host.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(dev, "ROOT", tmp_path)
     monkeypatch.setattr(dev, "RUNTIME", tmp_path / ".runtime")
     monkeypatch.setattr(dev, "STATE", tmp_path / ".runtime/dev.json")

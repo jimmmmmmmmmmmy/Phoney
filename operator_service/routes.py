@@ -708,11 +708,17 @@ class OperatorController:
         if session.voicemail:
             if role == REMOTE:
                 await self._notify_started(session)
+                if not session.active:
+                    return
                 await self._resume_voicemail(session_id)
             return
         if session.direction == "inbound":
             if role == REMOTE:
                 await self._notify_started(session)
+                # Storage/provider startup can yield to a terminal callback.
+                # Never recreate the router that its cleanup just removed.
+                if not session.active:
+                    return
             router = self.router(session_id)
             # Answering the incoming call is the owner's acceptance. Either
             # stream may arrive first, but neither microphone crosses until
@@ -733,6 +739,8 @@ class OperatorController:
         if not session.canonical_call_sid:
             session.canonical_call_sid = session.legs[REMOTE].call_sid
         await self._notify_started(session)
+        if not session.active:
+            return
         if await self.store.mark_connected(session_id):
             self.router(session_id).stop_cue()
             log.info("operator_connected session=%s", session_id)

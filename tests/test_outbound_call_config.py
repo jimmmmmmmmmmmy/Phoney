@@ -40,7 +40,7 @@ def test_demo_access_and_bearer_do_not_disclose_owner_call_configuration(tmp_pat
         for headers in ({}, HEADERS, {"X-Agent-Request": "1"}):
             response = client.get("/api/calls/config", headers=headers)
             assert response.status_code == 200
-            assert response.json() == {"authenticated": False, "enabled": True,
+            assert response.json() == {"authenticated": False, "enabled": True, "public_calling": False,
                 "owner_label": None, "destinations": [], "countries": [],
                 "active_session": None, "busy": False}
             assert response.headers["cache-control"] == "no-store"
@@ -56,7 +56,7 @@ def test_owner_can_recover_ringing_call_without_origin_and_end_with_csrf_headers
     with bridge_client(managed_settings(tmp_path)) as (client, dialer, settings):
         unlock(client, settings)
         before = client.get("/api/calls/config").json()
-        assert before == {"authenticated": True, "enabled": True,
+        assert before == {"authenticated": True, "enabled": True, "public_calling": False,
             "owner_label": "•••• 0101", "destinations": [DESTINATION],
             "countries": [], "active_session": None, "busy": False}
         key = str(uuid.uuid4())
@@ -164,7 +164,7 @@ def test_inbound_call_makes_dialer_busy_without_becoming_an_outbound_control(tmp
 
 def test_disabled_agent_management_has_no_owner_calling_ui():
     with bridge_client() as (client, dialer, settings):
-        assert client.get("/api/calls/config").json() == {"authenticated": False, "enabled": False,
+        assert client.get("/api/calls/config").json() == {"authenticated": False, "enabled": False, "public_calling": False,
             "owner_label": None, "destinations": [], "countries": [],
             "active_session": None, "busy": False}
         assert dialer.created == []

@@ -44,6 +44,7 @@ class Settings:
     owner_number: str = field(default="", repr=False)
     allowed_destinations: tuple[str, ...] = ()
     allowed_destination_countries: tuple[str, ...] = ()
+    public_calling_enabled: bool = False
     operator_admin_token: str = field(default="", repr=False)
     max_call_seconds: int = 1800
     voice_agent_enabled: bool = False
@@ -142,6 +143,8 @@ class Settings:
             raise ValueError("ALLOWED_DESTINATION_COUNTRIES supports US only, listed once, or an empty value.")
         if self.operator_admin_token and len(self.operator_admin_token) < 32:
             raise ValueError("OPERATOR_ADMIN_TOKEN must contain at least 32 characters.")
+        if type(self.public_calling_enabled) is not bool:
+            raise ValueError("PUBLIC_CALLING_ENABLED must be true or false.")
         if type(self.max_call_seconds) is not int or not 30 <= self.max_call_seconds <= 14400:
             raise ValueError("MAX_CALL_SECONDS must be between 30 and 14400 seconds.")
         if type(self.voice_agent_enabled) is not bool:
@@ -229,6 +232,9 @@ class Settings:
     @classmethod
     def from_env(cls):
         load_dotenv(ROOT / ".env")
+        public_calling_flag = os.getenv("PUBLIC_CALLING_ENABLED", "false").strip().lower()
+        if public_calling_flag not in {"true", "false"}:
+            raise ValueError("PUBLIC_CALLING_ENABLED must be true or false.")
         capture_flag = os.getenv("MEDIA_CAPTURE_ENABLED", "false").strip().lower()
         if capture_flag not in {"true", "false"}:
             raise ValueError("MEDIA_CAPTURE_ENABLED must be true or false.")
@@ -298,6 +304,7 @@ class Settings:
                 value.strip().upper() for value in os.getenv("ALLOWED_DESTINATION_COUNTRIES", "").split(",")
                 if value.strip()),
             operator_admin_token=os.getenv("OPERATOR_ADMIN_TOKEN", "").strip(),
+            public_calling_enabled=public_calling_flag == "true",
             max_call_seconds=int(os.getenv("MAX_CALL_SECONDS", "1800")),
             voice_agent_enabled=voice_flag == "true",
             agent_management_enabled=management_flag == "true",

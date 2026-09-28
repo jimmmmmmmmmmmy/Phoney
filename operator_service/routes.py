@@ -25,7 +25,7 @@ import json
 from contextlib import asynccontextmanager
 
 import httpx
-from agent_registry.auth import SAFE_HEADERS, owner_authenticated
+from agent_registry.auth import SAFE_HEADERS, owner_authenticated, require_agent_origin
 from caller_id import forwarding_identity
 from partner_detection.analysis import validate_analysis
 from .internal_agents import internal_snapshot
@@ -1351,11 +1351,13 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
     app.state.operator_controller = controller
     validate_twilio = twilio_validator(settings)
 
-    async def require_admin(request: Request):
+    def admin_authenticated(request: Request):
         token = str(getattr(settings, "operator_admin_token", ""))
-        valid_admin = bool(token and hmac.compare_digest(
+        return bool(token and hmac.compare_digest(
                 request.headers.get("authorization", "").encode(), ("Bearer " + token).encode()))
-        if not valid_admin:
+
+    async def require_admin(request: Request):
+        if not admin_authenticated(request):
             if require_owner is None or not getattr(settings, "agent_management_enabled", False):
                 raise HTTPException(403, "Owner authentication required")
             authorized = (await require_owner(request) if inspect.iscoroutinefunction(require_owner)
@@ -1363,26 +1365,60 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
             if authorized is False:
                 raise HTTPException(403, "Owner authentication required")
 
+    def owner_management_enabled():
+        return bool(getattr(settings, "agent_management_enabled", False)
+                    and registry is not None and registry.enabled)
+
+    async def owner_access(request: Request):
+        return (owner_management_enabled()
+                and await asyncio.to_thread(owner_authenticated, request, registry))
+
+    async def require_call_access(request: Request):
+        """Return full owner/admin access or limited, explicitly enabled public access."""
+        if not getattr(settings, "public_calling_enabled", False):
+            await require_admin(request)
+            return True
+        if admin_authenticated(request):
+            return True
+        if request.method not in {"GET", "HEAD"}:
+            require_agent_origin(request, settings)
+        return bool(await owner_access(request))
+
+    def visible_session(session_id, full_access):
+        session = store.find(session_id)
+        if session is None:
+            raise HTTPException(404, "Unknown session")
+        if not full_access and session.direction != "outbound":
+            raise HTTPException(403, "Owner authentication required")
+        return session
+
+    def call_status_view(session, full_access):
+        status = session.to_status()
+        if full_access:
+            return status
+        # Public dialing never exposes goals, transcripts, agent state, or leg
+        # identifiers. The destination is already masked by to_status().
+        return {key: status[key] for key in ("id", "direction", "to", "phase", "ended_reason")}
+
     @app.get("/api/calls/config")
     async def call_config(request: Request):
-        # Public demo access to agent settings never confers calling authority.
-        # A read needs no Origin header; the existing write routes still require
-        # the real owner cookie plus the same-origin request marker.
-        managed = bool(getattr(settings, "agent_management_enabled", False)
-                       and registry is not None and registry.enabled)
-        authenticated = managed and await asyncio.to_thread(owner_authenticated, request, registry)
+        # Public agent editing and public calling are independent opt-ins.
+        authenticated = bool(await owner_access(request))
+        public_calling = bool(getattr(settings, "public_calling_enabled", False))
         result = {"authenticated": bool(authenticated),
-                  "enabled": bool(managed and store.ready and (store.allowed or store.allowed_countries)),
+                  "public_calling": public_calling,
+                  "enabled": bool((owner_management_enabled() or public_calling)
+                                  and store.ready and (store.allowed or store.allowed_countries)),
                   "owner_label": None, "destinations": [], "countries": [],
                   "active_session": None, "busy": False}
-        if authenticated:
+        if authenticated or public_calling:
             active = next((session for session in store.sessions.values()
                            if session.active and session.direction == "outbound"), None)
             result.update(owner_label=("•••• " + settings.owner_number[-4:]
                                        if settings.owner_number else None),
                           destinations=list(settings.allowed_destinations),
                           countries=sorted(store.allowed_countries),
-                          active_session=active.to_status() if active is not None else None,
+                          active_session=call_status_view(active, authenticated) if active is not None else None,
                           busy=store.active_count > 0)
         return JSONResponse(result, headers=SAFE_HEADERS)
 
@@ -1410,7 +1446,7 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
                              "slot": payload["slot"], "changed": changed},
                             headers={"Cache-Control": "no-store"})
 
-    @app.post("/api/calls/outbound", status_code=202, dependencies=[Depends(require_admin)])
+    @app.post("/api/calls/outbound", status_code=202, dependencies=[Depends(require_call_access)])
     async def outbound(request: Request):
         if not store.ready:
             raise HTTPException(503, "The operator bridge is not configured")
@@ -1559,12 +1595,10 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
             "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
             "Content-Disposition": f'inline; filename="{call_sid}-voicemail.wav"'})
 
-    @app.get("/api/sessions/{session_id}", dependencies=[Depends(require_admin)])
-    async def session_status(session_id: str):
-        session = store.find(session_id)
-        if session is None:
-            raise HTTPException(404, "Unknown session")
-        return JSONResponse(session.to_status(), headers={"Cache-Control": "no-store"})
+    @app.get("/api/sessions/{session_id}")
+    async def session_status(session_id: str, full_access: bool = Depends(require_call_access)):
+        session = visible_session(session_id, full_access)
+        return JSONResponse(call_status_view(session, full_access), headers=SAFE_HEADERS)
 
     @app.post("/api/sessions/{session_id}/mode", dependencies=[Depends(require_admin)])
     async def session_mode(session_id: str, request: Request):
@@ -1585,12 +1619,13 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
         return JSONResponse({"session_id": session_id, "mode": store.find(session_id).mode,
                              "changed": changed}, headers={"Cache-Control": "no-store"})
 
-    @app.post("/api/sessions/{session_id}/end", dependencies=[Depends(require_admin)])
-    async def session_end(session_id: str):
+    @app.post("/api/sessions/{session_id}/end")
+    async def session_end(session_id: str, full_access: bool = Depends(require_call_access)):
+        visible_session(session_id, full_access)
         try:
             session = await controller.end(session_id, "admin-end")
         except OperatorRejected as exc:
             raise HTTPException(404, "Unknown session") from None
-        return JSONResponse(session.to_status(), headers={"Cache-Control": "no-store"})
+        return JSONResponse(call_status_view(session, full_access), headers=SAFE_HEADERS)
 
     return controller

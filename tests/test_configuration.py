@@ -50,6 +50,8 @@ BASE = dict(account_sid="AC" + "1" * 32, auth_token="test-auth",
     {"owner_number": "+15555550100", "twilio_number": "+15555550101",
      "allowed_destinations": ("+15555550100",)},
     {"operator_admin_token": "too-short"},
+    {"public_calling_enabled": "true"},
+    {"public_calling_enabled": 1},
     {"max_call_seconds": 29},
     {"max_call_seconds": 14401},
     {"max_call_seconds": True},
@@ -140,6 +142,7 @@ def test_country_dialing_requires_explicit_us_configuration(monkeypatch):
     monkeypatch.setattr("config.load_dotenv", lambda *args: None)
     monkeypatch.setattr("config.os.getenv", lambda name, default=None: env.get(name, default))
     assert Settings.from_env().allowed_destination_countries == ()
+    assert Settings.from_env().public_calling_enabled is False
     assert Settings.from_env().operator_ready is False
     env["ALLOWED_DESTINATION_COUNTRIES"] = " us "
     configured = Settings.from_env()
@@ -148,4 +151,19 @@ def test_country_dialing_requires_explicit_us_configuration(monkeypatch):
     assert configured.operator_ready is True
     env["ALLOWED_DESTINATION_COUNTRIES"] = "US,CA"
     with pytest.raises(ValueError, match="ALLOWED_DESTINATION_COUNTRIES"):
+        Settings.from_env()
+
+
+def test_public_calling_requires_explicit_boolean_env_flag(monkeypatch):
+    env = {"TWILIO_ACCOUNT_SID": BASE["account_sid"], "TWILIO_AUTH_TOKEN": BASE["auth_token"],
+           "PUBLIC_BASE_URL": BASE["public_base_url"]}
+    monkeypatch.setattr("config.load_dotenv", lambda *args: None)
+    monkeypatch.setattr("config.os.getenv", lambda name, default=None: env.get(name, default))
+    assert Settings.from_env().public_calling_enabled is False
+    env["PUBLIC_CALLING_ENABLED"] = " true "
+    assert Settings.from_env().public_calling_enabled is True
+    env["PUBLIC_CALLING_ENABLED"] = "false"
+    assert Settings.from_env().public_calling_enabled is False
+    env["PUBLIC_CALLING_ENABLED"] = "yes"
+    with pytest.raises(ValueError, match="PUBLIC_CALLING_ENABLED"):
         Settings.from_env()

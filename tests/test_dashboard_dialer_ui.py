@@ -50,7 +50,7 @@ const setInterval = callback => intervals.push(callback);
 const setTimeout = (callback, ms) => {timeouts.set(++timeoutId, {callback, ms}); return timeoutId;};
 const clearTimeout = id => timeouts.delete(id);
 const requests = [], sid = 'a'.repeat(32), destination = '+14155550123';
-let currentConfig = {authenticated: true, enabled: true, owner_label: '•••• 0101', destinations: [destination], countries: [], active_session: null, busy: false};
+let currentConfig = {authenticated: true, public_calling: false, enabled: true, owner_label: '•••• 0101', destinations: [destination], countries: [], active_session: null, busy: false};
 let currentSession = null, handler = null;
 const clone = value => JSON.parse(JSON.stringify(value));
 const response = (body, status = 200) => ({ok: status < 400, status, json: async () => clone(body)});
@@ -95,7 +95,7 @@ def run_dialer(checks, *, before=""):
     assert result.returncode == 0, result.stderr
 
 
-def test_public_dashboard_requires_actual_owner_unlock_and_sends_no_admin_secret():
+def test_private_calling_requires_actual_owner_unlock_and_sends_no_admin_secret():
     run_dialer(r"""
 assert.equal($('dialer-unlock-form').hidden, false);
 assert.equal($('dialer-call-form').hidden, true);
@@ -115,6 +115,72 @@ assert.equal(requests.some(request => 'Authorization' in request.headers), false
 $('dialer-close').click();
 assert.equal(document.activeElement, $('dialer-button'));
 """, before="currentConfig.authenticated = false; currentConfig.demoMode = true;")
+
+
+def test_public_calling_allows_visitors_to_start_and_end_without_an_access_code():
+    run_dialer(r"""
+assert.equal(currentConfig.authenticated, false);
+assert.equal($('dialer-unlock-form').hidden, true);
+assert.equal($('dialer-call-form').hidden, false);
+assert.equal($('dialer-start').textContent, "Call owner's phone");
+assert.match(text($('dialer-description')), /ring the owner's phone first/);
+$('dialer-button').click();
+$('dialer-number').value = destination;
+await submit('dialer-call-form');
+assert.equal(outbound().length, 1);
+assert.equal(writes().some(request => request.url === '/api/agents/session'), false);
+assert.equal(outbound()[0].headers['X-Agent-Request'], '1');
+assert.equal(currentConfig.authenticated, false, 'Public access never pretends to authenticate the visitor');
+assert.match(text($('dialer-status')), /Ringing the owner's phone/);
+currentSession.phase = 'owner_prompt';
+window.dispatch('focus'); await settle();
+assert.match(text($('dialer-status')), /Waiting for the owner/);
+assert.match(text($('dialer-status')), /owner must press 1/);
+currentSession.phase = 'connected';
+window.dispatch('focus'); await settle();
+assert.match(text($('dialer-status')), /owner and the other person are connected/);
+$('dialer-end').click(); await settle();
+assert.equal(writes().length, 2);
+assert.equal(writes()[1].url, `/api/sessions/${sid}/end`);
+assert.match(text($('dialer-status')), /Call ended/);
+assert.equal($('dialer-unlock-form').hidden, true);
+""", before="currentConfig.authenticated = false; currentConfig.public_calling = true; currentConfig.countries = ['US']; currentConfig.destinations = [];")
+
+
+def test_public_calling_recovers_minimal_status_after_reload_and_network_change():
+    run_dialer(r"""
+assert.equal($('dialer-button').textContent, 'Call in progress');
+assert.equal($('dialer-status').hidden, false);
+assert.equal($('dialer-end').hidden, false);
+assert.match(text($('dialer-status')), /Connected/);
+navigator.onLine = false; window.dispatch('offline');
+assert.equal($('dialer-end').disabled, true);
+assert.match(text($('dialer-dialog')), /phone call can continue/);
+navigator.onLine = true; window.dispatch('online'); await settle();
+assert.equal($('dialer-end').disabled, false);
+currentConfig.active_session = null; currentConfig.busy = false;
+currentSession = {id: sid, direction: 'outbound', phase: 'ended', ended_reason: 'owner-no-answer'};
+window.dispatch('focus'); await settle();
+assert.match(text($('dialer-status')), /owner's phone wasn't answered/);
+assert.equal($('dialer-another').hidden, false);
+assert.equal(writes().length, 0, 'Recovery never requires an unlock or starts another call');
+""", before="currentConfig.authenticated = false; currentConfig.public_calling = true; currentSession = {id: sid, direction: 'outbound', phase: 'connected', ended_reason: ''}; currentConfig.active_session = currentSession; currentConfig.busy = true;")
+
+
+def test_switching_public_calling_off_does_not_leave_an_anonymous_call_control():
+    run_dialer(r"""
+assert.equal($('dialer-end').hidden, false);
+currentConfig.public_calling = false; currentConfig.active_session = null;
+window.dispatch('focus'); await settle();
+assert.equal($('dialer-unlock-form').hidden, false);
+assert.equal($('dialer-call-form').hidden, true);
+assert.equal($('dialer-status').hidden, true);
+assert.equal($('dialer-end').hidden, true);
+$('dialer-number').value = destination;
+await submit('dialer-call-form');
+$('dialer-end').click(); await settle();
+assert.equal(writes().length, 0);
+""", before="currentConfig.authenticated = false; currentConfig.public_calling = true; currentConfig.active_session = {id: sid, phase: 'connected'}; currentConfig.busy = true;")
 
 
 def test_call_lifecycle_closing_keeps_call_running_and_end_is_explicit():

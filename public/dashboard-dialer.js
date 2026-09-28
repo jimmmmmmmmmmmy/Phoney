@@ -1,4 +1,4 @@
-/* Owner-only callback calling. Audio stays on the two phones, including offline. */
+/* Callback calling with optional public access. Audio stays on the two phones. */
 (() => {
   "use strict";
   const PHONE = /^\+[1-9][0-9]{7,14}$/;
@@ -24,6 +24,8 @@
   }
   const online = () => navigator.onLine !== false;
   const active = () => Boolean(session && session.phase !== "ended");
+  const canCall = () => Boolean(config?.authenticated || config?.public_calling);
+  const visitor = () => Boolean(config?.public_calling && !config?.authenticated);
   const setText = (element, value) => {if (element.textContent !== value) element.textContent = value;};
   function adopt(value) {
     if (!value || !SESSION.test(value.id)) return;
@@ -50,20 +52,23 @@
 
   function render() {
     const authenticated = Boolean(config?.authenticated);
+    const allowed = canCall(), publicVisitor = visitor();
     const hasCall = Boolean(session);
     trigger.textContent = active() ? "Call in progress" : "New call";
     trigger.setAttribute("data-active", String(active()));
-    description.textContent = authenticated && config.owner_label
+    description.textContent = publicVisitor
+      ? "We'll ring the owner's phone first. Once they answer and press 1, we'll connect the other person."
+      : authenticated && config.owner_label
       ? `We'll ring your phone (${config.owner_label}) first. Answer and press 1 to connect the other person.`
-      : "We'll ring your phone first. Answer and press 1 to connect the other person.";
+      : "The owner's phone rings first. Once they answer and press 1, the other person is called.";
     loading.hidden = config !== null;
-    unlockForm.hidden = config === null || authenticated;
+    unlockForm.hidden = config === null || allowed;
     code.disabled = mutation;
     unlockButton.disabled = mutation || !online();
     unlockButton.textContent = mutation ? "Unlocking…" : "Unlock calling";
-    setup.hidden = !authenticated || config.enabled || hasCall;
+    setup.hidden = !allowed || config.enabled || hasCall;
     setup.textContent = "Calling is not set up yet. Ask the owner to enable outbound calling and approve a phone number.";
-    callForm.hidden = !authenticated || !config.enabled || hasCall;
+    callForm.hidden = !allowed || !config.enabled || hasCall;
     numberHelp.textContent = config?.countries?.includes("US")
       ? "Enter a US phone number with +1 and the area code."
       : "Choose an approved number, including its country code.";
@@ -72,38 +77,40 @@
     number.disabled = mutation;
     goal.disabled = mutation;
     callButton.disabled = mutation || !online() || Boolean(config?.busy && !active());
-    callButton.textContent = mutation ? "Starting call…" : attempt ? "Retry same request" : "Call my phone";
-    status.hidden = !authenticated || !hasCall;
+    callButton.textContent = mutation ? "Starting call…" : attempt ? "Retry same request" : publicVisitor ? "Call owner's phone" : "Call my phone";
+    status.hidden = !allowed || !hasCall;
     status.setAttribute("data-ended", String(session?.phase === "ended"));
     const phases = {
-      reserved: ["Ringing your phone", "Answer your phone and press 1 to continue."],
-      owner_ringing: ["Ringing your phone", "Answer your phone and press 1 to continue."],
-      owner_prompt: ["Press 1 on your phone", "Press 1 to call the other person. They haven't been called yet."],
-      remote_setup: ["Calling the other person", "Stay on the line while their phone rings."],
-      connected: ["Connected", "Speak and listen on your phone. You can close this window; the call will continue."],
+      reserved: publicVisitor ? ["Ringing the owner's phone", "The owner needs to answer and press 1 to continue."] : ["Ringing your phone", "Answer your phone and press 1 to continue."],
+      owner_ringing: publicVisitor ? ["Ringing the owner's phone", "The owner needs to answer and press 1 to continue."] : ["Ringing your phone", "Answer your phone and press 1 to continue."],
+      owner_prompt: publicVisitor ? ["Waiting for the owner", "The owner must press 1 before the other person is called."] : ["Press 1 on your phone", "Press 1 to call the other person. They haven't been called yet."],
+      remote_setup: ["Calling the other person", publicVisitor ? "The owner is on the line while the other person's phone rings." : "Stay on the line while their phone rings."],
+      connected: ["Connected", publicVisitor ? "The owner and the other person are connected. You can close this window; the call will continue." : "Speak and listen on your phone. You can close this window; the call will continue."],
       ended: ["Call ended", endedMessage(session?.ended_reason)]
     };
-    const phase = phases[session?.phase] || ["Checking call status", "Your call continues on your phone."];
+    const phase = phases[session?.phase] || ["Checking call status", "The call continues on the phones."];
     setText(statusTitle, phase[0]);
     setText(statusBody, phase[1]);
-    endButton.hidden = !authenticated || !active();
+    endButton.hidden = !allowed || !active();
     endButton.disabled = mutation || !online();
     endButton.textContent = mutation ? "Ending…" : "End call";
-    anotherButton.hidden = !authenticated || !hasCall || active();
+    anotherButton.hidden = !allowed || !hasCall || active();
     anotherButton.disabled = mutation;
     dialogActions.hidden = endButton.hidden && anotherButton.hidden;
     offline.hidden = online();
     setText(offline, active()
-      ? "You're offline. Your phone call can continue. Status will reconnect when you're online."
+      ? "You're offline. The phone call can continue. Status will reconnect when you're online."
       : "You're offline. Reconnect to start a call or check its status.");
-    setText(errorBox, error || (authenticated && config.busy && !hasCall ? "Another call is in progress. Wait for it to finish before starting a new call." : ""));
+    setText(errorBox, error || (allowed && config.busy && !hasCall ? "Another call is in progress. Wait for it to finish before starting a new call." : ""));
     errorBox.hidden = !errorBox.textContent;
   }
 
   function endedMessage(reason) {
     if (reason === "remote-busy") return "The other person's line was busy.";
     if (reason === "remote-no-answer") return "The other person didn't answer.";
-    if (/owner-no-answer|owner-ring|owner-accept/.test(reason || "")) return "Your phone wasn't answered or the call wasn't accepted. You can try again.";
+    if (/owner-no-answer|owner-ring|owner-accept/.test(reason || "")) return visitor()
+      ? "The owner's phone wasn't answered or the call wasn't accepted. You can try again."
+      : "Your phone wasn't answered or the call wasn't accepted. You can try again.";
     if (/failed|timeout|error|setup/.test(reason || "")) return "The call could not connect. You can try again.";
     return "Both phone connections have been closed.";
   }
@@ -120,7 +127,7 @@
         choices.replaceChildren(...(config.destinations || []).map(value => {
           const option = node("option"); option.value = value; return option;
         }));
-        if (!config.authenticated) {session = null; attempt = null;}
+        if (!canCall()) {session = null; attempt = null;}
         else if (config.active_session) {if (attempt) error = ""; adopt(config.active_session);}
         else if (session && session.phase !== "ended") {
           try {
@@ -130,13 +137,14 @@
             if (revision !== generation) return;
             if (failure.status === 404) {
               session = null;
-              error = "This call is no longer available. Check your phone before starting another call.";
+              error = visitor() ? "This call is no longer available. Check with the owner before starting another call."
+                : "This call is no longer available. Check your phone before starting another call.";
             } else throw failure;
           }
         }
       } catch (_) {
         if (revision === generation) {readError = true; error = active()
-          ? "Call status is unavailable. Your phone call can continue; status will reconnect automatically."
+          ? "Call status is unavailable. The phone call can continue; status will reconnect automatically."
           : "Calling is unavailable right now. Check your connection and try again.";}
       } finally {refreshing = null; render(); if (revision !== generation && !mutation) refresh();}
     })();
@@ -158,7 +166,7 @@
 
   async function start(event) {
     event.preventDefault();
-    if (mutation || active() || !config?.authenticated || !config.enabled || config.busy || !online()) return;
+    if (mutation || active() || !canCall() || !config.enabled || config.busy || !online()) return;
     if (!attempt) {
       const to = number.value.trim().replace(/[\s().-]/g, "");
       if (!PHONE.test(to)) {error = "Enter a phone number with its country code, such as +14155550123."; render(); number.focus(); return;}
@@ -179,23 +187,25 @@
       if (failure.status && failure.status < 500) {
         attempt = null;
         error = failure.message.includes("destination-not-allowed") ? (config.countries?.includes("US")
-          ? "Enter an allowed US phone number. Your own phone and the service number cannot be called."
-          : "Choose an approved number. Your own phone and the service number cannot be called.")
-          : failure.status === 403 ? "Unlock calling again, or choose an approved number."
+          ? "Enter an allowed US phone number. The owner's phone and the service number cannot be called."
+          : "Choose an approved number. The owner's phone and the service number cannot be called.")
+          : failure.status === 403 ? (visitor() ? "Calling is unavailable for this request. Refresh the page and try again." : "Unlock calling again, or choose an approved number.")
           : failure.status === 429 || failure.status === 409 ? "Another call is already in progress. Its status will appear here."
           : failure.message;
-      } else error = "We couldn't confirm whether the call started. Check your phone before retrying.";
+      } else error = visitor() ? "We couldn't confirm whether the call started. Check with the owner before retrying."
+        : "We couldn't confirm whether the call started. Check your phone before retrying.";
     } finally {mutation = false; generation++; render();}
     // Reconcile reads only. Never automatically retry the call-creation request.
     await refresh();
   }
 
   async function end() {
-    if (mutation || !active() || !online()) return;
+    if (mutation || !active() || !canCall() || !online()) return;
     const id = session.id;
     mutation = true; generation++; error = ""; readError = false; render();
     try {adopt(await request(`/api/sessions/${id}/end`, {method: "POST"}));}
-    catch (_) {error = "Could not confirm the call ended. Check your phone or try End call again.";}
+    catch (_) {error = visitor() ? "Could not confirm the call ended. Check with the owner or try End call again."
+      : "Could not confirm the call ended. Check your phone or try End call again.";}
     finally {mutation = false; generation++; render();}
     await refresh();
   }

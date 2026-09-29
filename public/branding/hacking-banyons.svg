@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="160" height="36" viewBox="0 0 160 36" role="img" aria-labelledby="logo-title">
   <title id="logo-title">Phoney</title>
-  <g transform="translate(0 3) scale(1.25)" fill="none" stroke="#202944" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <g transform="translate(0 3) scale(1.25)" fill="none" stroke="#041e42" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <path d="M7 3H4a1 1 0 0 0-1 1c0 9.4 7.6 17 17 17a1 1 0 0 0 1-1v-3l-5-2-2 2a13 13 0 0 1-7-7l2-2-2-5Z"/>
   </g>
-  <text x="40" y="27" fill="#202944" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" letter-spacing="-1">Phoney</text>
+  <text x="40" y="27" fill="#041e42" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" letter-spacing="-1">Phoney</text>
 </svg>

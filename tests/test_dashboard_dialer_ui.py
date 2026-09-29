@@ -25,10 +25,12 @@ class Element {
   dispatch(type, event = {}) {event.target ||= this; event.preventDefault ||= () => {}; for (const callback of this.listeners[type] || []) callback(event);}
   click() {if (!this.disabled) this.dispatch('click');}
   focus() {document.activeElement = this;}
-  showModal() {this.open = true;}
+  show() {this.open = true; this.presentation = 'nonmodal';}
+  showModal() {throw new Error('The floating dialer must not block site navigation with showModal()');}
   close() {this.open = false; this.dispatch('close');}
   requestSubmit() {this.dispatch('submit');}
   all() {return [this, ...this.children.flatMap(child => child.all())];}
+  contains(target) {return this === target || this.children.some(child => child.contains(target));}
 }
 const document = {
   body: new Element('body'), hidden: false, readyState: 'complete', listeners: {},
@@ -86,6 +88,7 @@ const enterNumber = value => {
   for (const digit of value.replace(/[+\s().-]/g, '')) $('dialer-key-' + (digit === '*' ? 'star' : digit === '#' ? 'hash' : digit)).click();
 };
 const press = (key, target = $('dialer-number'), extra = {}) => $('dialer-dialog').dispatch('keydown', {key, target, ...extra});
+const panelContent = () => $('dialer-dialog').all().find(item => item.className.split(' ').includes('dialer-content'));
 """
 
 
@@ -119,8 +122,9 @@ assert.deepEqual(JSON.parse(unlock.body), {code: 'one-time-code'});
 assert.equal(unlock.headers['X-Agent-Request'], '1');
 assert.equal(unlock.credentials, 'same-origin');
 assert.equal(requests.some(request => 'Authorization' in request.headers), false);
-$('dialer-close').click();
-assert.equal(document.activeElement, $('dialer-button'));
+$('dialer-minimize').click();
+assert.equal(panelContent().hidden, true);
+assert.equal($('dialer-restore').hidden, false);
 """, before="currentConfig.authenticated = false; currentConfig.demoMode = true;")
 
 
@@ -130,7 +134,7 @@ assert.equal(currentConfig.authenticated, false);
 assert.equal($('dialer-unlock-form').hidden, true);
 assert.equal($('dialer-call-form').hidden, false);
 assert.equal($('dialer-start').getAttribute('aria-label'), "Call owner's phone");
-assert.match(text($('dialer-description')), /ring the owner's phone first/);
+assert.equal($('dialer-description'), undefined);
 $('dialer-button').click();
 enterNumber(destination);
 await submit('dialer-call-form');
@@ -190,25 +194,39 @@ assert.equal(writes().length, 0);
 """, before="currentConfig.authenticated = false; currentConfig.public_calling = true; currentConfig.active_session = {id: sid, phase: 'connected'}; currentConfig.busy = true;")
 
 
-def test_call_lifecycle_closing_keeps_call_running_and_end_is_explicit():
+def test_call_lifecycle_minimizing_keeps_call_running_and_navigation_available():
     run_dialer(r"""
 $('dialer-button').click();
+assert.equal($('dialer-dialog').presentation, 'nonmodal');
 enterNumber('4155550123');
-$('dialer-goal').value = 'Discuss our meeting';
 await submit('dialer-call-form');
-assert.deepEqual(JSON.parse(outbound()[0].body), {to: destination, goal: 'Discuss our meeting'});
+assert.deepEqual(JSON.parse(outbound()[0].body), {to: destination, goal: ''});
 assert.equal(outbound()[0].headers['X-Agent-Request'], '1');
 assert.equal(outbound()[0].headers['Idempotency-Key'], '12345678-1234-1234-1234-000000000001');
 assert.match(text($('dialer-status')), /Ringing your phone/);
 assert.equal($('dialer-call-form').hidden, true);
-$('dialer-close').click();
-assert.equal(writes().length, 1, 'Closing never ends a call');
+$('dialer-minimize').click();
+assert.equal($('dialer-dialog').getAttribute('data-minimized'), 'true');
+assert.equal(panelContent().hidden, true);
+assert.equal($('dialer-restore').hidden, false);
+assert.equal(writes().length, 1, 'Minimizing never ends a call');
+const navigation = new Element('button'); let navigated = 0;
+navigation.addEventListener('click', () => navigated++); document.body.append(navigation);
+navigation.focus(); navigation.click();
+assert.equal(navigated, 1);
 for (const [phase, expected] of [['owner_prompt', 'Press 1 on your phone'], ['remote_setup', 'Calling the other person'], ['connected', 'Connected']]) {
   currentSession.phase = phase;
   window.dispatch('focus'); await settle();
   assert.match(text($('dialer-status')), new RegExp(expected));
 }
 assert.equal($('dialer-button').textContent, 'Call in progress');
+$('dialer-restore').click();
+assert.equal($('dialer-dialog').getAttribute('data-minimized'), 'false');
+assert.equal(panelContent().hidden, false);
+assert.equal($('dialer-restore').hidden, true);
+$('dialer-minimize').click(); $('dialer-button').click();
+assert.equal(panelContent().hidden, false, 'New call also restores the current call panel');
+assert.equal(writes().length, 1);
 $('dialer-end').click(); await settle();
 assert.equal(writes().length, 2);
 assert.equal(writes()[1].url, `/api/sessions/${sid}/end`);
@@ -227,7 +245,6 @@ handler = async request => {
   if (request.url === '/api/calls/outbound' && ++attempts === 1) throw new Error('Connection lost');
 };
 enterNumber(destination);
-$('dialer-goal').value = 'Original goal';
 await submit('dialer-call-form');
 assert.equal(outbound().length, 1);
 assert.equal($('dialer-start').getAttribute('aria-label'), 'Retry same request');
@@ -237,7 +254,6 @@ assert.match(text($('dialer-error')), /couldn't confirm/);
 window.dispatch('online'); window.dispatch('focus'); intervals.forEach(callback => callback()); await settle();
 assert.equal(outbound().length, 1, 'Reconnection only reads call status');
 enterNumber('+14155559999');
-$('dialer-goal').value = 'Changed after failure';
 await submit('dialer-call-form');
 assert.equal(outbound().length, 2);
 assert.equal(outbound()[0].headers['Idempotency-Key'], outbound()[1].headers['Idempotency-Key']);
@@ -247,7 +263,7 @@ assert.equal(outbound()[0].body, outbound()[1].body);
 
 def test_country_scope_accepts_us_syntax_but_keeps_server_region_rejections_visible():
     run_dialer(r"""
-assert.match(text($('dialer-number-help')), /US numbers/);
+assert.equal($('dialer-number-help'), undefined);
 enterNumber('+442079460000');
 await submit('dialer-call-form');
 assert.equal(outbound().length, 0);
@@ -369,13 +385,17 @@ assert.equal($('dialer-key-star').getAttribute('aria-label'), 'Star (*)');
 assert.equal($('dialer-key-hash').getAttribute('aria-label'), 'Hash (#)');
 assert.equal($('dialer-number').tagName, 'OUTPUT');
 assert.equal($('dialer-call-form').all().some(item => item.tagName === 'INPUT'), false);
-assert.equal($('dialer-country').textContent, '+1');
+for (const id of ['dialer-country', 'dialer-number-help', 'dialer-goal', 'dialer-description', 'dialer-close', 'dialer-title', 'dialer-start-label']) {
+  assert.equal($(id), undefined, id + ' should be removed from the compact keypad');
+}
 assert.equal($('dialer-start').children[0].tagName, 'SVG');
 assert.equal($('dialer-start').disabled, true);
 assert.equal($('dialer-clear').disabled, true);
 assert.equal($('dialer-backspace').disabled, true);
-assert.equal($('dialer-call-form').all().find(item => item.tagName === 'DETAILS').open, false);
+assert.equal($('dialer-number').textContent, '');
+assert.equal($('dialer-call-form').all().some(item => item.tagName === 'DETAILS'), false);
 $('dialer-button').click();
+assert.equal($('dialer-dialog').presentation, 'nonmodal');
 assert.equal(document.activeElement, $('dialer-number'));
 enterNumber('4155550123');
 assert.equal($('dialer-number').textContent, '415 555 0123');
@@ -383,8 +403,18 @@ assert.equal($('dialer-start').disabled, false);
 $('dialer-backspace').click();
 assert.equal($('dialer-number').textContent, '415 555 012');
 $('dialer-clear').click();
-assert.equal($('dialer-number').textContent, 'Phone number');
+assert.equal($('dialer-number').textContent, '');
 assert.equal($('dialer-start').disabled, true);
+const elsewhere = new Element('button'); document.body.append(elsewhere); elsewhere.focus();
+document.dispatch('keydown', {key: 'Escape', target: elsewhere});
+assert.equal(panelContent().hidden, false, 'Escape during site navigation must not minimize the dialer');
+$('dialer-number').focus(); press('Escape');
+assert.equal(panelContent().hidden, true);
+assert.equal($('dialer-dialog').getAttribute('data-minimized'), 'true');
+press('9', $('dialer-restore'));
+$('dialer-restore').click();
+assert.equal(panelContent().hidden, false);
+assert.equal($('dialer-number').textContent, '');
 assert.equal(writes().length, 0);
 """)
 
@@ -393,7 +423,7 @@ assert.equal(writes().length, 0);
 def test_us_keypad_normalizes_the_country_code_exactly_once(digits):
     run_dialer(r"""
 enterNumber(DIGITS);
-assert.equal($('dialer-country').textContent, '+1');
+assert.equal($('dialer-country'), undefined);
 assert.equal($('dialer-number').textContent, '415 555 0123');
 $('dialer-backspace').click();
 assert.equal($('dialer-number').textContent, '415 555 012', 'Deleting after country-code entry edits only the phone number');
@@ -428,16 +458,17 @@ def test_keyboard_digits_editing_and_enter_respect_text_fields_and_shortcuts():
 $('dialer-button').click();
 for (const key of '4155550123') press(key);
 assert.equal($('dialer-number').textContent, '415 555 0123');
-press('9', $('dialer-goal')); press('9', $('dialer-code'));
+const elsewhere = new Element('textarea'); document.body.append(elsewhere);
+press('9', elsewhere); press('9', $('dialer-code'));
 press('9', $('dialer-number'), {ctrlKey: true});
 press('9', $('dialer-number'), {metaKey: true});
 assert.equal($('dialer-number').textContent, '415 555 0123');
 press('Backspace'); assert.equal($('dialer-number').textContent, '415 555 012');
 press('3'); press('*'); press('#');
 assert.equal($('dialer-number').textContent, '4155550123*#');
-press('Delete'); assert.equal($('dialer-number').textContent, 'Phone number');
+press('Delete'); assert.equal($('dialer-number').textContent, '');
 for (const key of '4155550123') press(key);
-press('Enter', $('dialer-goal')); await settle();
+press('Enter', elsewhere); await settle();
 assert.equal(outbound().length, 0);
 press('Enter'); await settle();
 assert.equal(outbound().length, 1);
@@ -450,7 +481,7 @@ def test_explicit_international_prefix_and_unsupported_paste_never_change_the_di
 $('dialer-button').click();
 for (const key of '+4420794600') press(key);
 assert.equal($('dialer-number').textContent, '+4420794600');
-assert.equal($('dialer-country').hidden, true);
+assert.equal($('dialer-country'), undefined);
 press('Enter'); await settle();
 assert.equal(outbound().length, 0, 'An explicit +44 number must not become a US +1 target');
 assert.match(text($('dialer-error')), /Other country codes are not supported/);
@@ -465,11 +496,11 @@ for (const key of '+112345678901') press(key);
 press('Enter'); await settle();
 assert.equal(outbound().length, 0, 'A second leading 1 cannot be stripped after the country prefix has already been consumed');
 paste('9'.repeat(40));
-assert.equal($('dialer-number').textContent, 'Phone number');
+assert.equal($('dialer-number').textContent, '');
 assert.equal($('dialer-start').disabled, true, 'Oversized paste clears the previous target instead of truncating it');
 paste('+1 (415) 555-0123');
 assert.equal($('dialer-number').textContent, '415 555 0123');
-assert.equal($('dialer-country').hidden, false);
+assert.equal($('dialer-country'), undefined);
 press('Enter'); await settle();
 assert.equal(outbound().length, 1);
 assert.equal(JSON.parse(outbound()[0].body).to, destination);

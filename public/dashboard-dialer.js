@@ -7,9 +7,9 @@
   let config = null, session = null, attempt = null;
   let dialed = "", countryNormalized = false;
   let mutation = false, generation = 0, refreshing = null, error = "", readError = false, initialized = false;
-  let trigger, dialog, description, offline, loading, unlockForm, code, unlockButton;
-  let callForm, number, country, numberHelp, goal, callButton, callCaption, setup, status, statusTitle, statusBody;
-  let keypad, backspace, clearNumber;
+  let trigger, dialog, offline, loading, unlockForm, code, unlockButton;
+  let callForm, number, callButton, setup, status, statusTitle, statusBody;
+  let keypad, backspace, clearNumber, content, minimizeButton, restoreButton;
   const keys = [];
   let errorBox, endButton, anotherButton, dialogActions;
 
@@ -25,6 +25,19 @@
     if (id) element.id = id;
     return element;
   }
+  function icon(pathData) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    for (const [name, value] of Object.entries({viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true"})) svg.setAttribute(name, value);
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", pathData); svg.append(path); return svg;
+  }
+  const handset = "M7 3H4a1 1 0 0 0-1 1c0 9.4 7.6 17 17 17a1 1 0 0 0 1-1v-3l-5-2-2 2a13 13 0 0 1-7-7l2-2-2-5Z";
+  function minimize() {
+    content.hidden = true; restoreButton.hidden = false;
+    dialog.setAttribute("data-minimized", "true");
+    trigger.setAttribute("aria-expanded", "false"); restoreButton.focus();
+  }
   const online = () => navigator.onLine !== false;
   const active = () => Boolean(session && session.phase !== "ended");
   const canCall = () => Boolean(config?.authenticated || config?.public_calling);
@@ -39,7 +52,7 @@
     }
   }
   function editNumber(action) {
-    if (mutation || attempt || callForm.hidden) return;
+    if (mutation || attempt || content.hidden || callForm.hidden) return;
     if (action === "backspace") dialed = dialed.slice(0, -1);
     else if (action === "clear") dialed = "";
     else if (/^[0-9*#+]$/.test(action) && dialed.length < 32) dialed += action;
@@ -48,7 +61,8 @@
     error = ""; readError = false; render();
   }
   function numberKey(event) {
-    if (event.ctrlKey || event.metaKey || event.altKey || callForm.hidden ||
+    if (event.key === "Escape") {event.preventDefault(); minimize(); return;}
+    if (event.ctrlKey || event.metaKey || event.altKey || content.hidden || callForm.hidden ||
         ["INPUT", "TEXTAREA", "SELECT"].includes(event.target?.tagName) || event.target?.isContentEditable) return;
     if (/^[0-9*#+]$/.test(event.key)) {event.preventDefault(); editNumber(event.key);}
     else if (event.key === "Backspace") {event.preventDefault(); editNumber("backspace");}
@@ -56,7 +70,7 @@
     else if (event.key === "Enter" && event.target === number) {event.preventDefault(); callForm.requestSubmit();}
   }
   function pasteNumber(event) {
-    if (event.target !== number || mutation || attempt || callForm.hidden) return;
+    if (event.target !== number || mutation || attempt || content.hidden || callForm.hidden) return;
     event.preventDefault();
     const pasted = event.clipboardData?.getData("text") || "";
     const cleaned = pasted.replace(/[\s().-]/g, "");
@@ -95,16 +109,12 @@
   }
 
   function render() {
-    const authenticated = Boolean(config?.authenticated);
     const allowed = canCall(), publicVisitor = visitor();
     const hasCall = Boolean(session);
     trigger.textContent = active() ? "Call in progress" : "New call";
     trigger.setAttribute("data-active", String(active()));
-    description.textContent = publicVisitor
-      ? "We'll ring the owner's phone first. Once they answer and press 1, we'll connect the other person."
-      : authenticated && config.owner_label
-      ? `We'll ring your phone (${config.owner_label}) first. Answer and press 1 to connect the other person.`
-      : "The owner's phone rings first. Once they answer and press 1, the other person is called.";
+    restoreButton.setAttribute("aria-label", active() ? "Restore active call" : "Restore dialer");
+    restoreButton.setAttribute("data-active", String(active()));
     loading.hidden = config !== null;
     unlockForm.hidden = config === null || allowed;
     code.disabled = mutation;
@@ -113,23 +123,14 @@
     setup.hidden = !allowed || config.enabled || hasCall;
     setup.textContent = "Calling is not set up yet. Ask the owner to enable outbound calling and approve a phone number.";
     callForm.hidden = !allowed || !config.enabled || hasCall;
-    numberHelp.textContent = usNumber()
-      ? "US numbers · Enter the 10-digit phone number"
-      : "Enter an approved number, including its country code.";
-    country.textContent = usNumber() ? "+1" : "+";
-    country.hidden = dialed.startsWith("+");
     let displayed = dialed;
     if (usNumber() && /^[0-9]{1,10}$/.test(displayed)) displayed = [displayed.slice(0, 3), displayed.slice(3, 6), displayed.slice(6)].filter(Boolean).join(" ");
-    setText(number, displayed || "Phone number");
-    number.setAttribute("data-empty", String(!dialed));
-    goal.readOnly = Boolean(attempt);
-    goal.disabled = mutation;
+    setText(number, displayed);
     for (const key of keys) key.disabled = mutation || Boolean(attempt);
     backspace.disabled = clearNumber.disabled = mutation || Boolean(attempt) || !dialed;
     callButton.disabled = mutation || !online() || Boolean(config?.busy && !active()) || (!dialed && !attempt);
     const callLabel = mutation ? "Starting call…" : attempt ? "Retry same request" : publicVisitor ? "Call owner's phone" : "Call my phone";
     callButton.setAttribute("aria-label", callLabel);
-    setText(callCaption, callLabel);
     status.hidden = !allowed || !hasCall;
     status.setAttribute("data-ended", String(session?.phase === "ended"));
     const phases = {
@@ -234,7 +235,7 @@
         render(); number.focus(); return;
       }
       if (!crypto.randomUUID) {error = "Calling needs a secure connection. Open this site with HTTPS."; render(); return;}
-      attempt = {key: crypto.randomUUID(), payload: {to, goal: goal.value.trim().slice(0, 300)}};
+      attempt = {key: crypto.randomUUID(), payload: {to, goal: ""}};
     }
     mutation = true; generation++; error = ""; readError = false; render();
     try {
@@ -276,15 +277,22 @@
     trigger = button("New call", "toolbar-primary-button dialer-trigger", "dialer-button");
     trigger.setAttribute("aria-haspopup", "dialog");
     trigger.setAttribute("aria-controls", "dialer-dialog");
+    trigger.setAttribute("aria-expanded", "false");
     mount.prepend(trigger);
     dialog = node("dialog", "toolbar-dialog dialer-dialog"); dialog.id = "dialer-dialog";
-    dialog.setAttribute("aria-labelledby", "dialer-title");
-    dialog.setAttribute("aria-describedby", "dialer-description");
-    const content = node("div", "dialer-content"), heading = node("div", "dialer-heading");
-    const title = node("h2", "", "Make a call"); title.id = "dialer-title";
-    const close = button("×", "toolbar-icon", "dialer-close"); close.setAttribute("aria-label", "Close calling window");
-    close.addEventListener("click", () => dialog.close()); heading.append(title, close);
-    description = node("p", "dialer-description"); description.id = "dialer-description";
+    dialog.setAttribute("aria-label", "Phone keypad");
+    dialog.setAttribute("aria-modal", "false");
+    dialog.setAttribute("data-minimized", "false");
+    dialog.addEventListener("cancel", event => {event.preventDefault(); minimize();});
+    content = node("div", "dialer-content");
+    const controls = node("div", "dialer-panel-controls");
+    minimizeButton = button("", "toolbar-icon dialer-minimize", "dialer-minimize");
+    minimizeButton.setAttribute("aria-label", "Minimize dialer");
+    minimizeButton.append(icon("M5 12h14")); minimizeButton.addEventListener("click", minimize);
+    controls.append(minimizeButton);
+    restoreButton = button("", "dialer-call-button dialer-restore", "dialer-restore");
+    restoreButton.setAttribute("aria-label", "Restore dialer");
+    restoreButton.append(icon(handset)); restoreButton.hidden = true;
     loading = node("p", "dialer-help", "Checking calling access…"); loading.setAttribute("role", "status");
     offline = node("p", "toolbar-error dialer-offline"); offline.setAttribute("role", "status");
     unlockForm = node("form"); unlockForm.id = "dialer-unlock-form";
@@ -296,12 +304,9 @@
     setup = node("p", "dialer-setup"); setup.id = "dialer-setup";
     callForm = node("form"); callForm.id = "dialer-call-form";
     const display = node("div", "dialer-number-display");
-    country = node("span", "dialer-country"); country.id = "dialer-country";
     number = node("output", "dialer-number"); number.id = "dialer-number"; number.tabIndex = 0;
     number.setAttribute("aria-label", "Phone number"); number.setAttribute("aria-live", "polite");
-    number.setAttribute("aria-describedby", "dialer-number-help");
-    display.append(country, number);
-    numberHelp = node("p", "dialer-number-help"); numberHelp.id = "dialer-number-help";
+    display.append(number);
     const editing = node("div", "dialer-number-actions");
     clearNumber = button("Clear", "dialer-edit", "dialer-clear"); clearNumber.setAttribute("aria-label", "Clear phone number");
     clearNumber.addEventListener("click", () => editNumber("clear"));
@@ -318,20 +323,9 @@
       key.append(value, abc); key.addEventListener("click", () => editNumber(digit)); keys.push(key); keypad.append(key);
     }
     callButton = button("", "dialer-call-button", "dialer-start"); callButton.type = "submit";
-    const phoneIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    phoneIcon.setAttribute("viewBox", "0 0 24 24"); phoneIcon.setAttribute("fill", "none"); phoneIcon.setAttribute("stroke", "currentColor");
-    phoneIcon.setAttribute("stroke-width", "1.8"); phoneIcon.setAttribute("stroke-linecap", "round"); phoneIcon.setAttribute("stroke-linejoin", "round"); phoneIcon.setAttribute("aria-hidden", "true");
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", "M7 3H4a1 1 0 0 0-1 1c0 9.4 7.6 17 17 17a1 1 0 0 0 1-1v-3l-5-2-2 2a13 13 0 0 1-7-7l2-2-2-5Z");
-    phoneIcon.append(path); callButton.append(phoneIcon);
-    callCaption = node("span", "dialer-call-caption"); callCaption.id = "dialer-start-label"; callCaption.setAttribute("aria-hidden", "true");
-    const callActions = node("div", "dialer-keypad-call"); callActions.append(callButton, callCaption);
-    const goalDetails = node("details", "dialer-goal-details"); goalDetails.append(node("summary", "", "Call goal (optional)"));
-    const goalLabel = node("label", "toolbar-field", "Call goal");
-    goal = node("textarea"); goal.id = "dialer-goal"; goal.maxLength = 300; goal.rows = 2;
-    goal.placeholder = "What would you like to discuss?"; goalLabel.append(goal);
-    goalDetails.append(goalLabel);
-    callForm.append(display, numberHelp, editing, keypad, callActions, goalDetails); callForm.addEventListener("submit", start);
+    callButton.append(icon(handset));
+    const callActions = node("div", "dialer-keypad-call"); callActions.append(callButton);
+    callForm.append(display, editing, keypad, callActions); callForm.addEventListener("submit", start);
     dialog.addEventListener("keydown", numberKey);
     dialog.addEventListener("paste", pasteNumber);
     status = node("section", "dialer-state"); status.id = "dialer-status"; status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite"); status.setAttribute("aria-atomic", "true");
@@ -341,10 +335,16 @@
     anotherButton = button("Start another call", "toolbar-primary-button", "dialer-another");
     anotherButton.addEventListener("click", () => {session = null; attempt = null; error = ""; render(); number.focus(); refresh();});
     dialogActions = node("div", "dialer-actions"); dialogActions.append(endButton, anotherButton);
-    content.append(heading, description, offline, loading, unlockForm, setup, callForm, status, errorBox, dialogActions);
-    dialog.append(content); document.body.append(dialog);
-    const open = () => {if (!dialog.open) dialog.showModal(); render(); if (!callForm.hidden) number.focus(); refresh();};
+    content.append(controls, offline, loading, unlockForm, setup, callForm, status, errorBox, dialogActions);
+    dialog.append(content, restoreButton); document.body.append(dialog);
+    const open = () => {
+      content.hidden = false; restoreButton.hidden = true;
+      dialog.setAttribute("data-minimized", "false"); trigger.setAttribute("aria-expanded", "true");
+      if (!dialog.open) dialog.show();
+      render(); (callForm.hidden ? minimizeButton : number).focus(); refresh();
+    };
     trigger.addEventListener("click", open);
+    restoreButton.addEventListener("click", open);
     dialog.addEventListener("close", () => trigger.focus());
     window.DashboardDialer = {open};
     const resume = () => {render(); refresh();};

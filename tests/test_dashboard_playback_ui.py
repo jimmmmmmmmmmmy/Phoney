@@ -832,38 +832,73 @@ assert.equal(trackNames.outbound,'New College');
 ''')
 
 
-def test_contact_changes_refresh_both_call_lists_without_disturbing_audio_or_focus(tmp_path):
-    run_browser_logic(tmp_path, r'''
+@pytest.mark.parametrize("source", ["gemini", "agent"])
+def test_contact_changes_refresh_both_call_lists_without_disturbing_audio_or_focus(tmp_path, source):
+    from call_details import CallDetailsStore
+    from test_gemini_integration import DOCUMENT
+    from test_dashboard_crm_ui import HARNESS as CRM_HARNESS, SCRIPT as CRM_SCRIPT
+
+    store = CallDetailsStore(str(tmp_path / "details"))
+    for kind, summary in (("detailed", "Caller asked James to call Caller. Callers and lowercase caller stay as written. Caller ID and Caller-ID were checked."),
+                          ("brief", "Caller’s follow-up with James is scheduled.")):
+        assert store.set_summary(DOCUMENT["call_sid"], summary, DOCUMENT, source=source, kind=kind)
+    saved_path = tmp_path / "details" / (DOCUMENT["call_sid"] + ".json")
+    original_bytes = saved_path.read_bytes()
+    details = store.get(DOCUMENT["call_sid"], DOCUMENT)
+    # Use the actual CRM workspace and formatter alongside the call UI, in separate DOMs.
+    crm = "const crm=((onContactsChanged)=>{\n" + CRM_HARNESS + CRM_SCRIPT.read_text() + r'''
+window.addEventListener('dashboard-contacts-changed', onContactsChanged);
+return {api:window.DashboardCRM,update(contacts){storeContacts(contacts);changeStorage();}};
+})(()=>handlers.get('dashboard-contacts-changed')());
+window.DashboardCRM=crm.api;
+'''
+    run_browser_logic(tmp_path, crm + "const savedDetails=" + json.dumps(details) + r''';
 state.snapshot=snapshot([session(),session(OTHER)],[recording()]);
-const phone='+14155550111';
-state.snapshot.call_details={calls:[{call_sid:SID,caller_number:phone},{call_sid:OTHER,caller_number:phone}]};
+const phone='+14155550111', formattedPhone='+1 (415) 555-0111';
+const originalSummaries=JSON.stringify([savedDetails.summary,savedDetails.brief_summary]);
+state.snapshot.call_details={calls:[{...savedDetails,call_sid:SID,caller_number:formattedPhone},
+ {...savedDetails,call_sid:OTHER,caller_number:phone}]};
 state.snapshot.voicemail.voicemails=[{call_sid:OTHER,recording_status:'completed'}];
 render();openCall();backToCalls();
 const audio=$('call-audio');audio.play();audio.currentTime=19;
 const loads=audio.loads,pauses=audio.pauses;
 $('call-list').children[0].focus();
-let contact={id:'local-test-contact',name:'<img src=x> Taylor Demo',phone}, synchronized;
-window.DashboardCRM={findContactByPhone: number=>number===phone?contact:null,
- setSessions:sessions=>{synchronized=sessions;},render(){}};
-handlers.get('dashboard-contacts-changed')();
-for(const list of ['call-list','voicemail-list']){
+function assertSummaries(name='Caller') {
+ const label=savedDetails.summary.source==='gemini'?name:'Caller';
+ const brief=label+'’s follow-up with James is scheduled.';
+ for(const list of ['call-list','voicemail-list']) {
+  const preview=$(list).children[0].children[2];
+  assert.equal(preview.textContent,brief);assert.equal(preview.title,brief);assert.equal(preview.children.length,0);
+ }
+ assert.equal($('call-summary').textContent,label+' asked James to call '+label+'. Callers and lowercase caller stay as written. Caller ID and Caller-ID were checked.');
+ assert.equal($('call-summary').children.length,0);
+ assert.equal(JSON.stringify([savedDetails.summary,savedDetails.brief_summary]),originalSummaries);
+}
+assertSummaries();
+let contact={id:'local-test-contact',firstName:'$& <img src=x>',lastName:'Taylor',phone,createdAt:'2026-09-26T12:00:00Z'};
+crm.update([contact]);
+for(const list of ['call-list','voicemail-list']) {
  const row=$(list).children[0];
- assert.equal(row.children[0].textContent,contact.name);
+ assert.equal(row.children[0].textContent,'$& <img src=x> Taylor');
  assert.equal(row.children[0].children.length,1);
- assert.equal(row.children[0].children[0].textContent,phone);
  assert.equal(row.children[1].className,'call-time');
  assert.equal(row.children[2].className,'call-summary-preview');
 }
+assertSummaries('$& <img src=x> Taylor');
 assert.equal(document.activeElement.dataset.callSid,SID);
-assert.equal(synchronized,state.sessions);
-contact={...contact,name:'Taylor Renamed'};render();
+contact={...contact,firstName:'Taylor',lastName:'Renamed'};crm.update([contact]);
 assert.equal($('call-list').children[0].children[0].textContent,'Taylor Renamed');
-contact=null;handlers.get('dashboard-contacts-changed')();
-assert.equal($('call-list').children[0].children[0].textContent,phone);
+assertSummaries('Taylor Renamed');
+// Editing a number removes the match for old calls; assigning it to a new contact updates them.
+crm.update([{...contact,phone:'+14155550112'}]);assertSummaries();
+crm.update([{...contact,id:'local-new-contact',firstName:'Sam',lastName:'Updated'}]);assertSummaries('Sam Updated');
+crm.update([]);assertSummaries();
+assert.equal($('call-list').children[0].children[0].textContent,formattedPhone);
 assert.equal($('call-list').children[0].children[0].children.length,0);
 assert.equal(audio.currentTime,19);assert.equal(audio.paused,false);
 assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
 ''')
+    assert saved_path.read_bytes() == original_bytes
 
 
 def test_return_link_uses_recording_call_date_and_retains_it_outside_recent_history(tmp_path):

@@ -39,6 +39,13 @@
     const contact = contacts().find(candidate => candidate.phone === phone);
     return contact ? {id: contact.id, name: fullName(contact), phone: contact.phone} : null;
   }
+  function summaryText(summary, phone) {
+    const value = typeof summary?.text === "string" ? summary.text : "";
+    if (summary?.source !== "gemini") return value;
+    const contact = findContactByPhone(phone);
+    // Resolve names when rendering so saved summaries follow later contact edits.
+    return contact ? value.replace(/\bCaller\b(?![\s-]+[Ii][Dd]\b)/g, () => contact.name) : value;
+  }
   function notifyContactsChanged() { window.dispatchEvent(new CustomEvent("dashboard-contacts-changed")); }
   function date(value, withYear = true) { const parsed = new Date(value); return Number.isFinite(parsed.getTime()) ? parsed.toLocaleDateString("en-US", {month: "short", day: "numeric", ...(withYear ? {year: "numeric"} : {})}) : "—"; }
   function dateTime(value) { const parsed = new Date(value); return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString("en-US", {month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit"}) : "—"; }
@@ -265,7 +272,7 @@
     listUI = {tableWrap, resultCount};
     return section;
   }
-  function historyCard(call, contact) { const item = node("details", "crm-call"); item.open = expandedCalls.has(call.id); item.addEventListener("toggle", () => { if (item.open) expandedCalls.add(call.id); else expandedCalls.delete(call.id); }); const summary = node("summary"), callIcon = node("span", "crm-call-icon"), main = node("div", "crm-call-main"), meta = node("div", "crm-call-meta"), chevron = icon("chevron"); summary.id = `crm-summary-${call.id}`; chevron.classList.add("crm-call-chevron"); callIcon.append(icon("phone")); meta.append(node("span", "", dateTime(call.startedAt)), node("span", "", "·"), node("span", "", call.direction), node("span", "", "·"), node("span", "", call.outcome)); main.append(node("div", "crm-call-title", call.title), meta); summary.append(callIcon, main, node("span", "crm-call-duration", duration(call.duration)), chevron); const content = node("div", "crm-call-content"); content.append(node("p", "crm-call-summary", call.summary || "No summary available yet.")); if (call.real) {
+  function historyCard(call, contact) { const item = node("details", "crm-call"); item.open = expandedCalls.has(call.id); item.addEventListener("toggle", () => { if (item.open) expandedCalls.add(call.id); else expandedCalls.delete(call.id); }); const summary = node("summary"), callIcon = node("span", "crm-call-icon"), main = node("div", "crm-call-main"), meta = node("div", "crm-call-meta"), chevron = icon("chevron"); summary.id = `crm-summary-${call.id}`; chevron.classList.add("crm-call-chevron"); callIcon.append(icon("phone")); meta.append(node("span", "", dateTime(call.startedAt)), node("span", "", "·"), node("span", "", call.direction), node("span", "", "·"), node("span", "", call.outcome)); main.append(node("div", "crm-call-title", call.title), meta); summary.append(callIcon, main, node("span", "crm-call-duration", duration(call.duration)), chevron); const content = node("div", "crm-call-content"); content.append(node("p", "crm-call-summary", summaryText({text: call.summary, source: call.summarySource}, call.phone) || "No summary available yet.")); if (call.real) {
       const transcriptLink = link("Open call transcript →", `#calls/${call.collection || "recent"}/${call.id}`, "crm-button");
       transcriptLink.addEventListener("click", event => {
         if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || !window.DashboardCalls?.openCall) return;
@@ -594,7 +601,8 @@
     const failed = ["failed", "error"].includes(session.status);
     return {id: session.call_sid, real: true, collection: session.voicemail || session.voicemail_only ? "voicemail" : "recent", phone: normalizePhone(detail.caller_number), startedAt: detail.started_at || session.started_at,
       duration: Number.isFinite(detail.duration_seconds) ? detail.duration_seconds : null, direction: "Call",
-      outcome: live ? "Live" : failed ? "Failed" : "Completed", title: live ? "Live conversation" : "Call conversation", summary: detail.summary?.text || ""};
+      outcome: live ? "Live" : failed ? "Failed" : "Completed", title: live ? "Live conversation" : "Call conversation",
+      summary: detail.summary?.text || "", summarySource: detail.summary?.source};
   }
   function setSessions(sessions) {
     lastSessions = Array.isArray(sessions) ? sessions : [];
@@ -611,6 +619,6 @@
     render();
     window.addEventListener("hashchange", render);
   }
-  window.DashboardCRM = {openCreateContact, openEditContact, render, setSessions, setHistoryMetrics, findContactByPhone};
+  window.DashboardCRM = {openCreateContact, openEditContact, render, setSessions, setHistoryMetrics, findContactByPhone, summaryText};
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initialize, {once: true}); else initialize();
 })();

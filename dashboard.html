@@ -537,8 +537,12 @@
       renderAudio(state.audioSession);
       $("audio-close").focus({preventScroll: true});
     }
+    function displaySummary(summary, session) {
+      return text(window.DashboardCRM?.summaryText
+        ? window.DashboardCRM.summaryText(summary, session ? callerNumber(session) : "") : summary?.text).trim();
+    }
     function summaryPreview(session) {
-      return text(session.call_detail && session.call_detail.brief_summary && session.call_detail.brief_summary.text).trim()
+      return displaySummary(session.call_detail?.brief_summary, session)
         || (session.call_detail && session.call_detail.brief_summary_status === "retrying" ? "Summary retry scheduled."
           : session.call_detail && session.call_detail.brief_summary_status === "pending" ? "Summarizing…"
           : session.call_detail && session.call_detail.brief_summary_status === "failed" ? "Summary unavailable."
@@ -816,11 +820,9 @@
         if (item.aiMarker) item.aiMarker.hidden = !flagged;
       }
     }
-    function renderSession(session) {
-      renderStorageWarnings(session);
-      renderAudio(session);
+    function renderSummary(session) {
       const summary = session && session.call_detail && session.call_detail.summary;
-      const summaryText = text(summary && summary.text).trim();
+      const summaryText = displaySummary(summary, session);
       const summaryStatus = session && session.call_detail && session.call_detail.summary_status;
       const summaryPlaceholder = summaryStatus === "pending" ? "Summarizing…"
         : summaryStatus === "retrying" ? "Summary temporarily unavailable. Retrying automatically."
@@ -829,6 +831,11 @@
         $("call-summary").textContent = summaryText || summaryPlaceholder;
       }
       $("call-summary").dataset.empty = String(!summaryText);
+    }
+    function renderSession(session) {
+      renderStorageWarnings(session);
+      renderAudio(session);
+      renderSummary(session);
       const enabled = state.snapshot && state.snapshot.enabled;
       const active = session && isActive(session);
       const voicemail = session && session.voicemail;
@@ -1231,6 +1238,7 @@
     window.addEventListener("dashboard-contacts-changed", () => {
       renderCollections();
       renderNavigation();
+      renderSummary(state.selectedSession);
     });
     window.addEventListener("popstate", restoreRoute);
     window.addEventListener("hashchange", () => {

@@ -23,6 +23,8 @@ Signed inbound `From` supplies the caller number. The terminal caller-status cal
 
 Existing Gemini summaries display the legacy speaker label **New College DS** as **James** in brief previews, detailed summaries, contact history, and JSON exports. This presentation change preserves the original stored text, transcript fingerprints, and completed jobs, without generating summaries again. Authored summaries, transcript speaker labels, and other school branding are unchanged.
 
+The dashboard also displays **Caller** as the current contact's full name when its normalized phone number matches exactly. Brief previews and tooltips, detailed summaries, and cached contact history update after a contact is added, renamed, or assigned a different number. Unmatched calls retain **Caller**, and technical phrases such as **Caller ID** stay unchanged. This contact substitution applies only to Gemini summaries in the UI; saved text and exports retain the original role label, with no new provider request.
+
 ## Automatic Gemini summaries
 
 The worker enables only when `GEMINI_API_KEY` is nonempty, `TRANSCRIPTION_ENABLED=true`, and `CALL_DETAILS_STORAGE_DIR` is configured. Its model defaults to `gemini-3.8-flash`; `GEMINI_SUMMARY_MODEL` is separate from the future voice-agent `GEMINI_MODEL`. It uses Google's text-only REST `generateContent` endpoint, with no tools or call-control capabilities. [GenerateContent contract](https://ai.google.dev/api/generate-content), [Gemini 3.8 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash).

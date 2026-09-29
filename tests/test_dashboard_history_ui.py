@@ -96,12 +96,14 @@ assert.equal(historyQuery.has('call_sid'),false);
 def test_contact_history_loads_caller_pages_and_uses_complete_server_metrics():
     run_crm(r'''
 const call=(sid,started,duration)=>({call_sid:sid,status:'completed',ended_at:started,started_at:started,
- call_detail:{caller_number:CONTACT.phone,started_at:started,duration_seconds:duration,summary:{text:'Saved archive summary'}}});
+ call_detail:{caller_number:'+1 (656) 252-0233',started_at:started,duration_seconds:duration,
+ summary:{text:'Caller’s archived request was confirmed with Caller.',source:'gemini'}}});
 const first='CA'+'a'.repeat(32),older='CA'+'b'.repeat(32);
-const requests=[];
+const requests=[],saved=[];
 window.DashboardCalls={fetchHistory:async options=>{
  requests.push(options);
- return {sessions:[call(options.cursor?older:first,options.cursor?'2026-08-01T12:00:00Z':'2026-09-01T12:00:00Z',60)],
+ const session=call(options.cursor?older:first,options.cursor?'2026-08-01T12:00:00Z':'2026-09-01T12:00:00Z',60);saved.push(session);
+ return {sessions:[session],
  history:{has_more:!options.cursor,next_cursor:options.cursor?null:'page-two',total:22,duration_seconds:660,last_contact_at:'2026-09-01T12:00:00Z'}};
 }};
 navigate('#contacts/'+CONTACT.id);await new Promise(resolve=>setImmediate(resolve));
@@ -115,6 +117,13 @@ assert.equal(contactRoot.all().filter(item=>hasClass(item,'crm-call')).length,2)
 assert.equal($('crm-load-history'),null);assert.equal(document.activeElement,$('crm-profile-title'));
 window.DashboardCRM.setSessions([]);window.DashboardCRM.render();
 assert.equal(contactRoot.all().filter(item=>hasClass(item,'crm-call')).length,2,'Current session polling must retain caller archive pages');
+const summaries=()=>contactRoot.all().filter(item=>hasClass(item,'crm-call-summary'));
+assert.deepEqual(summaries().map(item=>item.textContent),Array(2).fill('Avery Chen’s archived request was confirmed with Avery Chen.'));
+storeContacts([{...CONTACT,firstName:'$& <img src=x>',lastName:'Renamed'}]);changeStorage();
+assert.deepEqual(summaries().map(item=>item.textContent),Array(2).fill('$& <img src=x> Renamed’s archived request was confirmed with $& <img src=x> Renamed.'));
+assert.ok(summaries().every(item=>item.children.length===0));
+assert.equal(requests.length,2,'Renaming must render cached history without fetching or regenerating summaries');
+assert.ok(saved.every(item=>item.call_detail.summary.text==='Caller’s archived request was confirmed with Caller.'));
 let selected;
 window.DashboardCalls.openCall=id=>{selected=id;};
 const link=contactRoot.all().find(item=>item.tagName==='A'&&item.href==='#calls/recent/'+older);

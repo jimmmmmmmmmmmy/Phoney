@@ -578,7 +578,8 @@ assert.equal(window.DashboardCRM.findContactByPhone(CONTACT.phone).name,'Avery C
 def test_retry_reuses_contact_id_and_late_server_load_matches_existing_calls():
     run_crm(r"""
 const call={call_sid:'CA'+'a'.repeat(32),status:'completed',ended_at:'2026-09-26T18:00:00Z',
- call_detail:{caller_number:CONTACT.phone,started_at:'2026-09-26T17:00:00Z',duration_seconds:42}};
+ call_detail:{caller_number:CONTACT.phone,started_at:'2026-09-26T17:00:00Z',duration_seconds:42,
+ summary:{text:'Caller requested a follow-up.',source:'gemini'}}};
 window.DashboardCRM.setSessions([call]);
 const ids=[],save=window.DashboardWorkspace.saveContact;
 window.DashboardWorkspace.saveContact=async contact=>{ids.push(contact.id);return save(contact);};
@@ -588,6 +589,8 @@ failWrites=true;await submit();failWrites=false;await submit();
 assert.equal(ids.length,2);assert.equal(ids[0],ids[1]);
 navigate('#contacts/'+ids[0]);
 assert.match(text(contactRoot),/42s/);assert.match(text(contactRoot),/Call conversation/);
+assert.equal(contactRoot.all().find(item=>hasClass(item,'crm-call-summary')).textContent,'Avery Chen requested a follow-up.');
+assert.equal(call.call_detail.summary.text,'Caller requested a follow-up.');
 """)
 
 

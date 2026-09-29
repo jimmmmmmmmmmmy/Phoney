@@ -53,13 +53,19 @@ def test_signed_caller_and_final_duration_survive_restart(tmp_path):
     assert restored == record
 
 
-def test_summary_uses_full_selected_transcript_before_other_sessions_are_trimmed(tmp_path):
+@pytest.mark.parametrize("source", ["agent", "gemini"])
+def test_summary_uses_full_selected_transcript_before_other_sessions_are_trimmed(tmp_path, source):
     settings = replace(SETTINGS, call_details_storage_dir=str(tmp_path / "details"))
     app = create_app(settings, gateway=Gateway())
     store = app.state.call_details
     store.start(SID, FORM["From"], started_at=SESSION["started_at"])
     store.finish(SID, ended_at=SESSION["ended_at"])
-    assert store.set_summary(SID, "The caller requested a call tomorrow.", SESSION)
+    detailed = "Caller requested a callback. New College DS agreed to call tomorrow."
+    brief = "New College DS will call back tomorrow."
+    assert store.set_summary(SID, detailed, SESSION, source=source)
+    assert store.set_summary(SID, brief, SESSION, source=source, kind="brief")
+    saved_path = tmp_path / "details" / (SID + ".json")
+    original_bytes = saved_path.read_bytes()
     other = {**deepcopy(SESSION), "call_sid": "CA" + "3" * 32}
     app.state.transcription.snapshot = lambda: {"sessions": deepcopy([other, SESSION]), "enabled": True}
     app.state.transcription.get_saved_call = lambda sid: deepcopy(next(
@@ -68,10 +74,18 @@ def test_summary_uses_full_selected_transcript_before_other_sessions_are_trimmed
         data = client.get("/api/transcripts").json()
         assert data["sessions"][1]["segments"] == []
         detail = next(item for item in data["call_details"]["calls"] if item["call_sid"] == SID)
-        assert detail["summary"]["text"] == "The caller requested a call tomorrow."
+        expected_detailed = detailed.replace("New College DS", "James") if source == "gemini" else detailed
+        expected_brief = brief.replace("New College DS", "James") if source == "gemini" else brief
+        assert detail["summary"]["text"] == expected_detailed
+        assert detail["brief_summary"]["text"] == expected_brief
+        history = client.get("/api/transcripts", params={"caller": FORM["From"]}).json()
+        assert history["call_details"]["calls"][0]["summary"]["text"] == expected_detailed
         exported = client.get(f"/api/transcripts/{SID}/export?format=json").json()
         assert exported["call_details"]["caller_number"] == FORM["From"]
-        assert exported["call_details"]["summary"]["source"] == "agent"
+        assert exported["call_details"]["summary"]["source"] == source
+        assert exported["call_details"]["summary"]["text"] == expected_detailed
+        assert exported["call_details"]["brief_summary"]["text"] == expected_brief
+    assert saved_path.read_bytes() == original_bytes
 
 
 @pytest.mark.parametrize("duration", ["-1", "nan", "1.5", "9" * 1000, "١٢"])

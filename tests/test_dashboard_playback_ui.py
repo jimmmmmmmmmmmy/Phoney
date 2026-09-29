@@ -758,13 +758,26 @@ assert.equal(audio.loads,loads);assert.equal(audio.pauses,pauses);
 ''')
 
 
-def test_caller_metadata_and_saved_summary_render_safely_without_restarting_playback(tmp_path):
-    run_browser_logic(tmp_path, r'''
+@pytest.mark.parametrize("source", ["agent", "gemini"])
+def test_caller_metadata_and_saved_summary_render_safely_without_restarting_playback(tmp_path, source):
+    from call_details import CallDetailsStore
+    from test_gemini_integration import DOCUMENT
+
+    store = CallDetailsStore(str(tmp_path / "details"))
+    for kind, summary in (("detailed", "<img src=x onerror=alert(1)> New College DS agreed to call tomorrow."),
+                          ("brief", "<img src=x onerror=alert(1)> New College DS will call back.")):
+        assert store.set_summary(DOCUMENT["call_sid"], summary, DOCUMENT, source=source, kind=kind)
+    saved_path = tmp_path / "details" / (DOCUMENT["call_sid"] + ".json")
+    original_bytes = saved_path.read_bytes()
+    details = CallDetailsStore(str(tmp_path / "details")).get(DOCUMENT["call_sid"], DOCUMENT)
+    expected_owner = "James" if source == "gemini" else "New College DS"
+    assert expected_owner in details["summary"]["text"]
+    assert expected_owner in details["brief_summary"]["text"]
+    run_browser_logic(tmp_path, "const savedDetails=" + json.dumps(details) + r''';
 const saved=recording(),call=session();call.segments[0].end_ms=3000;
 state.snapshot=snapshot([call,session(OTHER)],[saved,recording(OTHER)]);
-const details={call_sid:SID,caller_number:'+14155550111',started_at:'2026-09-26T13:00:00Z',ended_at:'2026-09-26T13:03:00Z',
- duration_seconds:180,summary:{text:'<img src=x onerror=alert(1)> A saved agent summary.',source:'agent',created_at:'2026-09-26T13:04:00Z'},
- brief_summary:{text:'<img src=x onerror=alert(1)> A separate short summary.',source:'gemini',created_at:'2026-09-26T13:04:00Z'}};
+const details={...savedDetails,caller_number:'+14155550111',started_at:'2026-09-26T13:00:00Z',ended_at:'2026-09-26T13:03:00Z',
+ duration_seconds:180};
 state.snapshot.call_details={enabled:true,storage_error:'',calls:[details]};render();openCall();
 const button=$('call-list').children.find(row=>row.dataset.callSid===SID);
 assert.equal(button.children[0].textContent,'+14155550111');
@@ -785,6 +798,7 @@ assert.equal(state.transcriptRows[0].row.classList.contains('playing-line'),true
 state.paused=true;chooseCall(OTHER);
 assert.equal($('call-summary').textContent,'No summary yet.');assert.equal($('call-summary').dataset.empty,'true');
 ''')
+    assert saved_path.read_bytes() == original_bytes
 
 
 def test_call_list_uses_honest_fallbacks_when_metadata_is_missing(tmp_path):

@@ -14,7 +14,9 @@ import summaries
 
 CALL = "CA" + "a" * 32
 DETAILED = "Caller requested an afternoon callback. New College DS agreed to call tomorrow at 2 PM."
-BRIEF = "Callback requested for tomorrow at 2 PM."
+BRIEF = "New College DS will call back tomorrow at 2 PM."
+DISPLAY_DETAILED = "Caller requested an afternoon callback. James agreed to call tomorrow at 2 PM."
+DISPLAY_BRIEF = "James will call back tomorrow at 2 PM."
 
 
 def document():
@@ -103,12 +105,12 @@ def test_two_polls_create_two_distinct_outputs_and_restart_never_duplicates(tmp_
             await manager.run_once()
             assert [kind for kind, _ in provider.calls] == ["detailed"]
             first = public_record(store)
-            assert first["summary"]["text"] == DETAILED
+            assert first["summary"]["text"] == DISPLAY_DETAILED
             assert first["brief_summary"] is None
             await manager.run_once()
             assert [kind for kind, _ in provider.calls] == ["detailed", "brief"]
             pair = public_record(CallDetailsStore(str(tmp_path)))
-            for key, expected in (("summary", DETAILED), ("brief_summary", BRIEF)):
+            for key, expected in (("summary", DISPLAY_DETAILED), ("brief_summary", DISPLAY_BRIEF)):
                 assert pair[key]["text"] == expected
                 assert pair[key]["source"] == "gemini"
                 assert pair[key]["model"] == "gemini-3.8-flash"
@@ -117,14 +119,22 @@ def test_two_polls_create_two_distinct_outputs_and_restart_never_duplicates(tmp_
                 assert "fingerprint" not in pair[key]
             assert disk_record(tmp_path)["summary_job"]["attempts"] == 1
             assert disk_record(tmp_path)["brief_summary_job"]["attempts"] == 1
+            assert disk_record(tmp_path)["summary"]["text"] == DETAILED
+            assert disk_record(tmp_path)["brief_summary"]["text"] == BRIEF
         finally:
             await manager.close()
         restarted_provider = DualProvider()
-        restarted = manager_for(tmp_path, CallDetailsStore(str(tmp_path)), restarted_provider)
+        original_bytes = (tmp_path / (CALL + ".json")).read_bytes()
+        restarted_store = CallDetailsStore(str(tmp_path))
+        restarted = manager_for(tmp_path, restarted_store, restarted_provider)
         try:
             for _ in range(4):
                 await restarted.run_once()
             assert restarted_provider.calls == []
+            displayed = public_record(restarted_store)
+            assert displayed["summary"]["text"] == DISPLAY_DETAILED
+            assert displayed["brief_summary"]["text"] == DISPLAY_BRIEF
+            assert (tmp_path / (CALL + ".json")).read_bytes() == original_bytes
         finally:
             await restarted.close()
 
@@ -133,7 +143,7 @@ def test_two_polls_create_two_distinct_outputs_and_restart_never_duplicates(tmp_
 
 def test_legacy_authored_detailed_summary_is_retained_while_only_brief_catches_up(tmp_path):
     store = CallDetailsStore(str(tmp_path))
-    assert store.set_summary(CALL, "Operator-authored detailed summary.", document())
+    assert store.set_summary(CALL, "New College DS: operator-authored detailed summary.", document())
     record = disk_record(tmp_path)
     authored = deepcopy(record["summary"])
     for key in ("brief_summary", "brief_summary_job", "summary_job"):
@@ -152,6 +162,7 @@ def test_legacy_authored_detailed_summary_is_retained_while_only_brief_catches_u
             assert saved["summary"] == authored
             assert saved["brief_summary"]["text"] == BRIEF
             assert public_record(reloaded)["summary"]["source"] == "agent"
+            assert public_record(reloaded)["summary"]["text"] == authored["text"]
         finally:
             await manager.close()
 
@@ -347,7 +358,7 @@ def test_deployment_gate_allows_inflight_result_but_defers_second_job(tmp_path):
             await running
             await manager.run_once()
             assert [kind for kind, _ in provider.calls] == ["detailed"]
-            assert public_record(store)["summary"]["text"] == DETAILED
+            assert public_record(store)["summary"]["text"] == DISPLAY_DETAILED
             assert public_record(store)["brief_summary"] is None
             allowed[0] = True
             await manager.run_once()

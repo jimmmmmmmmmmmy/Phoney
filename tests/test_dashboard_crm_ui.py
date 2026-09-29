@@ -1,6 +1,7 @@
 """Contact editing, categories, caller matching, and server workspace persistence."""
 
 from pathlib import Path
+import json
 import shutil
 import subprocess
 
@@ -316,8 +317,17 @@ assert.equal(writes, 0);
 """, before="window.location.hash = '#contacts'; storeContacts([{...CONTACT, labels: ['Legal', 'VIP <team>']}]);")
 
 
-def test_category_search_survives_call_refresh_and_profiles_keep_call_metrics():
-    run_crm(r"""
+def test_category_search_survives_call_refresh_and_profiles_keep_call_metrics(tmp_path):
+    from call_details import CallDetailsStore
+    from test_call_details import CALL, session
+
+    store = CallDetailsStore(str(tmp_path / "details"))
+    assert store.set_summary(CALL, "New College DS confirmed a follow-up appointment.",
+                             session(), source="gemini")
+    saved_path = tmp_path / "details" / (CALL + ".json")
+    original_bytes = saved_path.read_bytes()
+    detail = CallDetailsStore(str(tmp_path / "details")).get(CALL, session())
+    run_crm("const savedDetail=" + json.dumps(detail) + r""";
 tab('Customers').click();
 search('Maya');
 assert.deepEqual(names(), ['Maya Patel']);
@@ -330,8 +340,7 @@ contactRoot.scrollTop = 240;
 const input = searchInput();
 window.DashboardCRM.setSessions([{call_sid: 'CA11111111111111111111111111111111', status: 'completed',
   started_at: '2026-09-25T17:00:00Z', ended_at: '2026-09-25T17:02:00Z',
-  call_detail: {caller_number: '+19415550102', started_at: '2026-09-25T17:00:00Z', duration_seconds: 120,
-    summary: {text: 'Confirmed a follow-up appointment.'}}}]);
+  call_detail: {...savedDetail, caller_number: '+19415550102', started_at: '2026-09-25T17:00:00Z', duration_seconds: 120}}]);
 window.DashboardCRM.render();
 assertSelectedTab('Customers');
 assert.equal(searchInput(), input);
@@ -344,7 +353,8 @@ assert.equal(hasMetrics(), false);
 window.location.hash = '#contacts/demo-maya-patel'; window.DashboardCRM.render();
 assert.equal(hasMetrics(), true);
 assert.match(text(contactRoot), /Talk time/);
-assert.match(text(contactRoot), /Confirmed a follow-up appointment/);
+assert.match(text(contactRoot), /James confirmed a follow-up appointment/);
+assert.doesNotMatch(text(contactRoot), /New College DS/);
 assert.match(text(contactRoot), /Sample transcript/);
 window.location.hash = '#contacts'; window.DashboardCRM.render();
 assertSelectedTab('Customers');
@@ -353,6 +363,7 @@ assert.deepEqual(names(), ['Maya Patel']);
 assert.equal(hasMetrics(), false);
 assert.equal(writes, 0);
 """, before="window.location.hash = '#contacts';")
+    assert saved_path.read_bytes() == original_bytes
 
 
 def test_profile_removes_notices_relationship_and_id_and_exposes_editable_details():

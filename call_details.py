@@ -33,6 +33,7 @@ SUMMARY_KINDS = {
     "brief": ("brief_summary", "brief_summary_job", MAX_BRIEF_SUMMARY_CHARS),
 }
 SUMMARY_MODEL = re.compile(r"[a-z0-9][a-z0-9.-]{0,99}\Z")
+LEGACY_SUMMARY_OWNER = re.compile(r"\bNew College DS\b")
 SUMMARY_ERRORS = {"", "auth", "rate-limit", "provider-error", "timeout", "network", "invalid-response",
                   "blocked", "empty-response", "truncated", "invalid-input", "storage-failed",
                   "cancelled", "unavailable", "stale", "unknown", "invalid_transcript", "input_too_large",
@@ -543,6 +544,10 @@ class CallDetailsStore:
                 if summary and record["ended_at"] and fingerprint == summary["fingerprint"] else None)
             if result[summary_key] and "model" in summary:
                 result[summary_key]["model"] = summary["model"]
+            if result[summary_key] and summary["source"] == "gemini":
+                # Rename the legacy speaker label for every summary view while
+                # preserving saved text, fingerprints, and completed jobs.
+                result[summary_key]["text"] = LEGACY_SUMMARY_OWNER.sub("James", summary["text"])
             job_state = self._summary_state(record, fingerprint, kind)
             if record[job_key] is not None:
                 result[summary_key + "_status"] = job_state["status"]

@@ -84,7 +84,8 @@ def test_request_projects_final_text_and_roles_without_private_metadata_or_tools
         assert all(set(row) == {"track", "start_ms", "end_ms", "text"} for row in data["segments"])
         assert data["segments"][0]["text"] == original["segments"][1]["text"]
         instruction = body["systemInstruction"]["parts"][0]["text"]
-        assert '"Caller"' in instruction and '"New College DS"' in instruction
+        assert '"Caller"' in instruction and '"James"' in instruction
+        assert "New College DS" not in instruction
         assert "untrusted" in instruction and "unclear" in instruction and "echo" in instruction
         assert "partial or failed" in instruction and "synthetic" in instruction
         assert body["generationConfig"]["candidateCount"] == 1

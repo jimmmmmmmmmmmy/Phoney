@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#10171e">
+  <meta name="referrer" content="no-referrer">
+  <title>Unlock · Phoney</title>
+  <link rel="stylesheet" href="/assets/workspace-unlock.css">
+  <script src="/assets/workspace-unlock.js" defer></script>
+</head>
+<body>
+  <main class="unlock-shell" aria-labelledby="unlock-title">
+    <header class="unlock-heading">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3H5a2 2 0 0 0-2 2c0 8.8 7.2 16 16 16a2 2 0 0 0 2-2v-2l-5-2-2 2a13 13 0 0 1-7-7l2-2-2-5Z"/></svg>
+      </div>
+      <p class="brand-name">Phoney</p>
+      <h1 id="unlock-title">Unlock your workspace</h1>
+      <p id="unlock-description" class="unlock-description">Enter your 6-digit PIN.</p>
+    </header>
+
+    <form id="unlock-form" aria-describedby="unlock-description unlock-status" aria-busy="true">
+      <fieldset id="unlock-controls" disabled>
+        <legend class="sr-only">Workspace access</legend>
+        <section id="pin-panel" aria-label="PIN access">
+          <div id="pin-entry" class="pin-entry">
+            <label for="pin-input" class="sr-only">6-digit workspace PIN</label>
+            <input id="pin-input" name="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="current-password" autocapitalize="off" spellcheck="false" aria-describedby="pin-help" required>
+            <div id="pin-dots" class="pin-dots" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+          </div>
+          <p id="pin-help" class="sr-only">Use the number buttons, type, or paste your PIN. Unlocking starts after 6 digits. Backspace deletes the last digit.</p>
+          <p id="pin-progress" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+          <div class="keypad" aria-label="PIN number buttons">
+            <button class="key" type="button" data-digit="1" aria-label="1"><span class="key-number">1</span><span class="key-letters" aria-hidden="true">&nbsp;</span></button>
+            <button class="key" type="button" data-digit="2" aria-label="2"><span class="key-number">2</span><span class="key-letters" aria-hidden="true">ABC</span></button>
+            <button class="key" type="button" data-digit="3" aria-label="3"><span class="key-number">3</span><span class="key-letters" aria-hidden="true">DEF</span></button>
+            <button class="key" type="button" data-digit="4" aria-label="4"><span class="key-number">4</span><span class="key-letters" aria-hidden="true">GHI</span></button>
+            <button class="key" type="button" data-digit="5" aria-label="5"><span class="key-number">5</span><span class="key-letters" aria-hidden="true">JKL</span></button>
+            <button class="key" type="button" data-digit="6" aria-label="6"><span class="key-number">6</span><span class="key-letters" aria-hidden="true">MNO</span></button>
+            <button class="key" type="button" data-digit="7" aria-label="7"><span class="key-number">7</span><span class="key-letters" aria-hidden="true">PQRS</span></button>
+            <button class="key" type="button" data-digit="8" aria-label="8"><span class="key-number">8</span><span class="key-letters" aria-hidden="true">TUV</span></button>
+            <button class="key" type="button" data-digit="9" aria-label="9"><span class="key-number">9</span><span class="key-letters" aria-hidden="true">WXYZ</span></button>
+            <span class="keypad-spacer" aria-hidden="true"></span>
+            <button class="key key-zero" type="button" data-digit="0" aria-label="0"><span class="key-number">0</span></button>
+            <button id="delete-digit" class="key-delete" type="button" aria-label="Delete last digit"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5h11a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-7-7 7-7Z"/><path d="m12 9 6 6m0-6-6 6"/></svg></button>
+          </div>
+        </section>
+
+        <section id="password-panel" class="password-panel" hidden aria-label="Password access">
+          <label for="password-input">Workspace password</label>
+          <div class="password-entry">
+            <input id="password-input" name="password" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" disabled>
+            <button id="password-visibility" type="button" aria-label="Show password" aria-pressed="false"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></button>
+          </div>
+          <button id="password-submit" class="unlock-button" type="submit">Unlock workspace</button>
+        </section>
+
+        <label class="remember-option" for="remember-device">
+          <input id="remember-device" name="remember" type="checkbox" checked>
+          <span><span class="remember-title">Remember this device</span><span class="remember-detail">Stay signed in for 30 days.</span></span>
+        </label>
+        <button id="switch-method" class="method-button" type="button">Use password</button>
+      </fieldset>
+      <p id="unlock-status" class="unlock-status" role="status" aria-live="polite" aria-atomic="true">Checking workspace access…</p>
+      <button id="retry-status" class="retry-button" type="button" hidden>Try again</button>
+    </form>
+    <p class="unlock-footer"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><rect x="3.5" y="7" width="9" height="7" rx="2"/><path d="M5.5 7V4.5a2.5 2.5 0 0 1 5 0V7"/></svg>Private workspace</p>
+    <noscript><p class="noscript-message">Enable JavaScript to unlock this workspace.</p></noscript>
+  </main>
+</body>
+</html>

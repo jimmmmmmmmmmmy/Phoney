@@ -61,7 +61,7 @@ class NotificationStore:
                 elif old[0] != payload:
                     connection.execute("UPDATE call_notifications SET payload=? WHERE id=?",
                                        (payload, item["id"]))
-            connection.execute("INSERT OR IGNORE INTO notification_state VALUES (1)")
+            connection.execute("INSERT INTO notification_state VALUES (1) ON CONFLICT(id) DO NOTHING")
             entries = self._entries(connection)
             for item in entries[RETAIN:]:
                 connection.execute("DELETE FROM call_notifications WHERE id=?", (item["id"],))

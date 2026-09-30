@@ -23,6 +23,8 @@ from media_capture.playback import RecordingLibrary
 from transcription import TranscriptionManager
 from dashboard import register_dashboard
 from workspace_store import WorkspaceStore
+from workspace_auth import install_workspace_access
+from postgres_store import register_workspace
 from voicemail import VoicemailStore
 from call_details import CallDetailsStore
 from summaries import SummaryManager
@@ -65,8 +67,12 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     call_details = CallDetailsStore(settings.call_details_storage_dir)
     operator = OperatorSessions(settings)
     detection_store = DetectionStore(settings.detection_storage_dir)
-    workspace_store = WorkspaceStore(settings.workspace_storage_dir)
-    agent_registry = AgentRegistry(settings.workspace_storage_dir)
+    workspace_store = WorkspaceStore(settings.workspace_storage_dir,
+                                     database_url=settings.database_url,
+                                     workspace_id=settings.workspace_id)
+    agent_registry = AgentRegistry(settings.workspace_storage_dir,
+                                   database_url=settings.database_url,
+                                   workspace_id=settings.workspace_id)
     detection_writes: set[asyncio.Task] = set()
     detection_last_write: dict[str, asyncio.Task] = {}
 
@@ -138,6 +144,12 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
 
     @asynccontextmanager
     async def lifespan(app):
+        if settings.database_url:
+            try:
+                await asyncio.to_thread(register_workspace, settings.database_url,
+                                        settings.workspace_id, settings.twilio_number)
+            except Exception:
+                logger.error("workspace_database_registration_unavailable")
         if settings.agent_demo_mode:
             try:
                 await asyncio.to_thread(agent_registry.ensure_default_voice_clone)
@@ -177,6 +189,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     app.state.detection_store = detection_store
     app.state.workspace_store = workspace_store
     app.state.agent_registry = agent_registry
+    install_workspace_access(app, settings)
     app.state.bridge_pipeline = bridge_pipeline
     app.state.detection_backfill = detection_backfill
     app.state.detection_writes = detection_writes

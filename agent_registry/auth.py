@@ -22,6 +22,9 @@ def _origin(value):
 
 
 def owner_authenticated(request, registry):
+    # The MVP's shared workspace grants the same authority to each trusted device.
+    if getattr(getattr(request, "state", None), "workspace_authenticated", False):
+        return True
     if registry is None:
         return False
     try:

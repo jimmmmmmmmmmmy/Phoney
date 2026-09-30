@@ -19,12 +19,16 @@ from call_details import normalize_caller_number
 
 
 SAFE_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
-                "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY"}
+                "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
+                "X-Robots-Tag": "noindex, nofollow"}
 SID = re.compile(r"CA[0-9a-fA-F]{32}\Z")
 PUBLIC_DIRECTORY = Path(__file__).parent / "public"
 RESUME_FILES = frozenset({"james-liu.pdf", "gerry-jones.pdf", "muhammed-altindal.pdf",
                           "shane-mccarthy.pdf"})
 WORKSPACE_ASSETS = {
+    "workspace-unlock.js": "text/javascript",
+    "workspace-unlock.css": "text/css",
+    "workspace-session.js": "text/javascript",
     "dashboard-workspace.js": "text/javascript",
     "dashboard-crm.js": "text/javascript",
     "dashboard-crm.css": "text/css",

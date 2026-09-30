@@ -18,6 +18,7 @@ import threading
 import time
 
 from workspace_store import _directory, WorkspaceError
+from postgres_store import PostgresUnavailable, transaction as postgres_transaction
 from voice_stack.settings import VOICE_ID
 from voice_stack.prompts import VOICE_CLONE_PROMPT
 
@@ -74,13 +75,22 @@ class AgentSnapshot:
 
 
 class AgentRegistry:
-    def __init__(self, storage_dir, *, clock=time.time):
+    def __init__(self, storage_dir, *, database_url="", workspace_id="default", clock=time.time):
         self.path = Path(storage_dir) if storage_dir else None
-        self.enabled = bool(storage_dir)
+        self.enabled = bool(storage_dir or database_url)
+        self.database_url = database_url
+        self.workspace_id = workspace_id
         self.clock = clock
 
     @contextmanager
     def _transaction(self):
+        if self.database_url:
+            try:
+                with postgres_transaction(self.database_url, self.workspace_id) as connection:
+                    yield connection
+            except PostgresUnavailable:
+                raise RegistryError("Agent storage is unavailable. Changes were not saved.", 503) from None
+            return
         if self.path is None:
             raise RegistryError("Agent storage is not configured.", 503)
         connection = root = None
@@ -141,7 +151,7 @@ class AgentRegistry:
         code = secrets.token_urlsafe(32)
         with self._transaction() as db:
             db.execute("DELETE FROM grants WHERE expires<=?", (self.clock(),))
-            db.execute("DELETE FROM grants WHERE digest IN (SELECT digest FROM grants ORDER BY expires DESC LIMIT -1 OFFSET 15)")
+            db.execute("DELETE FROM grants WHERE digest IN (SELECT digest FROM grants ORDER BY expires DESC LIMIT ? OFFSET 15)", (2**63 - 1,))
             db.execute("INSERT INTO grants VALUES(?,?)", (_digest(code), self.clock() + ttl))
         return code
 
@@ -155,7 +165,7 @@ class AgentRegistry:
             if not found:
                 raise RegistryError("The owner access code is invalid or expired.", 403)
             db.execute("DELETE FROM owner_sessions WHERE expires<=?", (self.clock(),))
-            db.execute("DELETE FROM owner_sessions WHERE digest IN (SELECT digest FROM owner_sessions ORDER BY expires DESC LIMIT -1 OFFSET 31)")
+            db.execute("DELETE FROM owner_sessions WHERE digest IN (SELECT digest FROM owner_sessions ORDER BY expires DESC LIMIT ? OFFSET 31)", (2**63 - 1,))
             db.execute("INSERT INTO owner_sessions VALUES(?,?)", (_digest(token), self.clock() + SESSION_SECONDS))
         return token
 
@@ -232,7 +242,7 @@ class AgentRegistry:
             db.execute("INSERT INTO voices VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
                        (voice["id"], json.dumps(voice)))
             if consent:
-                db.execute("INSERT OR REPLACE INTO clone_receipts VALUES(?,?)", (voice["id"], json.dumps({
+                db.execute("INSERT INTO clone_receipts VALUES(?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload", (voice["id"], json.dumps({
                     "voiceId": voice["voiceId"], "consent": True, "at": self.clock()})))
         return voice
 

@@ -5,7 +5,7 @@ import re
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from dotenv import load_dotenv
 
@@ -39,6 +39,9 @@ class Settings:
     voicemail_storage_dir: str = ""
     call_details_storage_dir: str = ""
     workspace_storage_dir: str = ""
+    database_url: str = field(default="", repr=False)
+    workspace_id: str = "default"
+    workspace_access_enabled: bool = False
     gemini_api_key: str = field(default="", repr=False)
     gemini_summary_model: str = "gemini-3.8-flash"
     owner_number: str = field(default="", repr=False)
@@ -120,6 +123,30 @@ class Settings:
             if (not workspace_path.is_absolute() or workspace_path == Path(workspace_path.anchor)
                     or ".." in workspace_path.parts):
                 raise ValueError("WORKSPACE_STORAGE_DIR must be an absolute private directory.")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", self.workspace_id):
+            raise ValueError("WORKSPACE_ID must be a lowercase identifier of at most 64 characters.")
+        if type(self.workspace_access_enabled) is not bool:
+            raise ValueError("WORKSPACE_ACCESS_ENABLED must be true or false.")
+        if self.database_url:
+            try:
+                database = urlsplit(self.database_url)
+                if (database.scheme not in {"postgres", "postgresql"}
+                        or database.hostname not in {None, "localhost", "127.0.0.1", "::1"}
+                        or not database.path.strip("/") or database.fragment):
+                    raise ValueError
+                database.port
+                options = parse_qs(database.query)
+                if "service" in options:
+                    raise ValueError
+                for option in ("host", "hostaddr"):
+                    for host in options.get(option, []):
+                        if host not in {"localhost", "127.0.0.1", "::1"} and not (
+                                option == "host" and host.startswith("/") and "," not in host):
+                            raise ValueError
+            except ValueError:
+                raise ValueError("DATABASE_URL must identify a local PostgreSQL database.") from None
+        if self.workspace_access_enabled and not (self.database_url or self.workspace_storage_dir):
+            raise ValueError("Set DATABASE_URL or WORKSPACE_STORAGE_DIR before enabling workspace access.")
         if self.call_details_storage_dir:
             details_path = Path(self.call_details_storage_dir).resolve()
             if any(path and Path(path).resolve() == details_path
@@ -157,8 +184,8 @@ class Settings:
             raise ValueError("Enable AGENT_MANAGEMENT_ENABLED before AGENT_DEMO_MODE.")
         if type(self.operator_inbound_enabled) is not bool:
             raise ValueError("OPERATOR_INBOUND_ENABLED must be true or false.")
-        if self.agent_management_enabled and not self.workspace_storage_dir:
-            raise ValueError("Set WORKSPACE_STORAGE_DIR before enabling agent management.")
+        if self.agent_management_enabled and not (self.workspace_storage_dir or self.database_url):
+            raise ValueError("Set WORKSPACE_STORAGE_DIR or DATABASE_URL before enabling agent management.")
         if self.operator_inbound_enabled:
             if not self.operator_ready or not self.voice_agent_enabled:
                 raise ValueError("Configure the operator bridge and VOICE_AGENT_ENABLED before inbound routing.")
@@ -253,6 +280,9 @@ class Settings:
         demo_flag = os.getenv("AGENT_DEMO_MODE", "false").strip().lower()
         if demo_flag not in {"true", "false"}:
             raise ValueError("AGENT_DEMO_MODE must be true or false.")
+        access_flag = os.getenv("WORKSPACE_ACCESS_ENABLED", "false").strip().lower()
+        if access_flag not in {"true", "false"}:
+            raise ValueError("WORKSPACE_ACCESS_ENABLED must be true or false.")
         inbound_flag = os.getenv("OPERATOR_INBOUND_ENABLED", "false").strip().lower()
         if inbound_flag not in {"true", "false"}:
             raise ValueError("OPERATOR_INBOUND_ENABLED must be true or false.")
@@ -294,6 +324,9 @@ class Settings:
             voicemail_storage_dir=os.getenv("VOICEMAIL_STORAGE_DIR", "").strip(),
             call_details_storage_dir=os.getenv("CALL_DETAILS_STORAGE_DIR", "").strip(),
             workspace_storage_dir=os.getenv("WORKSPACE_STORAGE_DIR", "").strip(),
+            database_url=os.getenv("DATABASE_URL", "").strip(),
+            workspace_id=os.getenv("WORKSPACE_ID", "default").strip(),
+            workspace_access_enabled=access_flag == "true",
             gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
             gemini_summary_model=os.getenv("GEMINI_SUMMARY_MODEL", "gemini-3.8-flash").strip(),
             owner_number=os.getenv("OWNER_NUMBER", "").strip(),

@@ -12,6 +12,8 @@ import stat
 import threading
 from urllib.parse import urlsplit
 
+from postgres_store import PostgresUnavailable, transaction as postgres_transaction
+
 
 MAX_CONTACTS = 500
 MAX_AGENTS = 50
@@ -175,14 +177,23 @@ def _directory(path):
 
 
 class WorkspaceStore:
-    """Each operation opens a bounded SQLite transaction; no in-memory fallback."""
+    """Each operation uses durable, serialized SQLite or PostgreSQL storage."""
 
-    def __init__(self, storage_dir):
-        self.enabled = bool(storage_dir)
+    def __init__(self, storage_dir, *, database_url="", workspace_id="default"):
+        self.enabled = bool(storage_dir or database_url)
         self.path = Path(storage_dir) if storage_dir else None
+        self.database_url = database_url
+        self.workspace_id = workspace_id
 
     @contextmanager
     def _transaction(self):
+        if self.database_url:
+            try:
+                with postgres_transaction(self.database_url, self.workspace_id) as connection:
+                    yield connection
+            except PostgresUnavailable:
+                raise WorkspaceUnavailable("Workspace storage is unavailable. Changes were not saved.") from None
+            return
         with WORKSPACE_LOCK:
             with self._locked_transaction() as connection:
                 yield connection
@@ -248,7 +259,10 @@ class WorkspaceStore:
     @staticmethod
     def _snapshot(connection):
         snapshot = {"version": 1, "contacts": [], "demoOverrides": [], "agents": []}
-        rows = connection.execute("SELECT id,kind,phone,payload FROM contacts ORDER BY rowid LIMIT ?",
+        # PostgreSQL records have an explicit insertion sequence; preserve the
+        # established SQLite insertion order without rewriting legacy files.
+        order = getattr(connection, "insertion_order", "rowid")
+        rows = connection.execute(f"SELECT id,kind,phone,payload FROM contacts ORDER BY {order} LIMIT ?",
                                   (MAX_CONTACTS + len(DEMO_PHONES) + 1,)).fetchall()
         for ident, kind, phone, raw in rows:
             if not isinstance(raw, str) or len(raw) > 8000:
@@ -261,7 +275,7 @@ class WorkspaceStore:
             if kind != expected or phone != record["phone"]:
                 raise WorkspaceUnavailable("Workspace contact data is invalid.")
             snapshot["demoOverrides" if kind == "demo" else "contacts"].append(record)
-        agents = connection.execute("SELECT id,fingerprint,payload FROM agents ORDER BY rowid LIMIT ?", (MAX_AGENTS + 1,)).fetchall()
+        agents = connection.execute(f"SELECT id,fingerprint,payload FROM agents ORDER BY {order} LIMIT ?", (MAX_AGENTS + 1,)).fetchall()
         for ident, fingerprint, raw in agents:
             if not isinstance(raw, str) or len(raw) > 50000:
                 raise WorkspaceUnavailable("Workspace agent data is invalid.")

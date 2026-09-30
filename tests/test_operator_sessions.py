@@ -83,7 +83,7 @@ def test_reserve_checks_key_goal_and_destination():
         assert long_goal.value.reason == "goal-too-long"
         for destination in ("+12025559999", OWNER_NUMBER, CALLEE, "12025550103"):
             with pytest.raises(OperatorRejected) as not_allowed:
-                await store.reserve_outbound(destination, "goal", key())
+                await store.reserve_outbound(destination, "goal", key(), browser_allowed=False)
             assert not_allowed.value.reason == "destination-not-allowed"
         assert store.sessions == {}
 
@@ -117,6 +117,100 @@ def test_reserve_is_idempotent_per_key_and_caps_active_sessions():
         second = await reserved(store)
         assert second.id != session.id
         assert store.active_count == 1
+
+    asyncio.run(run())
+
+
+def test_owner_destination_reserves_browser_audio_without_an_owner_phone_leg():
+    async def run():
+        store = Harness().store
+        session = await reserved(store, to=OWNER_NUMBER)
+        owner, remote = session.legs[OWNER], session.legs[REMOTE]
+        assert session.browser_audio is True
+        assert owner.transport == "browser" and remote.transport == "phone"
+        assert owner.call_sid == "" and remote.destination == OWNER_NUMBER
+        assert await store.begin_owner_dial(session.id) is False
+        token = await store.issue_browser_token(session.id)
+        assert await store.bind_browser(session.id, token) is owner
+        assert owner.attached and owner.answered and owner.call_sid == ""
+        await store.bind_call_sid(session.id, REMOTE, REMOTE_SID)
+        assert await store.end(session.id) == [(REMOTE, REMOTE_SID)]
+        await store.close()
+
+    asyncio.run(run())
+
+
+def test_public_owner_destination_rejected_even_with_replayed_idempotency_key():
+    async def run():
+        store = Harness().store
+        request_key = key()
+        with pytest.raises(OperatorRejected, match="destination-not-allowed"):
+            await store.reserve_outbound(OWNER_NUMBER, "", request_key, browser_allowed=False)
+        assert store.sessions == {}
+        session, _ = await store.reserve_outbound(OWNER_NUMBER, "", request_key)
+        with pytest.raises(OperatorRejected, match="destination-not-allowed"):
+            await store.reserve_outbound(OWNER_NUMBER, "", request_key, browser_allowed=False)
+        duplicate, reused = await store.reserve_outbound(OWNER_NUMBER, "", request_key)
+        assert duplicate is session and reused
+        await store.close()
+
+    asyncio.run(run())
+
+
+def test_browser_binding_token_is_expiring_rotatable_and_one_use():
+    async def run():
+        store = Harness().store
+        session = await reserved(store, to=OWNER_NUMBER)
+        owner = session.legs[OWNER]
+        expired = await store.issue_browser_token(session.id)
+        owner.token_issued -= TOKEN_SECONDS + 1
+        with pytest.raises(OperatorRejected, match="expired-token"):
+            await store.bind_browser(session.id, expired)
+        fresh = await store.issue_browser_token(session.id)
+        for invalid in (None, "invalid", "☃", expired):
+            with pytest.raises(OperatorRejected, match="token-mismatch"):
+                await store.bind_browser(session.id, invalid)
+        await store.bind_browser(session.id, fresh)
+        with pytest.raises(OperatorRejected, match="duplicate-binding"):
+            await store.bind_browser(session.id, fresh)
+        await store.detach_socket(session.id, OWNER, owner.generation)
+        with pytest.raises(OperatorRejected, match="browser-already-attached"):
+            await store.issue_browser_token(session.id)
+        assert owner.call_sid == ""
+        await store.close()
+
+    asyncio.run(run())
+
+
+def test_twilio_binding_and_call_status_cannot_occupy_browser_owner_slot():
+    async def run():
+        store = Harness().store
+        session = await reserved(store, to=OWNER_NUMBER)
+        operations = (
+            store.bind_call_sid(session.id, OWNER, OWNER_SID),
+            store.bind_stream(session.id, OWNER, start_message(session, OWNER)),
+            store.record_status(session.id, OWNER, OWNER_SID, "completed"),
+        )
+        for operation in operations:
+            with pytest.raises(OperatorRejected, match="wrong-transport"):
+                await operation
+        assert session.active and session.legs[OWNER].call_sid == ""
+        await store.close()
+
+    asyncio.run(run())
+
+
+def test_country_policy_remains_available_for_public_phone_calls_and_owner_browser_calls():
+    async def run():
+        store = OperatorSessions(replace(SETTINGS, allowed_destinations=(),
+                                         allowed_destination_countries=("US",)))
+        regular, _ = await store.reserve_outbound(DESTINATION, "", key(), browser_allowed=False)
+        assert not regular.browser_audio
+        assert all(leg.transport == "phone" for leg in regular.legs.values())
+        await store.end(regular.id)
+        owner, _ = await store.reserve_outbound(OWNER_NUMBER, "", key())
+        assert owner.browser_audio and owner.legs[OWNER].transport == "browser"
+        await store.close()
 
     asyncio.run(run())
 
@@ -538,7 +632,7 @@ def test_us_policy_rejects_non_us_invalid_and_looping_destinations(destination):
         store = OperatorSessions(replace(SETTINGS, allowed_destinations=(),
                                          allowed_destination_countries=("US",)))
         with pytest.raises(OperatorRejected) as rejected:
-            await store.reserve_outbound(destination, "", key())
+            await store.reserve_outbound(destination, "", key(), browser_allowed=False)
         assert rejected.value.reason == "destination-not-allowed"
         assert store.sessions == {}
         await store.close()

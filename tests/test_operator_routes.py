@@ -247,7 +247,7 @@ def test_outbound_validates_the_payload_and_the_idempotency_key():
         assert client.post("/api/calls/outbound", headers=HEADERS,
                            json={"to": DESTINATION}).status_code == 400
         assert start_call(client, key="retry-1").status_code == 400             # not a UUID
-        assert start_call(client, to=OWNER_NUMBER).status_code == 403           # not allowlisted
+        assert start_call(client, to=CALLEE).status_code == 403                # service loop
         assert start_call(client, to="+12025559999").status_code == 403
         settle(client)
         assert dialer.created == []

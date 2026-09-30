@@ -505,3 +505,199 @@ press('Enter'); await settle();
 assert.equal(outbound().length, 1);
 assert.equal(JSON.parse(outbound()[0].body).to, destination);
 """)
+
+
+BROWSER_SETUP = r"""
+const callingConfig=currentConfig, reply=response;
+const dial=value=>enterNumber(value);
+let browserHandler;
+handler=request=>browserHandler(request.url,request);
+callingConfig.self_call_number = '+13125550101';
+const audioEvents = [];
+let microphoneFailure = null;
+window.DashboardBrowserAudio = {async prepare() {
+  audioEvents.push('prepare');
+  if (microphoneFailure) throw new Error(microphoneFailure);
+  const audio = {connected:false,sessionId:null,stopped:false,
+    async attach(credentials, id) {audioEvents.push('attach'); this.sessionId=id; this.connected=true;},
+    stop() {if(!this.stopped)audioEvents.push('stop'); this.stopped=true; this.connected=false;}};
+  audioEvents.push(audio);
+  return audio;
+}};
+const selfId = sid;
+browserHandler = async(path, options) => {
+  if(path==='/api/calls/config')return reply(callingConfig);
+  if(path==='/api/calls/outbound') {
+    audioEvents.push('outbound');
+    callingConfig.active_session={id:selfId,phase:'owner_ringing',browser_audio:true};
+    return reply({session_id:selfId,phase:'owner_ringing',browser_audio:true});
+  }
+  if(path===`/api/sessions/${selfId}/browser-token`)return reply({url:`/browser-media/${selfId}/`,token:'private-token'});
+  if(path===`/api/sessions/${selfId}/end`) {
+    callingConfig.active_session=null;
+    return reply({id:selfId,phase:'ended',browser_audio:true});
+  }
+  if(path===`/api/sessions/${selfId}`)return reply({id:selfId,phase:'ended',browser_audio:true});
+  throw Error('Unexpected request: '+path);
+};
+"""
+
+
+def test_owner_number_uses_browser_before_outbound_and_minimize_keeps_audio():
+    run_dialer(r"""
+$('dialer-button').click(); await tick();
+dial('3125550101');
+assert.equal($('dialer-start').getAttribute('aria-label'),'Call from this browser');
+assert.equal($('dialer-self-call-help').hidden,false);
+assert.equal(audioEvents.length,0,'Number entry must not open the microphone');
+$('dialer-call-form').dispatch('submit'); await tick();
+assert.equal(audioEvents[0],'prepare');
+assert.equal(audioEvents[2],'outbound');
+assert.equal(audioEvents[3],'attach');
+assert.deepEqual(JSON.parse(requests.find(item=>item.url==='/api/calls/outbound').body),{to:'+13125550101',goal:''});
+assert.equal($('dialer-resume-audio').hidden,true);
+assert.match(text($('dialer-status')), /no need to press 1/);
+assert.match(text($('dialer-status')), /Speak and listen here/);
+$('dialer-minimize').click(); await tick();
+assert.equal(audioEvents[1].stopped,false,'Minimizing must keep browser audio running');
+callingConfig.active_session.phase='connected';
+window.dispatch('focus'); await tick();
+$('dialer-restore').click(); await tick();
+assert.match(text($('dialer-status')), /Keep this tab open/);
+$('dialer-end').click(); await tick();
+assert.equal(audioEvents[1].stopped,true);
+assert.match(text($('dialer-status')), /browser and phone connections have been closed/);
+""", before=BROWSER_SETUP)
+
+
+def test_microphone_denial_never_reserves_or_dials_a_self_call():
+    run_dialer(r"""
+$('dialer-button').click(); await tick(); dial('3125550101');
+$('dialer-call-form').dispatch('submit'); await tick();
+assert.deepEqual(audioEvents,['prepare']);
+assert.equal(requests.filter(item=>item.method==='POST').length,0);
+assert.match(text($('dialer-error')), /Allow microphone access/);
+assert.equal($('dialer-start').getAttribute('aria-label'),'Call from this browser');
+""", before=BROWSER_SETUP + "microphoneFailure='Allow microphone access for this site, then try the call again.';\n")
+
+
+def test_recovered_browser_call_requires_explicit_microphone_attach():
+    run_dialer(r"""
+assert.equal(audioEvents.length,0);
+$('dialer-restore').click(); await tick();
+assert.equal(audioEvents.length,0,'Restoring a recovered call must not steal its microphone/socket');
+assert.equal($('dialer-resume-audio').hidden,false);
+assert.match(text($('dialer-status')), /another tab/);
+$('dialer-resume-audio').click(); await tick();
+assert.equal(audioEvents[0],'prepare');
+assert.equal(audioEvents[2],'attach');
+assert.equal(requests.filter(item=>item.url==='/api/calls/outbound').length,0);
+assert.equal($('dialer-resume-audio').hidden,true);
+window.dispatch('pagehide');
+assert.equal(audioEvents[1].stopped,true);
+""", before=BROWSER_SETUP + "callingConfig.active_session={id:selfId,phase:'reserved',browser_audio:true};\n")
+
+
+def test_unknown_self_call_outcome_stops_microphone_and_preserves_retry_key():
+    run_dialer(r"""
+$('dialer-button').click(); await tick(); dial('3125550101');
+const normalHandler=browserHandler;
+browserHandler=async(path,options)=>path==='/api/calls/outbound'?Promise.reject(Error('lost response')):normalHandler(path,options);
+$('dialer-call-form').dispatch('submit'); await tick();
+assert.equal(audioEvents[1].stopped,true);
+assert.match(text($('dialer-error')), /Your microphone is off/);
+const first=requests.find(item=>item.url==='/api/calls/outbound');
+window.dispatch('focus'); await tick();
+assert.equal(requests.filter(item=>item.url==='/api/calls/outbound').length,1);
+$('dialer-call-form').dispatch('submit'); await tick();
+const starts=requests.filter(item=>item.url==='/api/calls/outbound');
+assert.equal(starts.length,2);
+assert.equal(starts[0].headers['Idempotency-Key'],starts[1].headers['Idempotency-Key']);
+assert.equal(audioEvents.filter(value=>value==='prepare').length,2);
+assert.ok(audioEvents.filter(value=>typeof value==='object').every(audio=>audio.stopped));
+""", before=BROWSER_SETUP)
+
+
+def test_authenticated_access_loss_closes_browser_audio():
+    run_dialer(r"""
+$('dialer-button').click(); await tick(); dial('3125550101');
+$('dialer-call-form').dispatch('submit'); await tick();
+callingConfig.authenticated=false; callingConfig.public_calling=true;
+window.dispatch('focus'); await tick();
+assert.equal(audioEvents[1].stopped,true);
+assert.equal($('dialer-resume-audio').hidden,true);
+""", before=BROWSER_SETUP)
+
+
+def test_us_owner_number_does_not_change_international_allowlist_normalization():
+    run_dialer(r"""
+$('dialer-button').click(); await tick();
+$('dialer-dialog').dispatch('paste',{target:$('dialer-number'),clipboardData:{getData:()=>'+44 20 7946 0958'}});
+$('dialer-call-form').dispatch('submit'); await tick();
+const start=requests.find(item=>item.url==='/api/calls/outbound');
+assert.equal(JSON.parse(start.body).to,'+442079460958');
+assert.equal(audioEvents.length,0,'International callback calls must not acquire browser audio');
+""", before=BROWSER_SETUP + r"""
+callingConfig.destinations=['+442079460958'];
+browserHandler=async(path,options)=>{
+ if(path==='/api/calls/config')return reply(callingConfig);
+ if(path==='/api/calls/outbound') {
+  callingConfig.active_session={id:selfId,phase:'owner_ringing'};
+  return reply({session_id:selfId,phase:'owner_ringing'});
+ }
+ throw Error('Unexpected request: '+path);
+};
+""")
+
+
+def test_pagehide_while_microphone_permission_is_pending_cancels_without_a_post():
+    run_dialer(r"""
+$('dialer-button').click(); await tick(); dial('3125550101');
+const originalPrepare=window.DashboardBrowserAudio.prepare;
+let allowMicrophone;
+window.DashboardBrowserAudio.prepare=async()=>{
+ await new Promise(resolve=>allowMicrophone=resolve);
+ return originalPrepare();
+};
+$('dialer-call-form').dispatch('submit'); await tick();
+window.dispatch('pagehide');
+allowMicrophone(); await tick();
+assert.equal(audioEvents[1].stopped,true);
+assert.equal(requests.filter(item=>item.url==='/api/calls/outbound').length,0);
+assert.match(text($('dialer-error')), /calling was cancelled/);
+assert.equal($('dialer-start').disabled,false);
+""", before=BROWSER_SETUP)
+
+
+def test_browser_token_failure_stops_mic_and_explicit_resume_does_not_create_another_call():
+    run_dialer(r"""
+$('dialer-button').click(); await tick(); dial('3125550101');
+const normalHandler=browserHandler;
+browserHandler=async(path,options)=>path.endsWith('/browser-token')?reply({detail:'Browser connection unavailable'},503):normalHandler(path,options);
+$('dialer-call-form').dispatch('submit'); await tick();
+assert.equal(audioEvents[1].stopped,true);
+assert.equal($('dialer-resume-audio').hidden,false);
+assert.match(text($('dialer-error')), /Browser connection unavailable/);
+window.dispatch('focus'); await tick();
+assert.equal(requests.filter(item=>item.url==='/api/calls/outbound').length,1);
+browserHandler=normalHandler;
+$('dialer-resume-audio').click(); await tick();
+assert.equal(requests.filter(item=>item.url==='/api/calls/outbound').length,1);
+assert.equal(audioEvents.filter(item=>item==='prepare').length,2);
+assert.equal(audioEvents.at(-1),'attach');
+assert.equal($('dialer-resume-audio').hidden,true);
+""", before=BROWSER_SETUP)
+
+
+def test_anonymous_owner_number_cannot_acquire_browser_audio():
+    run_dialer(r"""
+$('dialer-button').click(); await tick(); dial('3125550101');
+assert.equal($('dialer-start').getAttribute('aria-label'),"Call owner's phone");
+assert.equal($('dialer-self-call-help').hidden,true);
+const normalHandler=browserHandler;
+browserHandler=async(path,options)=>path==='/api/calls/outbound'?reply({detail:'Cannot start a call: destination-not-allowed'},403):normalHandler(path,options);
+$('dialer-call-form').dispatch('submit'); await tick();
+assert.deepEqual(audioEvents,[]);
+assert.equal(requests.filter(item=>item.url.endsWith('/browser-token')).length,0);
+assert.match(text($('dialer-error')), /owner's phone and the service number cannot be called/);
+""", before=BROWSER_SETUP + "callingConfig.authenticated=false;callingConfig.public_calling=true;callingConfig.countries=['US'];\n")

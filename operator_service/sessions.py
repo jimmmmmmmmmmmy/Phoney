@@ -117,6 +117,7 @@ class SessionLeg:
     """One phone call: its reserved identity, its bound stream, and its marks."""
 
     role: str
+    transport: str = "phone"
     destination: str = field(default="", repr=False)
     call_sid: str = field(default="", repr=False)
     stream_sid: str = field(default="", repr=False)
@@ -154,6 +155,7 @@ class OperatorSession:
 
     id: str
     direction: str = "outbound"
+    browser_audio: bool = False
     call_token: str = field(default="", repr=False)
     to: str = field(default="", repr=False)
     goal: str = ""
@@ -191,7 +193,8 @@ class OperatorSession:
     def to_status(self) -> dict:
         """A bounded, credential-free view for ``GET /api/sessions/{id}``."""
         now = self.ended_at or time.monotonic()
-        return {"id": self.id, "direction": self.direction, "to": _redacted(self.to),
+        return {"id": self.id, "direction": self.direction, "browser_audio": self.browser_audio,
+                "to": _redacted(self.to),
                 "goal": self.goal[:MAX_GOAL_CHARS], "phase": self.phase, "mode": self.mode,
                 "profile": self.profile, "reply_epoch": self.reply_epoch,
                 "canonical_call_sid": self.canonical_call_sid, "agent_name": self.agent_name,
@@ -360,7 +363,7 @@ class OperatorSessions:
 
     # ------------------------------------------------------------- reservations
 
-    async def reserve_outbound(self, to, goal, idempotency_key, *, voice_id=""):
+    async def reserve_outbound(self, to, goal, idempotency_key, *, voice_id="", browser_allowed=True):
         """Reserve both legs and one idempotency key; return ``(session, reused)``."""
         key = str(idempotency_key or "").strip()
         try:
@@ -374,7 +377,10 @@ class OperatorSessions:
                 raise OperatorRejected("shutting-down")
             existing = self._idempotency.get(key)
             if existing and existing in self.sessions:
-                return self.sessions[existing], True
+                session = self.sessions[existing]
+                if session.browser_audio and not browser_allowed:
+                    raise OperatorRejected("destination-not-allowed")
+                return session, True
             if self.draining:
                 raise OperatorRejected("draining")
             if not self.ready:
@@ -383,14 +389,19 @@ class OperatorSessions:
                 raise OperatorRejected("not-configured")
             if len(text) > MAX_GOAL_CHARS:
                 raise OperatorRejected("goal-too-long")
-            if not self.destination_allowed(destination):
+            browser_audio = bool(destination == self.settings.owner_number
+                                 and destination != self.settings.twilio_number)
+            if (browser_audio and not browser_allowed) or (not browser_audio
+                    and not self.destination_allowed(destination)):
                 raise OperatorRejected("destination-not-allowed")
             self._prune()
             if len(self.sessions) >= self.MAX_SESSIONS or self.active_count >= self.max_active:
                 raise OperatorRejected("capacity")
-            session = OperatorSession(id=uuid.uuid4().hex, direction="outbound",
+            session = OperatorSession(id=uuid.uuid4().hex, direction="outbound", browser_audio=browser_audio,
                                       to=destination, goal=text, voice_id=voice_id)
             session.legs[OWNER] = self._new_leg(OWNER, str(self.settings.owner_number))
+            if browser_audio:
+                session.legs[OWNER].transport = "browser"
             session.legs[REMOTE] = self._new_leg(REMOTE, destination)
             self.sessions[session.id] = session
             self._idempotency[key] = session.id
@@ -461,7 +472,8 @@ class OperatorSessions:
         """Claim the owner dial exactly once, before the REST call is made."""
         async with self._lock:
             session = self._require(session_id)
-            if session.phase != RESERVED or not session.legs[OWNER].usable():
+            if (session.browser_audio or session.phase != RESERVED
+                    or not session.legs[OWNER].usable()):
                 return False
             session.phase = OWNER_RINGING
             self._arm(session_id, "owner_ring", "owner-no-answer")
@@ -553,6 +565,8 @@ class OperatorSessions:
             session = self._require(session_id)
             leg = self._leg(session, role)
             sid = str(call_sid or "")
+            if leg.transport != "phone":
+                raise OperatorRejected("wrong-transport")
             if not CALL_SID.fullmatch(sid):
                 raise OperatorRejected("invalid-call-sid")
             if session.voicemail and role == OWNER:
@@ -589,6 +603,8 @@ class OperatorSessions:
         async with self._lock:
             session = self._require(session_id)
             leg = self._leg(session, role)
+            if leg.transport != "phone":
+                raise OperatorRejected("wrong-transport")
             if not session.active or leg.ended:
                 raise OperatorRejected("session-ended")
             if not isinstance(start, Mapping):
@@ -630,6 +646,38 @@ class OperatorSessions:
             self._cancel(session_id, f"reconcile:{role}")
             return leg
 
+    async def issue_browser_token(self, session_id) -> str:
+        """Only the authenticated browser-token route can mint this credential."""
+        async with self._lock:
+            session = self._require(session_id)
+            leg = session.legs[OWNER]
+            if not session.active or not session.browser_audio:
+                raise OperatorRejected("browser-audio-unavailable")
+            if leg.attached or leg.token_used:
+                raise OperatorRejected("browser-already-attached")
+            leg.token = secrets.token_urlsafe(32)
+            leg.token_issued = time.monotonic()
+            return leg.token
+
+    async def bind_browser(self, session_id, token) -> SessionLeg:
+        """Claim the browser microphone once, without inventing a phone call SID."""
+        async with self._lock:
+            session = self._require(session_id)
+            leg = session.legs[OWNER]
+            if not session.active or not session.browser_audio or leg.ended:
+                raise OperatorRejected("browser-audio-unavailable")
+            if not isinstance(token, str) or not token.isascii() or not hmac.compare_digest(token, leg.token):
+                raise OperatorRejected("token-mismatch")
+            if time.monotonic() - leg.token_issued > TOKEN_SECONDS:
+                raise OperatorRejected("expired-token")
+            if leg.attached or leg.token_used:
+                raise OperatorRejected("duplicate-binding")
+            leg.token_used = True
+            leg.attached = leg.answered = True
+            leg.state = LEG_STARTED
+            leg.stream_sid = "browser-" + session.id
+            return leg
+
     async def detach_socket(self, session_id, role, generation) -> bool:
         """Release the socket slot after its reader loop ends."""
         async with self._lock:
@@ -666,6 +714,8 @@ class OperatorSessions:
         async with self._lock:
             session = self._require(session_id)
             leg = self._leg(session, role)
+            if leg.transport != "phone":
+                raise OperatorRejected("wrong-transport")
             if not session.active:
                 return {"action": "ignored", "reason": session.ended_reason or "ended"}
             raw = str(status or "")

@@ -38,6 +38,8 @@ WORKSPACE_ASSETS = {
     "dashboard-agents.css": "text/css",
     "dashboard-dialer.js": "text/javascript",
     "dashboard-dialer.css": "text/css",
+    "dashboard-browser-audio.js": "text/javascript",
+    "dashboard-call-worklet.js": "text/javascript",
 }
 MAX_WORKSPACE_BODY_BYTES = 2 * 1024 * 1024
 
@@ -54,7 +56,7 @@ def _workspace_origin(value):
         return None
 
 
-def html_page(filename):
+def html_page(filename, *, websocket_origin=""):
     """Allow our same-origin assets and hash the HTML's inline scripts/styles."""
     html = (Path(__file__).parent / filename).read_text()
     scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
@@ -65,9 +67,11 @@ def html_page(filename):
             block.encode()).digest()).decode() + "'" for block in blocks) or "'none'"
 
     headers = dict(SAFE_HEADERS)
+    headers["Permissions-Policy"] = "microphone=(self)"
     headers["Content-Security-Policy"] = (
         "default-src 'none'; script-src 'self' " + hashes(scripts) + "; style-src 'self' " + hashes(styles)
-        + "; connect-src 'self'; media-src 'self'; img-src 'self' data:; base-uri 'none'; "
+        + "; connect-src 'self'" + (" " + websocket_origin if websocket_origin else "")
+        + "; media-src 'self'; img-src 'self' data:; base-uri 'none'; "
           "frame-ancestors 'none'; form-action 'self'")
     return HTMLResponse(html, headers=headers)
 
@@ -247,7 +251,7 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
 
     @app.get("/dashboard", response_class=HTMLResponse)
     async def page():
-        return html_page("dashboard.html")
+        return html_page("dashboard.html", websocket_origin=settings.public_base_url.replace("https://", "wss://", 1))
 
     @app.get("/team")
     async def team_page():

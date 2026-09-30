@@ -20,7 +20,7 @@ The installed service reads `~/Library/Application Support/NewCollegeOperator/.e
 | `VOICEMAIL_AGENT_ENABLED=true` | Use the internal voicemail assistant when the owner does not answer an inbound bridge call. Requires inbound routing. A ready `owner` voice enables conversation; otherwise native recording takes the message. Defaults false. |
 | `VOICEMAIL_AGENT_RING_SECONDS=10` | Application wait before unanswered-call fallback; integer 5–60 seconds. Ten seconds is the default, not a guarantee of four carrier rings. |
 | `ALLOWED_DESTINATIONS` | Comma-separated E.164 allowlist for the dashboard dialer and protected outbound API. Incoming calls do not expand this allowlist. |
-| `ALLOWED_DESTINATION_COUNTRIES=US` | Optionally allow valid US numbers in addition to the explicit list. Blank by default; only US is supported. Canadian and Caribbean `+1` numbers do not qualify. Owner and Twilio numbers are always excluded. |
+| `ALLOWED_DESTINATION_COUNTRIES=US` | Optionally allow valid US numbers in addition to the explicit list. Blank by default; only US is supported. Canadian and Caribbean `+1` numbers do not qualify. The Twilio number is always excluded; owner self-calls use authenticated browser audio. |
 | `PUBLIC_CALLING_ENABLED=true` | Let anyone use the dashboard dialer without a code. Outbound start, limited status, and hangup are public; the owner phone must still answer and press 1 before the destination rings. Defaults false. |
 
 When `OPERATOR_INBOUND_ENABLED=false`, the existing conference/voicemail route remains in use. **Only new calls** use an enabled bridge; an existing conference cannot be converted mid-call. Enabling the bridge alone does not enable automatic detection handoff or conversational voicemail: each has its own flag. The original `VOICEMAIL_ENABLED` setting controls the separate conference `Say`/`Record` flow.
@@ -35,7 +35,7 @@ There are no voice catalog or manual call controls on the Agents page. The demo 
 
 ## Call from the dashboard
 
-1. Configure `OWNER_NUMBER`, `OPERATOR_ADMIN_TOKEN`, and either `ALLOWED_DESTINATION_COUNTRIES=US` or at least one `ALLOWED_DESTINATIONS` number on the permanent host. Destinations must include their country code and cannot be the owner or Twilio number.
+1. Configure `OWNER_NUMBER`, `OPERATOR_ADMIN_TOKEN`, and either `ALLOWED_DESTINATION_COUNTRIES=US` or at least one `ALLOWED_DESTINATIONS` number on the permanent host. Destinations must include their country code and cannot be the Twilio number. Calls to the owner use the browser exception below.
 2. Set `PUBLIC_CALLING_ENABLED=true` to make **New call** available to anyone without a code. For private calling, leave it false, enable `AGENT_MANAGEMENT_ENABLED=true`, and run `.venv/bin/python scripts/operator_access.py --env-file .env` on the host to issue an owner code. Codes expire after five minutes; owner sessions last 12 hours.
 3. Open **New call**, enter an allowed number, and start the call. Answer the configured owner phone and press **1** to connect the other person. Both parties speak through their phones; the browser does not need microphone access.
 4. Use **End call** to hang up both legs. Closing the dialog, reloading the page, or changing the dashboard's Wi-Fi leaves the phone call running. Reopening **New call** restores its current status while the permanent host remains available.
@@ -47,6 +47,10 @@ On first demo startup with a ready voice named **owner**, the server seeds **Voi
 Agents, revisions, and voice mappings survive server restarts, deployments, and Cloudflare URL changes. The execution database is `agent-execution.sqlite3` in `WORKSPACE_STORAGE_DIR`, separate from the existing workspace database containing contacts and legacy drafts. The list includes legacy drafts, but execution records take precedence for matching IDs. Back up both databases with the app idle. Rollback can leave the execution database untouched.
 
 ## Use a manually enabled call
+
+**Calling your own number from the dashboard:** enter the configured `OWNER_NUMBER` in **New call** and allow microphone access. Phoney uses the browser microphone and speaker for your side, then rings that phone once. The browser must be ready before the phone is dialed; no callback or press-1 acceptance is used for this exception. Keep the tab open throughout the call. Minimizing the dialer keeps audio running; closing the tab, losing the browser connection, or selecting **End call** ends the phone connection. Other outbound destinations retain the owner-first phone callback. `TWILIO_NUMBER` remains blocked as a destination, and the existing destination allowlist is unchanged.
+
+Browser audio uses the existing mono 8 kHz μ-law bridge, capture, transcript, and summary paths. It requires a secure URL, microphone permission, Web Audio, and AudioWorklet support. Reloaded or additional tabs do not automatically activate their microphones or take an existing browser connection; the dialer offers an explicit microphone action for an unconnected reservation. Browser attachment credentials are short-lived, one-use, owner-authorized, and checked against the site Origin. The shared workspace gate also requires its authenticated cookie when enabled.
 
 1. Call the Twilio number from a different phone. The caller hears exactly **New College Data Science** while `OWNER_NUMBER` rings. Answer normally: both microphones connect as soon as both signed audio streams are ready, with no acceptance digit. This starts a human conversation, not AI. Outbound API calls retain their separate press-1 acceptance step.
 2. Talk normally, then press **#N** on the owner phone for the saved shortcut (for example, **#1** for Voice Clone). Remote-party keypad commands cannot activate agents.

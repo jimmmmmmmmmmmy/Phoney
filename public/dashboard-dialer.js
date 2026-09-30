@@ -1,4 +1,4 @@
-/* Callback calling with optional public access. Audio stays on the two phones. */
+/* Callback calling, with browser audio when the owner calls their own phone. */
 (() => {
   "use strict";
   const PHONE = /^\+[1-9][0-9]{7,14}$/;
@@ -7,11 +7,12 @@
   let config = null, session = null, attempt = null;
   let dialed = "", countryNormalized = false;
   let mutation = false, generation = 0, refreshing = null, error = "", readError = false, initialized = false;
+  let browserAudio = null, audioEpoch = 0;
   let trigger, dialog, offline, loading, unlockForm, code, unlockButton;
   let callForm, number, callButton, setup, status, statusTitle, statusBody;
   let keypad, backspace, clearNumber, content, minimizeButton, restoreButton;
   const keys = [];
-  let errorBox, endButton, anotherButton, dialogActions;
+  let errorBox, endButton, anotherButton, resumeAudioButton, selfCallHelp, dialogActions;
 
   function node(tag, className, text) {
     const element = document.createElement(tag);
@@ -42,11 +43,16 @@
   const active = () => Boolean(session && session.phase !== "ended");
   const canCall = () => Boolean(config?.authenticated || config?.public_calling);
   const visitor = () => Boolean(config?.public_calling && !config?.authenticated);
+  const selfCall = to => Boolean(config?.authenticated && PHONE.test(config?.self_call_number || "") && to === config.self_call_number);
+  const destination = value => !value.startsWith("+") && /^[0-9]{10}$/.test(value) && selfCall("+1" + value)
+    ? "+1" + value : value.startsWith("+") ? value : "+" + value;
+  const browserCall = () => Boolean(session?.browser_audio);
+  const audioConnected = () => Boolean(browserAudio?.connected && browserAudio.sessionId === session?.id);
   const usNumber = () => Boolean(config?.countries?.includes("US") ||
     (config?.destinations?.length && config.destinations.every(value => /^\+1[0-9]{10}$/.test(value))));
   const setText = (element, value) => {if (element.textContent !== value) element.textContent = value;};
   function normalizeCountryCode() {
-    if (!countryNormalized && usNumber() && /^\+?1[0-9]{10}$/.test(dialed)) {
+    if (!countryNormalized && (usNumber() || selfCall(destination(dialed))) && /^\+?1[0-9]{10}$/.test(dialed)) {
       dialed = dialed.replace(/^\+?1/, "");
       countryNormalized = true;
     }
@@ -87,8 +93,36 @@
   }
   function adopt(value) {
     if (!value || !SESSION.test(value.id)) return;
+    if (value.phase === "ended" || (browserAudio?.sessionId && browserAudio.sessionId !== value.id)) stopBrowserAudio();
     session = value;
     attempt = null;
+  }
+
+  function stopBrowserAudio() {
+    audioEpoch++;
+    if (browserAudio) {browserAudio.stop(); browserAudio = null;}
+  }
+
+  async function prepareBrowserAudio() {
+    const epoch = audioEpoch;
+    if (!window.DashboardBrowserAudio) throw new Error("Browser audio is unavailable. Refresh this page and try again.");
+    const prepared = await window.DashboardBrowserAudio.prepare();
+    if (epoch !== audioEpoch) {prepared.stop(); throw new Error("Browser calling was cancelled. Try again.");}
+    if (prepared.stopped) throw new Error("Browser audio was interrupted before the call started. Try again.");
+    browserAudio = prepared;
+    prepared.onDisconnect = message => {
+      if (browserAudio !== prepared) return;
+      browserAudio = null; audioEpoch++;
+      if (active()) error = message;
+      render(); refresh();
+    };
+  }
+
+  async function attachBrowserAudio() {
+    const id = session.id, prepared = browserAudio;
+    const credentials = await request(`/api/sessions/${id}/browser-token`, {method: "POST"});
+    if (prepared !== browserAudio || !active() || session.id !== id) throw new Error("Browser calling was cancelled. Try again.");
+    await prepared.attach(credentials, id);
   }
 
   async function request(url, options = {}) {
@@ -129,7 +163,10 @@
     for (const key of keys) key.disabled = mutation || Boolean(attempt);
     backspace.disabled = clearNumber.disabled = mutation || Boolean(attempt) || !dialed;
     callButton.disabled = mutation || !online() || Boolean(config?.busy && !active()) || (!dialed && !attempt);
-    const callLabel = mutation ? "Starting call…" : attempt ? "Retry same request" : publicVisitor ? "Call owner's phone" : "Call my phone";
+    const displayedDestination = /^[0-9]{10}$/.test(dialed) && usNumber() ? "+1" + dialed : destination(dialed);
+    const ownDestination = selfCall(displayedDestination);
+    selfCallHelp.hidden = !ownDestination || callForm.hidden;
+    const callLabel = mutation ? "Starting call…" : attempt ? "Retry same request" : ownDestination ? "Call from this browser" : publicVisitor ? "Call owner's phone" : "Call my phone";
     callButton.setAttribute("aria-label", callLabel);
     status.hidden = !allowed || !hasCall;
     status.setAttribute("data-ended", String(session?.phase === "ended"));
@@ -142,6 +179,16 @@
       ended: ["Call ended", endedMessage(session?.ended_reason)]
     };
     const phase = phases[session?.phase] || ["Checking call status", "The call continues on the phones."];
+    if (browserCall() && active()) {
+      if (!audioConnected()) {
+        phase[0] = mutation ? "Connecting browser audio" : "Use browser audio";
+        phase[1] = "Use the microphone in this tab to speak and listen. If this call is open in another tab, continue there.";
+      } else {
+        phase[0] = session.phase === "connected" ? "Connected" : session.phase === "reserved" ? "Starting your call" : "Ringing your phone";
+        phase[1] = session.phase === "connected" ? "Speak and listen here. Keep this tab open; minimizing the dialer keeps the call connected."
+          : "Your phone rings once. Answer it to connect; no need to press 1. Speak and listen here, and keep this tab open.";
+      }
+    }
     setText(statusTitle, phase[0]);
     setText(statusBody, phase[1]);
     endButton.hidden = !allowed || !active();
@@ -149,9 +196,11 @@
     endButton.textContent = mutation ? "Ending…" : "End call";
     anotherButton.hidden = !allowed || !hasCall || active();
     anotherButton.disabled = mutation;
-    dialogActions.hidden = endButton.hidden && anotherButton.hidden;
+    resumeAudioButton.hidden = !allowed || !config?.authenticated || !active() || !browserCall() || audioConnected();
+    resumeAudioButton.disabled = mutation || !online();
+    dialogActions.hidden = endButton.hidden && anotherButton.hidden && resumeAudioButton.hidden;
     offline.hidden = online();
-    setText(offline, active()
+    setText(offline, browserCall() && active() ? "You're offline. Browser audio will disconnect and the call will end. Reconnect before starting another call." : active()
       ? "You're offline. The phone call can continue. Status will reconnect when you're online."
       : "You're offline. Reconnect to start a call or check its status.");
     setText(errorBox, error || (allowed && config.busy && !hasCall ? "Another call is in progress. Wait for it to finish before starting a new call." : ""));
@@ -165,7 +214,7 @@
       ? "The owner's phone wasn't answered or the call wasn't accepted. You can try again."
       : "Your phone wasn't answered or the call wasn't accepted. You can try again.";
     if (/failed|timeout|error|setup/.test(reason || "")) return "The call could not connect. You can try again.";
-    return "Both phone connections have been closed.";
+    return browserCall() ? "The browser and phone connections have been closed." : "Both phone connections have been closed.";
   }
 
   function refresh() {
@@ -177,7 +226,8 @@
         if (revision !== generation) return;
         config = next;
         if (readError) {error = ""; readError = false;}
-        if (!canCall()) {session = null; attempt = null;}
+        if (!canCall()) {stopBrowserAudio(); session = null; attempt = null;}
+        else if (!config.authenticated && browserAudio) {stopBrowserAudio(); session = null; attempt = null;}
         else if (config.active_session) {if (attempt) error = ""; adopt(config.active_session);}
         else if (session && session.phase !== "ended") {
           try {
@@ -186,6 +236,7 @@
           } catch (failure) {
             if (revision !== generation) return;
             if (failure.status === 404) {
+              stopBrowserAudio();
               session = null;
               error = visitor() ? "This call is no longer available. Check with the owner before starting another call."
                 : "This call is no longer available. Check your phone before starting another call.";
@@ -193,7 +244,8 @@
           }
         }
       } catch (_) {
-        if (revision === generation) {readError = true; error = active()
+        if (revision === generation) {readError = true; error = browserCall() && active() ? "Call status is unavailable. Keep this tab open while browser audio is connected."
+          : active()
           ? "Call status is unavailable. The phone call can continue; status will reconnect automatically."
           : "Calling is unavailable right now. Check your connection and try again.";}
       } finally {refreshing = null; render(); if (revision !== generation && !mutation) refresh();}
@@ -220,7 +272,7 @@
     if (!attempt) {
       if (/[^0-9+*#]/.test(dialed)) {error = "Use only the phone number, without extension text or letters."; render(); number.focus(); return;}
       if (/[*#]/.test(dialed)) {error = "Use digits only for phone numbers. Remove * and # before calling."; render(); number.focus(); return;}
-      let to = dialed.startsWith("+") ? dialed : "+" + dialed;
+      let to = destination(dialed);
       if (usNumber()) {
         if (dialed.startsWith("+") && !/^\+1[0-9]{10}$/.test(dialed)) {
           error = "Use a US phone number: 10 digits, or +1 followed by 10 digits. Other country codes are not supported.";
@@ -230,37 +282,59 @@
         else if (countryNormalized || !/^\+?1[0-9]{10}$/.test(dialed)) {error = "Enter a 10-digit US phone number, including the area code."; render(); number.focus(); return;}
       }
       if (!PHONE.test(to)) {error = "Enter a phone number with its country code, such as +14155550123."; render(); number.focus(); return;}
-      if (!(config.destinations || []).includes(to) && !(config.countries?.includes("US") && /^\+1[0-9]{10}$/.test(to))) {
+      if (!selfCall(to) && !(config.destinations || []).includes(to) && !(config.countries?.includes("US") && /^\+1[0-9]{10}$/.test(to))) {
         error = config.countries?.includes("US") ? "Enter a US phone number with +1 and the area code." : "This number is not approved for calling. Choose an approved number.";
         render(); number.focus(); return;
       }
       if (!crypto.randomUUID) {error = "Calling needs a secure connection. Open this site with HTTPS."; render(); return;}
-      attempt = {key: crypto.randomUUID(), payload: {to, goal: ""}};
+      attempt = {key: crypto.randomUUID(), payload: {to, goal: ""}, browser: selfCall(to)};
     }
     mutation = true; generation++; error = ""; readError = false; render();
+    let posted = false;
     try {
+      if (attempt.browser) await prepareBrowserAudio();
+      posted = true;
       const result = await request("/api/calls/outbound", {method: "POST", headers: {"Idempotency-Key": attempt.key}, body: JSON.stringify(attempt.payload)});
       if (!SESSION.test(result.session_id)) throw new Error("Invalid call response");
-      adopt({id: result.session_id, phase: result.phase});
+      adopt({id: result.session_id, phase: result.phase, browser_audio: result.browser_audio === true});
+      if (browserCall() && active()) {
+        if (!browserAudio) throw new Error("Browser audio is unavailable. Use the microphone button to connect.");
+        await attachBrowserAudio();
+      } else stopBrowserAudio();
     } catch (failure) {
-      if (failure.status && failure.status < 500) {
+      stopBrowserAudio();
+      if (!posted) {attempt = null; error = failure.message;}
+      else if (session?.browser_audio) {
+        error = failure.status === 409 ? "This call is already open in another tab. Continue the call there." : failure.message;
+      } else if (failure.status && failure.status < 500) {
         attempt = null;
         error = failure.message.includes("destination-not-allowed") ? (config.countries?.includes("US")
-          ? "Enter an allowed US phone number. The owner's phone and the service number cannot be called."
-          : "Choose an approved number. The owner's phone and the service number cannot be called.")
+          ? "Enter an allowed US phone number. " + (visitor() ? "The owner's phone and the service number cannot be called." : "The service number cannot be called.")
+          : "Choose an approved number. " + (visitor() ? "The owner's phone and the service number cannot be called." : "The service number cannot be called."))
           : failure.status === 403 ? (visitor() ? "Calling is unavailable for this request. Refresh the page and try again." : "Unlock calling again, or choose an approved number.")
           : failure.status === 429 || failure.status === 409 ? "Another call is already in progress. Its status will appear here."
           : failure.message;
-      } else error = visitor() ? "We couldn't confirm whether the call started. Check with the owner before retrying."
+      } else error = attempt?.browser ? "We couldn't confirm whether the call started. Your microphone is off. Check call status before retrying the same request."
+        : visitor() ? "We couldn't confirm whether the call started. Check with the owner before retrying."
         : "We couldn't confirm whether the call started. Check your phone before retrying.";
     } finally {mutation = false; generation++; render();}
     // Reconcile reads only. Never automatically retry the call-creation request.
     await refresh();
   }
 
+  async function resumeBrowserAudio() {
+    if (mutation || !active() || !browserCall() || audioConnected() || !config?.authenticated || !online()) return;
+    mutation = true; generation++; error = ""; readError = false; render();
+    try {await prepareBrowserAudio(); await attachBrowserAudio();}
+    catch (failure) {stopBrowserAudio(); error = failure.status === 409 ? "This call is already open in another tab. Continue the call there." : failure.message;}
+    finally {mutation = false; generation++; render();}
+    await refresh();
+  }
+
   async function end() {
     if (mutation || !active() || !canCall() || !online()) return;
     const id = session.id;
+    if (browserCall()) stopBrowserAudio();
     mutation = true; generation++; error = ""; readError = false; render();
     try {adopt(await request(`/api/sessions/${id}/end`, {method: "POST"}));}
     catch (_) {error = visitor() ? "Could not confirm the call ended. Check with the owner or try End call again."
@@ -325,7 +399,9 @@
     callButton = button("", "dialer-call-button", "dialer-start"); callButton.type = "submit";
     callButton.append(icon(handset));
     const callActions = node("div", "dialer-keypad-call"); callActions.append(callButton);
-    callForm.append(display, editing, keypad, callActions); callForm.addEventListener("submit", start);
+    selfCallHelp = node("p", "dialer-help", "Calling your own number uses this browser's microphone and speaker. Your phone rings once; no need to press 1.");
+    selfCallHelp.id = "dialer-self-call-help";
+    callForm.append(display, editing, keypad, callActions, selfCallHelp); callForm.addEventListener("submit", start);
     dialog.addEventListener("keydown", numberKey);
     dialog.addEventListener("paste", pasteNumber);
     status = node("section", "dialer-state"); status.id = "dialer-status"; status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite"); status.setAttribute("aria-atomic", "true");
@@ -333,8 +409,10 @@
     errorBox = node("p", "toolbar-error dialer-error"); errorBox.id = "dialer-error"; errorBox.setAttribute("role", "alert");
     endButton = button("End call", "toolbar-secondary-button dialer-end", "dialer-end"); endButton.addEventListener("click", end);
     anotherButton = button("Start another call", "toolbar-primary-button", "dialer-another");
-    anotherButton.addEventListener("click", () => {session = null; attempt = null; error = ""; render(); number.focus(); refresh();});
-    dialogActions = node("div", "dialer-actions"); dialogActions.append(endButton, anotherButton);
+    anotherButton.addEventListener("click", () => {stopBrowserAudio(); session = null; attempt = null; error = ""; render(); number.focus(); refresh();});
+    resumeAudioButton = button("Use microphone in this tab", "toolbar-primary-button", "dialer-resume-audio");
+    resumeAudioButton.addEventListener("click", resumeBrowserAudio);
+    dialogActions = node("div", "dialer-actions"); dialogActions.append(resumeAudioButton, endButton, anotherButton);
     content.append(controls, offline, loading, unlockForm, setup, callForm, status, errorBox, dialogActions);
     dialog.append(content, restoreButton); document.body.append(dialog);
     const open = () => {
@@ -347,6 +425,7 @@
     restoreButton.addEventListener("click", open);
     dialog.addEventListener("close", () => trigger.focus());
     window.DashboardDialer = {open};
+    window.addEventListener("pagehide", stopBrowserAudio);
     const resume = () => {render(); refresh();};
     window.addEventListener("online", resume); window.addEventListener("offline", render);
     window.addEventListener("focus", resume); window.addEventListener("pageshow", resume);

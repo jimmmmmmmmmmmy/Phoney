@@ -32,12 +32,12 @@ def unlock(client, settings):
     assert result.status_code == 200
 
 
-def test_demo_access_and_bearer_do_not_disclose_owner_call_configuration(tmp_path):
+def test_demo_access_does_not_disclose_owner_call_configuration_but_admin_can(tmp_path):
     with bridge_client(managed_settings(tmp_path)) as (client, dialer, settings):
         assert client.get("/api/agents/config").json()["authenticated"] is True
         assert start_call(client).status_code == 202
         settle(client)
-        for headers in ({}, HEADERS, {"X-Agent-Request": "1"}):
+        for headers in ({}, {"X-Agent-Request": "1"}):
             response = client.get("/api/calls/config", headers=headers)
             assert response.status_code == 200
             assert response.json() == {"authenticated": False, "enabled": True, "public_calling": False,
@@ -47,6 +47,10 @@ def test_demo_access_and_bearer_do_not_disclose_owner_call_configuration(tmp_pat
             assert response.headers["referrer-policy"] == "no-referrer"
             for private in (OWNER_NUMBER, DESTINATION, ADMIN_TOKEN, "itemized"):
                 assert private not in response.text
+        admin = client.get("/api/calls/config", headers=HEADERS).json()
+        assert admin["authenticated"] is True
+        assert admin["self_call_number"] == OWNER_NUMBER
+        assert admin["active_session"]["id"] in client.app.state.operator.sessions
         client.cookies.set(OWNER_COOKIE, "invalid-owner-cookie")
         assert client.get("/api/calls/config").json()["authenticated"] is False
         assert len(dialer.created) == 1
@@ -58,7 +62,8 @@ def test_owner_can_recover_ringing_call_without_origin_and_end_with_csrf_headers
         before = client.get("/api/calls/config").json()
         assert before == {"authenticated": True, "enabled": True, "public_calling": False,
             "owner_label": "•••• 0101", "destinations": [DESTINATION],
-            "countries": [], "active_session": None, "busy": False}
+            "countries": [], "active_session": None, "busy": False,
+            "self_call_number": OWNER_NUMBER}
         key = str(uuid.uuid4())
         headers = {**owner_headers(settings), "Idempotency-Key": key}
         started = client.post("/api/calls/outbound", json={"to": DESTINATION}, headers=headers)
@@ -70,7 +75,7 @@ def test_owner_can_recover_ringing_call_without_origin_and_end_with_csrf_headers
         assert state["busy"] is True
         assert state["active_session"]["id"] == session_id
         assert state["active_session"]["phase"] == "owner_ringing"
-        assert OWNER_NUMBER not in response.text
+        assert state["self_call_number"] == OWNER_NUMBER
         assert ADMIN_TOKEN not in response.text
         session = session_of(client, session_id)
         assert session.legs[OWNER].token not in response.text
@@ -196,7 +201,7 @@ def test_us_policy_allows_only_authenticated_owner_to_start_valid_us_callback(tm
         assert config["authenticated"] is True and config["enabled"] is True
         assert config["countries"] == ["US"] and config["destinations"] == []
         for destination in ("+14165550123", "+18095550123", "+442083661177", "+12001230101",
-                            settings.owner_number, settings.twilio_number):
+                            settings.twilio_number):
             response = client.post("/api/calls/outbound", json={"to": destination}, headers=headers)
             assert response.status_code == 403
         settle(client)

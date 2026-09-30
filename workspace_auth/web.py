@@ -35,6 +35,7 @@ TWILIO_HTTP = re.compile(
     + r"|/twilio/voicemail/(?:finished|recording)/" + CALL_SID + r")\Z")
 TWILIO_WS = re.compile(r"(?:/media/" + CALL_SID + r"/|/media/" + OPERATOR_SID
                        + r"/(?:owner|remote)/)\Z")
+BROWSER_WS = re.compile(r"/browser-media/" + OPERATOR_SID + r"/\Z")
 
 
 def _https_origin(value):
@@ -181,8 +182,21 @@ class WorkspaceGate:
                     valid = False
                 if valid:
                     return await self.app(scope, receive, safe_send)
-            # The browser has no WebSocket routes today. Future browser sockets
-            # require explicit session and Origin checks before being exposed.
+            if BROWSER_WS.fullmatch(path) and not scope.get("query_string"):
+                headers = Headers(scope=scope)
+                origins = headers.getlist("origin")
+                request = Request({**scope, "type": "http", "method": "GET"})
+                try:
+                    authenticated = bool(self.access and len(origins) == 1
+                        and _https_origin(origins[0]) == _https_origin(self.settings.public_base_url)
+                        and await asyncio.to_thread(self.access.authenticated,
+                                                    request.cookies.get(SESSION_COOKIE)))
+                except (AccessNotConfigured, AccessUnavailable):
+                    authenticated = False
+                if authenticated:
+                    scope.setdefault("state", {})["workspace_authenticated"] = True
+                    scope["state"]["workspace_id"] = self.access.workspace_id
+                    return await self.app(scope, receive, safe_send)
             return await send({"type": "websocket.close", "code": 1008})
         if ((method in {"GET", "HEAD"} and path in PUBLIC_READ)
                 or (method == "POST" and path in PUBLIC_WRITE)

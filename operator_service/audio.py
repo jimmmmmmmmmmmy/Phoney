@@ -263,6 +263,7 @@ class CallRouter:
         self.mode = HUMAN
         self.owner_notice = False
         self.closed = False
+        self.browser_socket = None
         self.cue: asyncio.Task | None = None
         self.counters = {"routed": 0, "owner_muted": 0, "dtmf_ignored": 0,
                          "rejected_messages": 0, "bad_marks": 0, "marks_played": 0}
@@ -390,10 +391,84 @@ class CallRouter:
     def close(self):
         self.closed = True
         self.stop_cue()
+        socket, self.browser_socket = self.browser_socket, None
+        if socket is not None:
+            self.controller.store.spawn(self._close_browser(socket))
         for channel in self.channels.values():
             channel.detach()
 
+    @staticmethod
+    async def _close_browser(socket):
+        try:
+            await socket.close(code=1000)
+        except (RuntimeError, OSError):
+            pass
+
     # ------------------------------------------------------------------ reading
+
+    async def serve_browser(self, websocket, store):
+        """A token-bound browser owns the owner channel; it is never a PSTN leg."""
+        if self.closed:
+            await websocket.close(code=1008)
+            return
+        await websocket.accept()
+        leg = None
+        started = time.monotonic()
+        bad = 0
+        try:
+            while not self.closed:
+                message = await self._receive(websocket, leg, started)
+                if message is None:
+                    await websocket.close(code=1008)
+                    break
+                if message["type"] == "websocket.disconnect":
+                    break
+                raw = message.get("text")
+                event = None
+                if isinstance(raw, str) and len(raw.encode("utf-8")) <= MAX_MESSAGE_BYTES:
+                    try:
+                        event = json.loads(raw)
+                    except (ValueError, TypeError):
+                        pass
+                if not isinstance(event, dict):
+                    bad += 1
+                elif leg is None:
+                    if event.get("event") != "start":
+                        await websocket.close(code=1008)
+                        break
+                    try:
+                        leg = await store.bind_browser(self.session_id, event.get("token"))
+                    except OperatorRejected:
+                        await websocket.close(code=1008)
+                        break
+                    self.browser_socket = websocket
+                    self.generations[OWNER] = leg.generation
+                    await websocket.send_json({"event": "ready"})
+                    self.channels[OWNER].attach(websocket, leg.stream_sid, leg.generation, leg.counters)
+                    await self._dispatch_control(self.controller.stream_started(
+                        self.session_id, OWNER, leg.stream_sid))
+                    continue
+                elif event.get("event") == "stop":
+                    break
+                elif event.get("event") in {"media", "mark", "dtmf"}:
+                    bad += await self._dispatch(OWNER, leg, event)
+                else:
+                    bad += 1
+                if bad >= MAX_BAD_MESSAGES:
+                    await websocket.close(code=1008)
+                    break
+        except (RuntimeError, OSError):
+            pass
+        finally:
+            # A rejected second socket must never detach the authenticated one.
+            if leg is not None:
+                if self.browser_socket is websocket:
+                    self.browser_socket = None
+                self.channels[OWNER].detach()
+                await store.detach_socket(self.session_id, OWNER, leg.generation)
+                await self._dispatch_control(self.controller.stream_stopped(
+                    self.session_id, OWNER, "browser-disconnected"))
+                await self._close_browser(websocket)
 
     async def serve(self, websocket, role: str, store):
         """Own one Twilio socket from upgrade to disconnect."""

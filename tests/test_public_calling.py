@@ -122,6 +122,25 @@ def test_public_dialing_preserves_us_and_loop_restrictions():
         assert dialer.created == []
 
 
+def test_public_calling_cannot_start_discover_attach_or_end_owner_browser_call():
+    with bridge_client(PUBLIC) as (client, dialer, settings):
+        assert start(client, settings, to=OWNER_NUMBER).status_code == 403
+        started = client.post("/api/calls/outbound", json={"to": OWNER_NUMBER},
+            headers={**HEADERS, "Idempotency-Key": str(uuid.uuid4())})
+        assert started.status_code == 202
+        session_id = started.json()["session_id"]
+        settle(client)
+        assert dialer.created == []
+        public = client.get("/api/calls/config").json()
+        assert public["busy"] is True and public["active_session"] is None
+        assert "self_call_number" not in public
+        assert client.get(f"/api/sessions/{session_id}").status_code == 403
+        assert client.post(f"/api/sessions/{session_id}/end", headers=owner_headers(settings)).status_code == 403
+        assert client.post(f"/api/sessions/{session_id}/browser-token", headers=owner_headers(settings)).status_code == 403
+        assert session_of(client, session_id).active
+        assert start(client, settings, to=OWNER_NUMBER, key=started.request.headers["Idempotency-Key"]).status_code == 403
+
+
 def test_public_access_cannot_read_or_end_inbound_but_real_owner_still_can(tmp_path):
     settings = managed_settings(tmp_path, public_calling_enabled=True, allowed_destinations=(),
         allowed_destination_countries=("US",), operator_inbound_enabled=True,

@@ -1,8 +1,10 @@
 # Pick your implementation guide
 
+**GPT migration and ChatGPT plugin:** read the [research report](CHATGPT_PLUGIN_RESEARCH.md), then follow the [five-phase build plan](CHATGPT_PLUGIN_BUILD_PLAN.md). These are proposals checked October 1, 2026; no model or production configuration has been changed by this documentation work.
+
 Open [BUILD_3.md](BUILD_3.md) to use the live transcript dashboard. Partners can start with [DEEPFAKE_DETECTION.md](DEEPFAKE_DETECTION.md) for detection or [VOICE_STACK.md](VOICE_STACK.md) for Gemini + ElevenLabs.
 
-**Implemented through Build 3:** Twilio conference, optional unanswered-call voicemail, passive WAV recording, live Deepgram transcription, public HTML/JSON/text viewing, finalized local WAV playback/downloads, and offline PCM replay. Anyone with the public ngrok URL can read/download transcript text and play/download finalized local recordings without signing in. Synthetic audio passed real Deepgram and local transport/browser checks; actual phone capture/transcription remains pending. Optional Modulate caller analysis is integrated; see its setup and duration-based alert policy below. See the root [verification status](../README.md) for test and deployment evidence.
+**Historical Build 1–3 guides:** these describe earlier milestones, including public archive access. The current live workspace access gate is enabled, and dashboard APIs, transcripts and recordings require authorization. See [workspace privacy](WORKSPACE_STORAGE.md#shared-pin-and-remembered-phones) and the [current architecture baseline](CHATGPT_PLUGIN_RESEARCH.md#what-is-running-today) before using an older guide's deployment or security assumptions.
 
 | Work | Start here | Concrete outcome |
 | --- | --- | --- |

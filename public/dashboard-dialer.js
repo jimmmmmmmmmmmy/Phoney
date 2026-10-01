@@ -179,6 +179,10 @@
       ended: ["Call ended", endedMessage(session?.ended_reason)]
     };
     const phase = phases[session?.phase] || ["Checking call status", "The call continues on the phones."];
+    if (session?.audio_path === "native-conference" && session.phase === "connected" && !publicVisitor) {
+      phase[0] = session.mode === "agent" || session.mode === "announcing" ? "AI agent speaking" : "Connected";
+      phase[1] = "For phone controls, press *, wait for the prompt, then press your agent's number. Use 0 to return to speaking. You briefly stop hearing the call during the menu.";
+    }
     if (browserCall() && active()) {
       if (!audioConnected()) {
         phase[0] = mutation ? "Connecting browser audio" : "Use browser audio";

@@ -156,6 +156,8 @@ class OperatorSession:
     id: str
     direction: str = "outbound"
     browser_audio: bool = False
+    native_conference: bool = False
+    native_owner_muted: bool = False
     call_token: str = field(default="", repr=False)
     to: str = field(default="", repr=False)
     goal: str = ""
@@ -194,6 +196,7 @@ class OperatorSession:
         """A bounded, credential-free view for ``GET /api/sessions/{id}``."""
         now = self.ended_at or time.monotonic()
         return {"id": self.id, "direction": self.direction, "browser_audio": self.browser_audio,
+                "audio_path": "native-conference" if self.native_conference else "relay",
                 "to": _redacted(self.to),
                 "goal": self.goal[:MAX_GOAL_CHARS], "phase": self.phase, "mode": self.mode,
                 "profile": self.profile, "reply_epoch": self.reply_epoch,
@@ -310,7 +313,8 @@ class OperatorSessions:
         self._cancel(session_id, key)
         timeout = self.deadlines.get(key, self.deadlines.get(key.split(":", 1)[0]))
         if timeout is None:
-            timeout = float(self.settings.max_call_seconds) if key == "call" else DEFAULT_SECONDS[key]
+            timeout = (float(self.settings.max_call_seconds) if key == "call"
+                       else DEFAULT_SECONDS[key.split(":", 1)[0]])
             session = self.sessions.get(session_id)
             if (key == "owner_ring" and session and session.direction == "inbound"
                     and getattr(self.settings, "voicemail_agent_enabled", False)):

@@ -216,6 +216,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
         voice=operator_voice, registry=agent_registry if settings.agent_management_enabled else None,
         context_getter=bridge_pipeline.context, on_call_start=bridge_pipeline.start,
         on_call_end=bridge_pipeline.end, on_audio=bridge_pipeline.audio,
+        on_native_audio=bridge_pipeline.native_audio,
         on_output_audio=bridge_pipeline.output, on_agent_turn=bridge_pipeline.agent_turn,
         require_owner=require_owner, voicemail_store=voicemails)
     bridge_pipeline.controller = controller

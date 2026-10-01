@@ -181,7 +181,8 @@ class DialogueRun:
                         # Any failure or #0 cancels both and restores human relay.
                         if not self.voicemail:
                             self.cue_task = asyncio.create_task(self._announcement(http))
-                        if getattr(self.session, "agent_kind", "manual") == "ai-detected":
+                        if (getattr(self.session, "agent_kind", "manual") == "ai-detected"
+                                and not getattr(self.session, "native_conference", False)):
                             self.owner_cue_task = asyncio.create_task(self._announcement(http, OWNER_NOTICE))
                         self.preparation_task = asyncio.create_task(self._prepare_first(http))
                         self.announcement_task = asyncio.create_task(self._announce_ready())
@@ -190,9 +191,8 @@ class DialogueRun:
                         reply_exhausted = first is None
                     if not self.current():
                         return
-                    await self.controller.store.transition(self.session.id, self.epoch, AGENT)
+                    await self.controller.transition_audio_mode(self.session.id, self.epoch, AGENT)
                     self.trace("agent-active")
-                    self.controller.router(self.session.id).set_mode(AGENT)
                     # Deliver the response prepared alongside the disclosure.
                     # New speech remains in history for the next caller turn; throwing
                     # this response away leaves a silent, already-active agent.
@@ -312,9 +312,8 @@ class DialogueRun:
             self.preparation_task.result()
         if not self.current():
             return
-        await self.controller.store.transition(self.session.id, self.epoch, ANNOUNCING)
+        await self.controller.transition_audio_mode(self.session.id, self.epoch, ANNOUNCING)
         self.trace("announcement-started")
-        self.controller.router(self.session.id).set_mode(ANNOUNCING)
         async def caller_notice():
             await self._play_chunks(_bytes(cue), kind="announcement")
             await self._ack("announcement")

@@ -54,6 +54,8 @@ class Settings:
     agent_management_enabled: bool = False
     agent_demo_mode: bool = False
     operator_inbound_enabled: bool = False
+    native_conference_enabled: bool = False
+    twilio_conference_app_sid: str = ""
     automatic_takeover_enabled: bool = False
     voicemail_agent_enabled: bool = False
     voicemail_agent_ring_seconds: int = 10
@@ -67,6 +69,12 @@ class Settings:
     modulate_detection_queue_frames: int = 250
 
     def __post_init__(self):
+        if type(self.native_conference_enabled) is not bool:
+            raise ValueError("NATIVE_CONFERENCE_ENABLED must be true or false.")
+        if self.twilio_conference_app_sid and not re.fullmatch(r"AP[0-9a-fA-F]{32}", self.twilio_conference_app_sid):
+            raise ValueError("TWILIO_CONFERENCE_APP_SID must be a TwiML application SID.")
+        if self.native_conference_enabled and not self.twilio_conference_app_sid:
+            raise ValueError("Set TWILIO_CONFERENCE_APP_SID before enabling native conferences.")
         if not self.account_sid.startswith("AC") or len(self.account_sid) != 34:
             raise ValueError("Set TWILIO_ACCOUNT_SID in .env to your account SID.")
         if not self.auth_token or self.auth_token == "REPLACE_ME":
@@ -259,6 +267,9 @@ class Settings:
     @classmethod
     def from_env(cls):
         load_dotenv(ROOT / ".env")
+        native_flag = os.getenv("NATIVE_CONFERENCE_ENABLED", "false").strip().lower()
+        if native_flag not in {"true", "false"}:
+            raise ValueError("NATIVE_CONFERENCE_ENABLED must be true or false.")
         public_calling_flag = os.getenv("PUBLIC_CALLING_ENABLED", "false").strip().lower()
         if public_calling_flag not in {"true", "false"}:
             raise ValueError("PUBLIC_CALLING_ENABLED must be true or false.")
@@ -343,6 +354,8 @@ class Settings:
             agent_management_enabled=management_flag == "true",
             agent_demo_mode=demo_flag == "true",
             operator_inbound_enabled=inbound_flag == "true",
+            native_conference_enabled=native_flag == "true",
+            twilio_conference_app_sid=os.getenv("TWILIO_CONFERENCE_APP_SID", "").strip(),
             automatic_takeover_enabled=auto_flag == "true",
             voicemail_agent_enabled=voicemail_agent_flag == "true",
             voicemail_agent_ring_seconds=int(os.getenv("VOICEMAIL_AGENT_RING_SECONDS", "10")),

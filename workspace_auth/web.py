@@ -32,9 +32,13 @@ TWILIO_HTTP = re.compile(
     r"(?:/voice|/status|/(?:media/status|conference/events|calls/status|conference/finished|"
     r"voicemail|voicemail/finished|voicemail/recording)/" + CALL_SID
     + r"|/twilio/(?:status|reconnect)/" + OPERATOR_SID + r"/(?:owner|remote)"
-    + r"|/twilio/voicemail/(?:finished|recording)/" + CALL_SID + r")\Z")
+    + r"|/twilio/voicemail/(?:finished|recording)/" + CALL_SID
+    + r"|/twilio/native-agent|/twilio/native-agent/status/" + OPERATOR_SID + r"/[1-9][0-9]*"
+    + r"|/twilio/native-(?:owner|menu|command|conference)/" + OPERATOR_SID
+    + r"|/twilio/native-finished/" + OPERATOR_SID + r"/remote)\Z")
 TWILIO_WS = re.compile(r"(?:/media/" + CALL_SID + r"/|/media/" + OPERATOR_SID
-                       + r"/(?:owner|remote)/)\Z")
+                       + r"/(?:owner|remote)/|/conference-media/" + OPERATOR_SID
+                       + r"/(?:owner|remote)/|/native-agent-media/" + OPERATOR_SID + r"/)\Z")
 BROWSER_WS = re.compile(r"/browser-media/" + OPERATOR_SID + r"/\Z")
 
 

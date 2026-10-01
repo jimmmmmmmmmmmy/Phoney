@@ -41,6 +41,8 @@ from twilio.twiml.voice_response import VoiceResponse
 from webhooks import require_sid, twilio_validator, valid_media_signature
 
 from .audio import CallRouter
+from .conference_gateway import NativeConferenceGatewayMixin
+from .native_conference import NativeConferenceMixin, register_native_routes
 from .controls import (DIGITS, HASH, PROFILE, RELEASE, REPORTED, Command, Keypad)
 from .sessions import (AGENT, ANNOUNCING, PREPARING, CALL_SID, CONNECTED, HUMAN, MODES, OWNER, OWNER_PROMPT, REMOTE, ROLES,
                        OperatorRejected, OperatorSession, OperatorSessions)
@@ -110,7 +112,7 @@ def voicemail_closing_twiml():
     return str(response)
 
 
-class TwilioLegs:
+class TwilioLegs(NativeConferenceGatewayMixin):
     """Bounded async facade over the blocking Twilio REST SDK for call legs.
 
     Construction is side-effect free. Only ``create_leg`` places a call, and it
@@ -208,13 +210,13 @@ class TwilioLegs:
         return await asyncio.to_thread(fetch)
 
 
-class OperatorController:
+class RelayOperatorController:
     """Owns the Twilio legs, the per-session router, and the phase deadlines."""
 
     def __init__(self, settings, store: OperatorSessions, dialer=None, *, voice_id="",
                  voice=None, keypad_factory=Keypad, registry=None,
                  context_getter=None, on_call_start=None, on_call_end=None,
-                 on_audio=None, on_output_audio=None, on_agent_turn=None,
+                 on_audio=None, on_native_audio=None, on_output_audio=None, on_agent_turn=None,
                  provider_transport=None, voicemail_store=None):
         self.settings = settings
         self.store = store
@@ -224,6 +226,7 @@ class OperatorController:
         self.context_getter = context_getter
         self.call_start_callback, self.call_end_callback = on_call_start, on_call_end
         self.audio_callback, self.output_callback = on_audio, on_output_audio
+        self.native_audio_callback = on_native_audio
         self.agent_turn_callback = on_agent_turn
         self.provider_transport = provider_transport
         self.voicemails = voicemail_store
@@ -559,6 +562,10 @@ class OperatorController:
 
     async def agent_turn(self, session, text, start_ms, end_ms, **kwargs):
         await self._callback(self.agent_turn_callback, session, text, start_ms, end_ms, **kwargs)
+
+    async def transition_audio_mode(self, session_id, epoch, mode):
+        await self.store.transition(session_id, epoch, mode)
+        self.router(session_id).set_mode(mode)
 
     async def _notify_started(self, session):
         if session.canonical_call_sid and session.id not in self._started:
@@ -1333,6 +1340,10 @@ class OperatorController:
             log.warning("operator_end_call_failed role=%s type=%s", role, type(exc).__name__)
 
 
+class OperatorController(NativeConferenceMixin, RelayOperatorController):
+    """Select native conference routing per session, with the relay as fallback."""
+
+
 def _status_for(reason: str) -> int:
     if reason == "capacity":
         return 429
@@ -1349,17 +1360,18 @@ def _xml(response) -> Response:
 
 def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
                              dialer=None, voice=None, *, registry=None, context_getter=None,
-                             on_call_start=None, on_call_end=None, on_audio=None,
+                             on_call_start=None, on_call_end=None, on_audio=None, on_native_audio=None,
                              on_output_audio=None, on_agent_turn=None, require_owner=None,
                              provider_transport=None, voicemail_store=None) -> OperatorController:
     """Mount the operator bridge beside the existing conference path."""
     controller = OperatorController(settings, store, dialer, voice=voice, registry=registry,
         context_getter=context_getter, on_call_start=on_call_start, on_call_end=on_call_end,
-        on_audio=on_audio, on_output_audio=on_output_audio, on_agent_turn=on_agent_turn,
+        on_audio=on_audio, on_native_audio=on_native_audio, on_output_audio=on_output_audio, on_agent_turn=on_agent_turn,
         provider_transport=provider_transport, voicemail_store=voicemail_store)
     app.state.operator = store
     app.state.operator_controller = controller
     validate_twilio = twilio_validator(settings)
+    register_native_routes(app, settings, store, controller, validate_twilio)
 
     def admin_authenticated(request: Request):
         token = str(getattr(settings, "operator_admin_token", ""))
@@ -1544,6 +1556,9 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
                                                form.get("CallStatus"), duration=duration)
         except OperatorRejected as exc:
             raise HTTPException(400, f"Call callback does not match: {exc.reason}") from None
+        if (controller.is_native(session_id) and role == OWNER
+                and result["action"] == "accepted" and form.get("CallStatus") == "in-progress"):
+            await store.mark_owner_prompt(session_id)
         if result["action"] == "terminal":
             if role == OWNER and await controller._begin_voicemail(session_id, result['reason']):
                 return Response(status_code=204)

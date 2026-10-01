@@ -79,7 +79,37 @@ class BridgePipeline:
         self.transcription.offer(sid, "inbound", timestamp_ms, frame)
         self.detection.offer(sid, "inbound", timestamp_ms, frame)
 
+    def native_audio(self, session, role, track, frame, timestamp_ms):
+        """Observe native conference legs without relaying either microphone.
+
+        The remote inbound track is isolated caller evidence. Remote outbound
+        already contains the conference playback, including our agent; save it
+        once and obtain owner STT from the owner's isolated inbound track.
+        """
+        if role == "remote" and track == "inbound":
+            self.audio(session, role, frame, timestamp_ms)
+            return
+        if (role, track) not in {("remote", "outbound"), ("owner", "inbound")}:
+            return
+        if not self._ensure(session):
+            return
+        sid = session.canonical_call_sid
+        if role == "remote":
+            if sid not in self.capture_failed:
+                self.capture.offer_external(sid, "outbound", timestamp_ms, frame)
+        else:
+            # Muted/waiting owner speech was not heard by the caller. Maintain
+            # the STT clock while excluding that private microphone audio.
+            suppressed = (getattr(session, "native_owner_muted", False)
+                          or getattr(session, "phase", "") != "connected")
+            self.transcription.offer(sid, "outbound", timestamp_ms,
+                                     b"\xff" * len(frame) if suppressed else frame)
+
     def output(self, session, frame, timestamp_ms, kind):
+        if getattr(session, "native_conference", False):
+            # The passive remote outbound track records actual conference
+            # playback. Bot send acknowledgements must not duplicate it.
+            return
         if not self._ensure(session):
             return
         sid = session.canonical_call_sid

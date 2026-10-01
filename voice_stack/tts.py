@@ -40,8 +40,8 @@ DIALOGUE_URL = "wss://api.elevenlabs.io/v1/text-to-dialogue/stream-input"
 # Bound downstream read-ahead without coalescing small provider chunks: waiting
 # for a full 8,000-byte block would add a second of latency to telephone audio.
 MAX_AUDIO_CHUNK_BYTES = 8000
-# One phrase, not one reply: the relay flushes around 120 characters, so this
-# only ever rejects a caller that bypassed the sentence buffer.
+# One phrase, not one reply: the relay preserves sentences up to 300 characters,
+# so this only rejects a caller that bypassed the sentence buffer.
 MAX_TEXT_CHARS = 2000
 MAX_NAME_CHARS = 80
 CONNECT_SECONDS = 5.0

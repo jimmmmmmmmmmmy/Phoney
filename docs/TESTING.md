@@ -17,7 +17,7 @@ not a separate subset. The first local run after consolidation finished in
 | Browser and dashboard | 24 | Real HTTP asset loading and CSP, actual vendored SDK export, media setup and cancellation, codec status, keypad controls, disconnect cleanup, authentication loss, playback, network recovery, and CRM edits. |
 | Auth, storage, setup, and deployment | 31 | PIN lockout and recovery, session expiry, hashed credentials, signed HTTP/WebSocket callbacks, workspace persistence and isolation, JWT grants, Twilio App configuration, deployment draining, rollback, and commit health. |
 | Saved call products | 10 | History and exports after restart, pagination, stereo playback, recording headers, detailed/brief summaries and retries, voicemail recording callbacks, and shared notifications. |
-| Vocal delivery | 3 | Real local dialogue WebSocket protocol, prefetch across task/playback boundaries, caller interruption cleanup, and delivery-aware cached speech. |
+| Vocal delivery | 3 | Real local dialogue WebSocket protocol, complete phrase boundaries across streamed deltas, legacy reply continuity, prefetch across task/playback boundaries, caller interruption cleanup, and delivery-aware cached speech. |
 
 ## Test structure
 

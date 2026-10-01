@@ -469,15 +469,21 @@ class ReplyCommandBuffer:
 class SentenceBuffer:
     """Turn streamed text into speakable phrases for one bounded TTS queue.
 
-    Phrases end at sentence punctuation, or at a word boundary once the text
-    reaches ``limit`` characters so an unpunctuated reply cannot become one
-    long utterance. The remainder is only released by ``flush`` after the
-    provider signalled completion.
+    Keep ordinary sentences intact, including prices, times, abbreviations and
+    closing quotes. A punctuation mark needs following whitespace before it is
+    a sentence ending: a later delta may still turn ``1,200.`` into ``1,200.50``.
+    Only overlong text falls back to a clause or word boundary. ``flush`` releases
+    the final sentence once the text provider has finished.
     """
 
-    PUNCTUATION = ".!?;:"
+    DEFAULT_LIMIT = 300
+    _ENDINGS = re.compile(r"[.!?]+[\"'\u201d\u2019)\]]*")
+    _ABBREVIATIONS = frozenset({
+        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc",
+        "e.g", "i.e", "a.m", "p.m", "no", "fig", "dept", "inc", "co", "ltd",
+    })
 
-    def __init__(self, limit: int = 120):
+    def __init__(self, limit: int = DEFAULT_LIMIT):
         if type(limit) is not int or isinstance(limit, bool) or limit < 8:
             raise ValueError("Sentence limit must be an integer of at least 8.")
         self.limit = limit
@@ -504,12 +510,42 @@ class SentenceBuffer:
 
     def _boundary(self) -> int | None:
         """Exclusive end index of the next phrase, or None to keep buffering."""
-        window = self._buffer[:self.limit]
-        mark = max((window.rfind(mark) for mark in self.PUNCTUATION), default=-1)
-        if mark >= 0:
-            return mark + 1
+        text = self._buffer
+        for ending in self._ENDINGS.finditer(text):
+            end = ending.end()
+            if end > self.limit:
+                break
+            if end == len(text) or not text[end].isspace():
+                continue
+            if ending.group().startswith(".."):
+                # An ellipsis is a pause within the same spoken thought.
+                continue
+            # Decimal points, domains and emails have no following whitespace.
+            # Titles/initials and numbered lists need an additional exception.
+            if ending.group().startswith("."):
+                prefix = text[:ending.start()]
+                token = re.search(r"[A-Za-z][A-Za-z.]*$", prefix)
+                if token and (token.group().lower() in self._ABBREVIATIONS
+                        or re.fullmatch(r"(?:[A-Za-z]\.)*[A-Z]", token.group())):
+                    continue
+                if prefix.strip().isdigit():
+                    continue
+            return end
         if len(self._buffer) >= self.limit:
-            space = window.rfind(" ")
+            if len(text) == self.limit and text[-1] in ".!?,;:\"'\u201d\u2019)]":
+                # At the cap, wait for one lookahead character too. Otherwise
+                # the same sentence gets different cuts depending on deltas.
+                return None
+            window = text[:self.limit]
+            # Commas/colons/semicolons are fallback clause boundaries, not
+            # ordinary sentence endings. Requiring whitespace protects 3:30,
+            # 1,200 and URL schemes even when punctuation arrives alone.
+            clauses = [mark.end() for mark in re.finditer(r"[,;:\u2014](?=\s)", text)
+                       if mark.end() <= self.limit]
+            if clauses:
+                return clauses[-1]
+            spaces = [mark.start() for mark in re.finditer(r"\s", window)]
+            space = spaces[-1] if spaces else -1
             # One unbroken token still has to be released, or nothing speaks.
             return space if space > 0 else self.limit
         return None

@@ -10,8 +10,62 @@ import pytest
 from websockets.asyncio.client import connect as real_connect
 from websockets.asyncio.server import serve
 
-from voice_stack import tts
+from voice_stack import relay, tts
 from voice_stack.delivery import DEFAULT_DELIVERY, LEGACY_MODEL, LATEST_REALTIME_MODEL
+
+
+async def _verify_relay_continuity(monkeypatch):
+    """Offline rendering shares completed phrase context without changing words."""
+    requests, sessions, deltas = [], [], []
+    chunks = ["The total is $1,200.", "50, and we can meet at 3:",
+              "30 tomorrow. ", "Does that work for you?"]
+    phrases = ["The total is $1,200.50, and we can meet at 3:30 tomorrow.",
+               "Does that work for you?"]
+    audio = b"\x2a" * 160
+
+    def provider(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, content=audio)
+
+    class Conversation:
+        async def reply(self, *args, **kwargs):
+            for chunk in chunks:
+                yield chunk
+
+    class FailedConversation:
+        async def reply(self, *args, **kwargs):
+            yield phrases[0] + " "
+            raise RuntimeError("generation failed")
+
+    class TrackedSession(tts.SpeechSession):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            sessions.append(self)
+
+    with monkeypatch.context() as scenario:
+        scenario.setattr(relay, "SpeechSession", TrackedSession)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+            options = dict(gemini_api_key="test-gemini", tts_api_key="test-key",
+                           voice_id="voiceA", voice_model=LEGACY_MODEL)
+            reply = await relay.speak_reply(http, Conversation(), on_text=deltas.append, **options)
+            assert reply.text == "".join(chunks) and reply.phrases == phrases
+            assert deltas == chunks and reply.audio == audio * 2
+            assert [request["text"] for request in requests] == phrases
+            assert "previous_text" not in requests[0]
+            assert requests[1]["previous_text"] == phrases[0]
+            assert len(sessions) == 1 and sessions[0]._closed
+            assert reply.first_text_ms is not None and reply.first_audio_ms is not None
+
+            text_only = await relay.speak_reply(http, Conversation(), gemini_api_key="test-gemini",
+                                               voice_id="invalid voice ID")
+            assert text_only.text == reply.text and text_only.phrases == phrases
+            assert not text_only.audio and text_only.first_audio_ms is None
+            assert len(requests) == 2 and len(sessions) == 1
+
+            with pytest.raises(RuntimeError, match="generation failed"):
+                await relay.speak_reply(http, FailedConversation(), **options)
+            assert len(sessions) == 2 and sessions[1]._closed
+            assert not sessions[1]._streams and not sessions[1]._sockets
 
 
 def test_dialogue_and_legacy_speech_streams_preserve_protocol_and_cancel_cleanly(monkeypatch):
@@ -141,4 +195,5 @@ def test_dialogue_and_legacy_speech_streams_preserve_protocol_and_cancel_cleanly
                         release_reader.set()
                         await asyncio.gather(priming, return_exceptions=True)
                         await crossing.aclose()
+        await _verify_relay_continuity(monkeypatch)
     asyncio.run(run())

@@ -13,6 +13,7 @@ claims to be.
 
 from __future__ import annotations
 
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 import time
 
@@ -22,7 +23,7 @@ from .agent import DEFAULT_MODEL, Conversation, SentenceBuffer
 from .delivery import DEFAULT_DELIVERY, VoiceDelivery
 from .settings import TWILIO_FORMAT
 from .tts import DEFAULT_MODEL as DEFAULT_VOICE_MODEL
-from .tts import speech
+from .tts import SpeechSession
 
 
 @dataclass
@@ -66,31 +67,39 @@ async def speak_reply(http: httpx.AsyncClient, conversation: Conversation, *,
     audio = bytearray()
     speaking = bool(tts_api_key and voice_id)
 
-    async def render(phrase: str) -> None:
-        audio.extend(await speech(http, tts_api_key, voice_id, phrase,
-                                  model=voice_model, output_format=output_format,
-                                  delivery=delivery,
-                                  timeout=request_timeout))
-        if reply.first_audio_ms is None:
-            reply.first_audio_ms = elapsed()
-
-    async for delta in conversation.reply(http, gemini_api_key, model=model,
-                                          max_output_tokens=max_output_tokens,
-                                          timeout=request_timeout):
-        if reply.first_text_ms is None:
-            reply.first_text_ms = elapsed()
-        reply.text += delta
-        if on_text is not None:
-            on_text(delta)
-        for phrase in buffer.feed(delta):
-            reply.phrases.append(phrase)
-            if speaking:
-                await render(phrase)
-    trailing = buffer.flush()
-    if trailing:
-        reply.phrases.append(trailing)
+    async with AsyncExitStack() as cleanup:
+        synthesis = None
         if speaking:
-            await render(trailing)
+            # One reply owns its context and provider streams. Legacy models
+            # inherit completed phrase text just as they do in the live relay.
+            synthesis = await cleanup.enter_async_context(SpeechSession(
+                http, tts_api_key, voice_id, model=voice_model,
+                output_format=output_format, delivery=delivery,
+                timeout=request_timeout))
+
+        async def render(phrase: str) -> None:
+            async for chunk in synthesis.speech_bytes(phrase):
+                audio.extend(chunk)
+            if reply.first_audio_ms is None:
+                reply.first_audio_ms = elapsed()
+
+        async for delta in conversation.reply(http, gemini_api_key, model=model,
+                                              max_output_tokens=max_output_tokens,
+                                              timeout=request_timeout):
+            if reply.first_text_ms is None:
+                reply.first_text_ms = elapsed()
+            reply.text += delta
+            if on_text is not None:
+                on_text(delta)
+            for phrase in buffer.feed(delta):
+                reply.phrases.append(phrase)
+                if speaking:
+                    await render(phrase)
+        trailing = buffer.flush()
+        if trailing:
+            reply.phrases.append(trailing)
+            if speaking:
+                await render(trailing)
     reply.audio = bytes(audio)
     reply.total_ms = elapsed()
     return reply

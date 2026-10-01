@@ -406,9 +406,10 @@ class DialogueRun:
             await self.phrases.put(VOICEMAIL_GREETING)
             await self.phrases.put(None)
             return
-        # A short voicemail recap should keep its sentence/intonation together,
-        # rather than split a clause at the normal phone phrase's 120-char cap.
-        buffer = SentenceBuffer(limit=VOICEMAIL_PHRASE_CHARS if self.voicemail else 120)
+        # Preserve complete sentences in live speech. Voicemail keeps its
+        # smaller bound for concise recaps; both paths protect numbers/times.
+        buffer = (SentenceBuffer(limit=VOICEMAIL_PHRASE_CHARS) if self.voicemail
+                  else SentenceBuffer())
         commands = ReplyCommandBuffer()
         chars = 0
         first_token = True

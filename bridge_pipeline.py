@@ -12,13 +12,15 @@ log = logging.getLogger("uvicorn.error")
 
 
 class BridgePipeline:
-    def __init__(self, settings, capture, transcription, detection, details, voicemails=None, recordings=None):
+    def __init__(self, settings, capture, transcription, detection, details, voicemails=None, recordings=None,
+                 quality=None):
         self.settings = settings
         self.capture = capture
         self.transcription = transcription
         self.detection = detection
         self.details = details
         self.voicemails, self.recordings = voicemails, recordings
+        self.quality = quality
         self.controller = None
         self.calls = {}
         self.started = set()
@@ -36,13 +38,16 @@ class BridgePipeline:
 
     @property
     def pending_count(self):
-        return self.events.qsize() + len(self.fallbacks)
+        return (self.events.qsize() + len(self.fallbacks) + len(self.ending)
+                + (self.quality.pending_count if self.quality else 0))
 
     async def start(self, session):
         sid = session.canonical_call_sid
         if not sid or sid in self.calls or self.closed:
             return
         self.calls[sid] = session
+        if self.quality is not None:
+            self.quality.start(sid)
         await asyncio.to_thread(self.details.start, sid, session.to, session.created_at)
 
     def _ensure(self, session):
@@ -106,6 +111,8 @@ class BridgePipeline:
                                      b"\xff" * len(frame) if suppressed else frame)
 
     def output(self, session, frame, timestamp_ms, kind):
+        if self.quality is not None and kind in {"agent", "announcement", "silence"}:
+            self.quality.audio(session.canonical_call_sid, "sent", frame, timestamp_ms, kind=kind)
         if getattr(session, "native_conference", False):
             # The passive remote outbound track records actual conference
             # playback. Bot send acknowledgements must not duplicate it.
@@ -193,7 +200,14 @@ class BridgePipeline:
                     timestamp_ms=segment.get("speech_start_ms", segment.get("start_ms")),
                     speech_final=segment.get("speech_final"),
                     speech_started=segment.get("speech_started", False),
-                    turn_end_ms=segment.get("end_ms") if segment.get("speech_final") else None)
+                    turn_end_ms=segment.get("end_ms") if (segment.get("speech_final")
+                        or segment.get("endpoint_source") or final) else None,
+                    word_end_ms=segment.get("word_end_ms"),
+                    endpoint_source=segment.get("endpoint_source"),
+                    endpoint_accepted=segment.get("endpoint_accepted"),
+                    endpoint_reason=segment.get("endpoint_reason"),
+                    last_word_end_ms=segment.get("last_word_end_ms"),
+                    last_vad_start_ms=segment.get("last_vad_start_ms"))
             except Exception:
                 log.warning("bridge_transcript_listener_failed")
                 await self._release(session_id)
@@ -221,6 +235,8 @@ class BridgePipeline:
                         duration=recording.get("duration_seconds") if recording else None)
                     self.voicemails.finish(sid)
         finally:
+            if self.quality is not None:
+                await self.quality.finish(sid)
             self.calls.pop(sid, None)
             self.started.discard(sid)
             self.capture_failed.discard(sid)

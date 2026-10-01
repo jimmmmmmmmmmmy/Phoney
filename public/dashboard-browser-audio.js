@@ -14,6 +14,108 @@
 
   const cancelled = () => new Error("Browser calling was cancelled. Try again.");
 
+  const QUALITY_METRICS = {
+    jitter: [0, 10000], rtt: [0, 60000], mos: [1, 5],
+    packetsLostFraction: [0, 100], packetsLost: [0, 1000000],
+    packetsReceived: [0, 1000000], packetsSent: [0, 1000000],
+    audioInputLevel: [0, 32767], audioOutputLevel: [0, 32767]
+  };
+  const QUALITY_WARNINGS = new Set([
+    "high-jitter", "high-rtt", "low-mos", "high-packet-loss",
+    "high-packets-lost-fraction", "constant-audio-input-level",
+    "constant-audio-output-level", "low-bytes-received", "low-bytes-sent",
+    "low-audio-input-level", "low-audio-output-level"
+  ]);
+
+  // SDK samples are once per second. Never forward raw SDK objects: they can
+  // contain connection details. Only bounded measurements leave this tab.
+  class QualityReporter {
+    constructor(sessionId, stream) {
+      this.sessionId = sessionId;
+      this.started = performance.now();
+      this.samples = []; this.warnings = []; this.sequence = 0;
+      this.codec = null; this.final = false; this.sending = false;
+      this.device = {};
+      const agent = String(navigator.userAgent || "");
+      this.device.browser = /Edg\//.test(agent) ? "edge" : /Firefox\//.test(agent) ? "firefox"
+        : /Chrome\//.test(agent) ? "chrome" : /Safari\//.test(agent) ? "safari" : "other";
+      this.device.platform = /Android/.test(agent) ? "android" : /iPhone|iPad|iPod/.test(agent) ? "ios"
+        : /Mac/.test(agent) ? "mac" : /Windows/.test(agent) ? "windows" : /Linux/.test(agent) ? "linux" : "other";
+      const version = window.Twilio?.Device?.version;
+      if (typeof version === "string" && /^[0-9]{1,2}\.[0-9]{1,3}\.[0-9]{1,3}$/.test(version)) this.device.sdk_version = version;
+      const tracks = stream.getAudioTracks?.() || stream.getTracks();
+      this.device.audio_track_count = Math.min(16, tracks.length);
+      try {
+        const settings = tracks[0]?.getSettings?.() || {};
+        for (const [source, target, low, high] of [["sampleRate", "sample_rate", 8000, 192000], ["channelCount", "channel_count", 1, 8]]) {
+          if (Number.isInteger(settings[source]) && settings[source] >= low && settings[source] <= high) this.device[target] = settings[source];
+        }
+        for (const [source, target] of [["echoCancellation", "echo_cancellation"], ["noiseSuppression", "noise_suppression"], ["autoGainControl", "auto_gain_control"]]) {
+          if (typeof settings[source] === "boolean") this.device[target] = settings[source];
+        }
+      } catch (_) {}
+      this.pagehide = () => this.stop();
+      if (typeof window.fetch === "function") {
+        window.addEventListener?.("pagehide", this.pagehide);
+        this.schedule();
+      }
+    }
+
+    elapsed() {return Math.max(0, Math.min(86400000, Math.round(performance.now() - this.started)));}
+
+    sample(value) {
+      if (this.final || !value || typeof value !== "object") return;
+      const sample = {elapsed_ms: this.elapsed()};
+      for (const [name, [low, high]] of Object.entries(QUALITY_METRICS)) {
+        if (typeof value[name] === "number" && Number.isFinite(value[name]) && value[name] >= low && value[name] <= high) sample[name] = value[name];
+      }
+      if (Object.keys(sample).length > 1) {
+        this.samples.push(sample); this.samples = this.samples.slice(-15);
+      }
+      if (["opus", "pcmu"].includes(value.codecName)) this.codec = value.codecName;
+    }
+
+    warning(name, cleared) {
+      if (this.final || !QUALITY_WARNINGS.has(name)) return;
+      this.warnings.push({elapsed_ms: this.elapsed(), name, cleared});
+      this.warnings = this.warnings.slice(-16);
+    }
+
+    schedule() {
+      if (this.final) return;
+      this.timer = setTimeout(() => {this.timer = null; this.flush(); this.schedule();}, 10000);
+    }
+
+    flush() {
+      if (typeof window.fetch !== "function" || this.sending || this.sentFinal) return;
+      const payload = {version: 1, sequence: ++this.sequence, final: this.final,
+        elapsed_ms: this.elapsed(), codec: this.codec, device: this.device,
+        samples: this.samples.splice(0), warnings: this.warnings.splice(0)};
+      this.sending = true;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
+      // keepalive permits the final bounded report to survive page navigation.
+      // Diagnostics failures never reject attach(), stop() or microphone events.
+      Promise.resolve().then(() => window.fetch(`/api/sessions/${this.sessionId}/browser-quality`, {
+        method: "POST", credentials: "same-origin", cache: "no-store", keepalive: true,
+        headers: {"Content-Type": "application/json", "X-Agent-Request": "1"},
+        body: JSON.stringify(payload), signal: controller.signal
+      })).catch(() => {}).finally(() => {
+        clearTimeout(timeout); this.sending = false;
+        if (payload.final) this.sentFinal = true;
+        else if (this.final) this.flush();
+      });
+    }
+
+    stop() {
+      if (this.final) return;
+      this.final = true;
+      clearTimeout(this.timer); this.timer = null;
+      window.removeEventListener?.("pagehide", this.pagehide);
+      this.flush();
+    }
+  }
+
   // Browser permission prompts cannot be dismissed programmatically. A cancelled
   // request releases any stream that arrives later and never proceeds to dial.
   function requestMicrophone(signal) {
@@ -50,6 +152,7 @@
       this.stopped = false;
       this.device = null;
       this.call = null;
+      this.quality = null;
       this.cancelAttach = null;
       this.onDisconnect = null;
       this.microphoneEnded = () => this.fail("The microphone disconnected or its permission was revoked. The call is ending.");
@@ -67,6 +170,8 @@
         throw new Error("Invalid browser audio response.");
       }
       this.sessionId = sessionId;
+      // Optional reporting must never prevent the browser from placing a call.
+      try {this.quality = new QualityReporter(sessionId, this.stream);} catch (_) {}
       await new Promise((resolve, reject) => {
         let settled = false;
         const finish = failure => {
@@ -94,9 +199,13 @@
           Promise.resolve(device.connect({params: {SessionId: params.SessionId, Token: params.Token}})).then(call => {
             if (this.stopped) {try {call.disconnect();} catch (_) {} return;}
             this.call = call;
+            call.on("sample", sample => {try {this.quality?.sample(sample);} catch (_) {}});
+            call.on("warning", name => {try {this.quality?.warning(name, false);} catch (_) {}});
+            call.on("warning-cleared", name => {try {this.quality?.warning(name, true);} catch (_) {}});
             const accepted = () => {
               if (this.stopped || this.connected) return;
               this.codec = ["opus", "pcmu"].includes(call.codec) ? call.codec : null;
+              if (this.quality && this.codec) this.quality.codec = this.codec;
               this.connected = true; finish();
             };
             call.on("accept", accepted);
@@ -124,6 +233,7 @@
 
     stop() {
       if (this.stopped) return;
+      try {this.quality?.stop();} catch (_) {}
       this.stopped = true; this.connected = false; this.codec = null;
       const cancel = this.cancelAttach; this.cancelAttach = null;
       if (cancel) cancel(cancelled());

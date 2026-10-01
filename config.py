@@ -56,6 +56,7 @@ class Settings:
     operator_inbound_enabled: bool = False
     native_conference_enabled: bool = False
     twilio_conference_app_sid: str = ""
+    native_conference_jitter_buffer: str = "medium"
     browser_voice_enabled: bool = False
     twilio_browser_app_sid: str = ""
     automatic_takeover_enabled: bool = False
@@ -73,6 +74,9 @@ class Settings:
     def __post_init__(self):
         if type(self.native_conference_enabled) is not bool:
             raise ValueError("NATIVE_CONFERENCE_ENABLED must be true or false.")
+        if (not isinstance(self.native_conference_jitter_buffer, str)
+                or self.native_conference_jitter_buffer not in {"small", "medium", "large", "off"}):
+            raise ValueError("NATIVE_CONFERENCE_JITTER_BUFFER must be small, medium, large, or off.")
         if self.twilio_conference_app_sid and not re.fullmatch(r"AP[0-9a-fA-F]{32}", self.twilio_conference_app_sid):
             raise ValueError("TWILIO_CONFERENCE_APP_SID must be a TwiML application SID.")
         if self.native_conference_enabled and not self.twilio_conference_app_sid:
@@ -372,6 +376,7 @@ class Settings:
             operator_inbound_enabled=inbound_flag == "true",
             native_conference_enabled=native_flag == "true",
             twilio_conference_app_sid=os.getenv("TWILIO_CONFERENCE_APP_SID", "").strip(),
+            native_conference_jitter_buffer=os.getenv("NATIVE_CONFERENCE_JITTER_BUFFER", "medium").strip().lower(),
             browser_voice_enabled=browser_voice_flag == "true",
             twilio_browser_app_sid=os.getenv("TWILIO_BROWSER_APP_SID", "").strip(),
             automatic_takeover_enabled=auto_flag == "true",

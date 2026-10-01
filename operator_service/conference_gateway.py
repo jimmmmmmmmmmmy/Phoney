@@ -75,7 +75,7 @@ def native_leg_twiml(settings, session, role: str, *, rejoin: bool = False) -> s
         end_conference_on_exit=role == "remote" or leg.transport == "sdk",
         muted=(role == "owner" and (rejoin or getattr(session, "mode", "human") not in {"human", "preparing"})),
         max_participants=3,
-        jitter_buffer_size="small",
+        jitter_buffer_size=settings.native_conference_jitter_buffer,
         status_callback=settings.public_base_url + f"/twilio/native-conference/{session.id}",
         status_callback_method="POST",
         status_callback_event=CONFERENCE_EVENTS,
@@ -155,7 +155,7 @@ class NativeConferenceGatewayMixin:
                 start_conference_on_enter=False,
                 early_media=False,
                 max_participants=3,
-                jitter_buffer_size="small",
+                jitter_buffer_size=self.settings.native_conference_jitter_buffer,
                 record=False,
                 conference_record="do-not-record",
                 status_callback=self.settings.public_base_url

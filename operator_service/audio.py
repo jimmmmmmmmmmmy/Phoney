@@ -5,10 +5,11 @@ dispatch control messages immediately and never wait on a provider; writers
 serialize media, marks, and ``clear`` on a monotonic 20 ms clock. ``clear``
 outranks audio, so a mode change cannot be preceded by stale speech.
 
-The bridge exists to keep two people talking, so the buffers are deliberately
-tiny: live audio is capped at 200 ms and old frames are discarded instead of
-being replayed late. The only delay this module adds on purpose is a two-frame
-jitter buffer (40 ms) when a writer anchors its clock.
+Live audio is capped at 200 ms and old frames are discarded instead of being
+replayed late. Agent speech has a separate bounded reserve: collect up to
+120 ms before starting, then let the producer stay 300 ms ahead. Control
+messages never consume an audio slot, and an empty queue never fabricates
+silence inside a spoken phrase.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from typing import Protocol
 from voice_stack.audio import FRAME_BYTES, FRAME_MS
 from voice_stack.audio import iter_frames
 
-from .codecs import (SILENCE_FRAME, clear_message, inbound_frames, mark_message,
+from .codecs import (clear_message, inbound_frames, mark_message,
                      media_message, mix_ulaw, ringback_pattern)
 from .sessions import HUMAN, PREPARING, OWNER, REMOTE, ROLES, OperatorRejected
 
@@ -31,9 +32,9 @@ log = logging.getLogger("uvicorn.error")
 
 LIVE_FRAMES = 10            # 200 ms of human speech, then the oldest audio goes.
 AGENT_FRAMES = 50           # One second of buffered agent speech, then backpressure.
-UNDERFLOW_FRAMES = 4        # 80 ms of silence smooths a short scheduler stall.
-JITTER_FRAMES = 2           # 40 ms of slack before a writer anchors its clock.
-CLOCK_DRIFT_SECONDS = 0.25  # Never burst a backlog after an event-loop stall.
+AGENT_QUEUE_FRAMES = 15     # Producer target: 300 ms, below the hard queue limit.
+AGENT_START_FRAMES = 6      # 120 ms reserve before starting streamed speech.
+AGENT_START_SECONDS = .12  # Short/slow streams must not wait indefinitely.
 START_SECONDS = 5.0         # Twilio's ``start`` must authenticate within five seconds.
 MAX_MESSAGE_BYTES = 65_536
 MAX_BAD_MESSAGES = 10
@@ -93,15 +94,17 @@ class OutputChannel:
         self.marks: deque[str] = deque()
         self.counters: dict[str, int] = {}
         self.pending_clear = False
-        self.underflow = UNDERFLOW_FRAMES
         self.stream_sid = ""
         self.generation = 0
         self._socket = None
         self._task: asyncio.Task | None = None
         self._wake = asyncio.Event()
         self.on_sent = None
+        self.on_diagnostic = None
         self._last_frame = None
         self._last_kind = "silence"
+        self._attached_at = time.monotonic()
+        self._reset_speech()
 
     @property
     def attached(self) -> bool:
@@ -114,12 +117,13 @@ class OutputChannel:
         self.stream_sid = stream_sid
         self.generation = generation
         self.counters = counters
-        self.underflow = UNDERFLOW_FRAMES
         self.pending_clear = False
+        self._attached_at = time.monotonic()
         self._wake = asyncio.Event()
         self._task = asyncio.create_task(self._write())
 
     def detach(self):
+        self._finish_speech("detach")
         task, self._task = self._task, None
         if task is not None and not task.done():
             task.cancel()
@@ -130,6 +134,7 @@ class OutputChannel:
         self.agent.clear()
         self.marks.clear()
         self.pending_clear = False
+        self._reset_speech()
 
     # ------------------------------------------------------------------ sending
 
@@ -138,9 +143,10 @@ class OutputChannel:
         if not self.attached:
             self._count("dropped")
             return False
-        cap = AGENT_FRAMES if kind == "agent" else LIVE_FRAMES
+        cap = AGENT_FRAMES if kind in {"agent", "announcement"} else LIVE_FRAMES
         self._push(self.media, QueuedFrame(frame, kind, reply_epoch), cap)
-        self.underflow = UNDERFLOW_FRAMES
+        if kind in {"agent", "announcement"}:
+            self._producer_finished = False
         self._wake.set()
         return True
 
@@ -150,7 +156,7 @@ class OutputChannel:
             self._count("dropped")
             return False
         self._push(self.agent, QueuedFrame(frame, "agent", reply_epoch), AGENT_FRAMES)
-        self.underflow = UNDERFLOW_FRAMES
+        self._producer_finished = False
         self._wake.set()
         return True
 
@@ -160,6 +166,11 @@ class OutputChannel:
         self.marks.append(name)
         self._wake.set()
         return True
+
+    def finish_buffering(self):
+        """Flush a short monitor copy without adding a second playback ACK."""
+        self._producer_finished = True
+        self._wake.set()
 
     def clear(self):
         """Discard queued speech and emit Twilio ``clear``; returns invalidated marks."""
@@ -171,7 +182,6 @@ class OutputChannel:
         invalidated = list(self.marks)
         self.marks.clear()
         self.pending_clear = True
-        self.underflow = UNDERFLOW_FRAMES
         self._wake.set()
         return dropped, invalidated
 
@@ -183,8 +193,53 @@ class OutputChannel:
         queue.append(frame)
 
     def _count(self, name: str, amount: int = 1):
-        if self.counters:
-            self.counters[name] = self.counters.get(name, 0) + amount
+        self.counters[name] = self.counters.get(name, 0) + amount
+
+    def _reset_speech(self):
+        self._primed = False
+        self._reserve_started = None
+        self._speech_open = False
+        self._producer_finished = False
+        self._underrun_reported = False
+        self._last_media_at = None
+        self._speech_frames = 0
+        self._speech_zero_frames = 0
+        self._speech_underruns = 0
+        self._speech_epoch = None
+        self._min_interval = None
+        self._max_interval = 0.0
+
+    def _diagnostic(self, event: str, **details):
+        record = {"event": event, "role": self.role, "generation": self.generation,
+                  "stream_elapsed_ms": round((time.monotonic() - self._attached_at) * 1000),
+                  "reply_epoch": self._speech_epoch,
+                  **details}
+        # Audio payloads, telephone numbers, and authentication data never enter
+        # this observer. The optional controller callback binds it to a call.
+        log.info("operator_audio_trace %s", json.dumps(record, separators=(",", ":")))
+        if self.on_diagnostic is not None:
+            try:
+                self.on_diagnostic(record)
+            except Exception as exc:
+                log.warning("operator_output_diagnostic_failed type=%s", type(exc).__name__)
+
+    def _finish_speech(self, reason: str):
+        if self._speech_frames:
+            self._diagnostic("output-speech-stats", reason=reason,
+                frames=self._speech_frames, source_zero_frames=self._speech_zero_frames,
+                reply_epoch=self._speech_epoch,
+                underruns=self._speech_underruns,
+                min_send_interval_ms=round(self._min_interval or 0, 2),
+                max_send_interval_ms=round(self._max_interval, 2))
+
+    async def _wait(self, seconds=None):
+        if seconds is None:
+            await self._wake.wait()
+        else:
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=max(0, seconds))
+            except TimeoutError:
+                pass
 
     # ------------------------------------------------------------------ writing
 
@@ -194,32 +249,92 @@ class OutputChannel:
         try:
             while True:
                 self._wake.clear()
-                message = self._take()
-                if message is None:
-                    # Nothing to say: stay quiet instead of streaming silence
-                    # for the rest of the call, and abandon the old clock.
-                    await self._wake.wait()
-                    deadline = None
+                now = time.monotonic()
+                control_due = self.pending_clear or (self.marks and not self.media and not self.agent)
+                if control_due:
+                    message = self._take()
+                    await socket.send_json(message)
+                    reason = message["event"]
+                    self._finish_speech(reason)
+                    self._reset_speech()
+                    if reason == "clear":
+                        deadline = None
+                    # A mark follows the preceding media immediately. Neither
+                    # marks nor clear advance the 20 ms media clock.
                     continue
+                if not self.media and not self.agent:
+                    if self._producer_finished:
+                        self._finish_speech("producer-finished")
+                        self._reset_speech()
+                    if self._speech_open and not self._underrun_reported:
+                        if deadline is not None and now < deadline:
+                            await self._wait(deadline - now)
+                            continue
+                        self._count("underruns")
+                        self._speech_underruns += 1
+                        self._underrun_reported = True
+                        self._primed = False
+                        self._reserve_started = None
+                        self._diagnostic("output-underrun", queue_frames=0,
+                            last_send_interval_ms=round((now - self._last_media_at) * 1000, 2)
+                            if self._last_media_at is not None else 0)
+                    await self._wait()
+                    if deadline is not None and time.monotonic() >= deadline:
+                        # Deliberate idle time or an already reported underrun
+                        # is not a scheduler stall with a queued backlog.
+                        deadline = None
+                    continue
+                live_pending = bool(self.media and getattr(self.media[0], "kind", "live") == "live")
+                if not self._primed and not live_pending:
+                    if self._reserve_started is None:
+                        self._reserve_started = now
+                    buffered = len(self.media) + len(self.agent)
+                    reserve_left = AGENT_START_SECONDS - (now - self._reserve_started)
+                    if (buffered < AGENT_START_FRAMES and not self.marks
+                            and not self._producer_finished and reserve_left > 0):
+                        await self._wait(reserve_left)
+                        continue
+                    self._primed = True
+                    first_frame = self.media[0] if self.media else self.agent[0]
+                    self._diagnostic("output-buffer-ready", queue_frames=buffered,
+                        reply_epoch=getattr(first_frame, "reply_epoch", None),
+                        reserve_frames=AGENT_START_FRAMES,
+                        waited_ms=round((now - self._reserve_started) * 1000, 2))
+                if deadline is not None and now < deadline:
+                    await self._wait(deadline - now)
+                    continue
+                message = self._take()
                 sent_frame, sent_kind = self._last_frame, self._last_kind
                 await socket.send_json(message)
+                sent_at = time.monotonic()
                 if message["event"] == "media":
                     self._count("frames_out")
+                    if sent_kind in {"agent", "announcement"}:
+                        self._speech_open = True
+                        self._underrun_reported = False
+                        self._speech_frames += 1
+                        self._speech_epoch = getattr(sent_frame, "reply_epoch", None)
+                        if sent_frame and not set(sent_frame) - {0xff, 0x7f}:
+                            self._speech_zero_frames += 1
+                        if self._last_media_at is not None:
+                            interval = (sent_at - self._last_media_at) * 1000
+                            self._min_interval = min(self._min_interval or interval, interval)
+                            self._max_interval = max(self._max_interval, interval)
+                            if interval >= 40:
+                                self._count("late_frames")
+                                self._diagnostic("output-send-delayed", interval_ms=round(interval, 2),
+                                    queue_frames=len(self.media) + len(self.agent), kind=sent_kind)
+                        self._last_media_at = sent_at
                     if self.on_sent is not None and sent_frame is not None:
                         try:
                             self.on_sent(sent_frame, sent_kind)
                         except Exception as exc:
                             log.warning("operator_output_observer_failed type=%s", type(exc).__name__)
-                if deadline is None:
-                    deadline = time.monotonic() + JITTER_FRAMES * FRAME_SECONDS
-                deadline += FRAME_SECONDS
-                delay = deadline - time.monotonic()
-                if delay <= -CLOCK_DRIFT_SECONDS:
+                if deadline is not None and sent_at - deadline >= FRAME_SECONDS:
                     self._count("gaps")
-                    deadline = time.monotonic()
-                    continue
-                if delay > 0:
-                    await asyncio.sleep(delay)
+                    deadline = sent_at + FRAME_SECONDS
+                else:
+                    deadline = (deadline if deadline is not None else sent_at) + FRAME_SECONDS
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # a closed socket must not crash the session
@@ -245,10 +360,6 @@ class OutputChannel:
             # A mark follows every frame queued before it, so playback of that
             # phrase is confirmed only for audio that was actually sent.
             return mark_message(self.stream_sid, self.marks.popleft())
-        if self.underflow > 0:
-            self.underflow -= 1
-            self._last_frame, self._last_kind = SILENCE_FRAME, "silence"
-            return media_message(self.stream_sid, SILENCE_FRAME)
         return None
 
 
@@ -271,6 +382,13 @@ class CallRouter:
         self._source_offsets = {}
         self._source_last = {}
         self.channels[REMOTE].on_sent = self._output_sent
+        for role, channel in self.channels.items():
+            channel.on_diagnostic = lambda details, role=role: self._output_diagnostic(role, details)
+
+    def _output_diagnostic(self, role, details):
+        observer = getattr(self.controller, "output_diagnostic", None)
+        if observer is not None:
+            observer(self.session_id, role, details)
 
     def _output_sent(self, frame, kind):
         observer = getattr(self.controller, "output_audio", None)
@@ -362,6 +480,8 @@ class CallRouter:
         """Label the end of a spoken phrase so playback can be confirmed later."""
         if not self.channels[role].mark(name):
             return False
+        if role == REMOTE and self.channels[OWNER].agent:
+            self.channels[OWNER].finish_buffering()
         await self._dispatch_control(self.controller.mark(self.session_id, role, name, "pending"))
         return True
 

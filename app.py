@@ -27,8 +27,10 @@ from workspace_auth import install_workspace_access
 from postgres_store import register_workspace
 from voicemail import VoicemailStore
 from call_details import CallDetailsStore
+from call_quality import CallQualityRecorder
 from summaries import SummaryManager
 from operator_service import OperatorRejected, OperatorSessions, register_operator_routes
+from operator_service.browser_quality import register_browser_quality_routes
 from partner_detection import LiveDetectionManager
 from partner_detection.storage import DetectionStore
 from partner_detection.backfill import BackfillManager
@@ -65,6 +67,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     voicemails = VoicemailStore(settings)
     recordings = RecordingLibrary(settings)
     call_details = CallDetailsStore(settings.call_details_storage_dir)
+    call_quality = CallQualityRecorder(settings)
     operator = OperatorSessions(settings)
     detection_store = DetectionStore(settings.detection_storage_dir)
     workspace_store = WorkspaceStore(settings.workspace_storage_dir,
@@ -129,7 +132,8 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     live_detection = LiveDetectionManager(settings, connector=detection_connector,
         can_run=provider_worker_active, on_update=persist_detection)
     media_capture = CaptureManager(settings, observer=(transcription, live_detection))
-    bridge_pipeline = BridgePipeline(settings, media_capture, transcription, live_detection, call_details, voicemails, recordings)
+    bridge_pipeline = BridgePipeline(settings, media_capture, transcription, live_detection, call_details,
+                                     voicemails, recordings, quality=call_quality)
     transcription.on_segment = bridge_pipeline.transcript_event
     transcription.on_failure = bridge_pipeline.transcription_failed
     summaries = SummaryManager(settings, transcription, call_details,
@@ -166,6 +170,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
                 await controller.end(session.id, "server-shutdown")
         await operator.close()
         await bridge_pipeline.close()
+        await call_quality.close()
         await media_capture.close()
         await live_detection.close()
         if detection_writes:
@@ -196,6 +201,7 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     app.state.voicemails = voicemails
     app.state.recordings = recordings
     app.state.call_details = call_details
+    app.state.call_quality = call_quality
     app.state.summaries = summaries
     register_dashboard(app, settings, transcription, voicemail_store=voicemails,
                        recording_library=recordings, call_details_store=call_details,
@@ -203,13 +209,19 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
     register_agent_routes(app, settings, agent_registry,
                           voice_settings=agent_voice or operator_voice, provider=agent_voice_provider)
 
-    def require_owner(request):
+    def require_owner(request: Request):
         if request.method in {"GET", "HEAD"}:
             if not settings.agent_management_enabled or not owner_authenticated(request, agent_registry):
                 raise HTTPException(403, "Unlock owner controls before using call controls.")
         else:
             owner_write_access(request, agent_registry, settings)
         return True
+
+    def voice_trace(session, event, stamp, fields):
+        call_quality.event(session.canonical_call_sid, event, stamp, **fields)
+
+    def source_audio(session, phase, chunk, stamp):
+        call_quality.audio(session.canonical_call_sid, "generated", chunk, stamp, phase=phase)
     # ``main`` passes the voice layer's settings when the operator may speak;
     # without them the keypad still parses and the bridge stays human relay.
     controller = register_operator_routes(app, settings, operator, dialer=operator_dialer,
@@ -218,8 +230,33 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
         on_call_end=bridge_pipeline.end, on_audio=bridge_pipeline.audio,
         on_native_audio=bridge_pipeline.native_audio,
         on_output_audio=bridge_pipeline.output, on_agent_turn=bridge_pipeline.agent_turn,
-        require_owner=require_owner, voicemail_store=voicemails)
+        require_owner=require_owner, voicemail_store=voicemails,
+        on_trace=voice_trace, on_source_audio=source_audio)
     bridge_pipeline.controller = controller
+    browser_quality = register_browser_quality_routes(app, settings, operator, require_owner=require_owner)
+
+    @app.get("/api/calls/{call_sid}/quality", dependencies=[Depends(require_owner)])
+    async def quality_summary(call_sid: str):
+        require_sid(call_sid)
+        live_data = call_quality.snapshot_live(call_sid)
+        voice_data, browser_data = await asyncio.gather(
+            asyncio.sleep(0, result=live_data) if live_data is not None
+                else asyncio.to_thread(call_quality.snapshot, call_sid),
+            asyncio.to_thread(browser_quality.load, call_sid))
+        if voice_data is None and browser_data is None:
+            raise HTTPException(404, "Call quality diagnostics are unavailable")
+        return JSONResponse({"call_sid": call_sid, "voice": voice_data, "browser": browser_data},
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/calls/{call_sid}/quality/{track}.wav", dependencies=[Depends(require_owner)])
+    async def quality_audio(call_sid: str, track: str):
+        require_sid(call_sid)
+        content = await asyncio.to_thread(call_quality.read_audio, call_sid, track)
+        if content is None:
+            raise HTTPException(404, "Call quality audio is unavailable")
+        return Response(content, media_type="audio/wav",
+                        headers={"Cache-Control": "no-store",
+                                 "Content-Disposition": f'attachment; filename="{track}.wav"'})
     validate_twilio = twilio_validator(settings)
 
     @app.get("/")

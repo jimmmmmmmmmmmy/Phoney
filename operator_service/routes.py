@@ -218,7 +218,7 @@ class RelayOperatorController:
                  voice=None, keypad_factory=Keypad, registry=None,
                  context_getter=None, on_call_start=None, on_call_end=None,
                  on_audio=None, on_native_audio=None, on_output_audio=None, on_agent_turn=None,
-                 provider_transport=None, voicemail_store=None):
+                 provider_transport=None, voicemail_store=None, on_trace=None, on_source_audio=None):
         self.settings = settings
         self.store = store
         self.dialer = dialer if dialer is not None else TwilioLegs(settings)
@@ -229,6 +229,7 @@ class RelayOperatorController:
         self.audio_callback, self.output_callback = on_audio, on_output_audio
         self.native_audio_callback = on_native_audio
         self.agent_turn_callback = on_agent_turn
+        self.trace_callback, self.source_callback = on_trace, on_source_audio
         self.provider_transport = provider_transport
         self.voicemails = voicemail_store
         self._provider_clients = {}
@@ -504,6 +505,22 @@ class RelayOperatorController:
         log.info("operator_trace %s", json.dumps({"call_sid": session.canonical_call_sid,
             "session": session_id, "event": event, "elapsed_ms": self.elapsed_ms(session_id),
             "epoch": session.reply_epoch, "mode": session.mode, **fields}, separators=(",", ":")))
+        if self.trace_callback is not None:
+            try:
+                self.trace_callback(session, event, self.elapsed_ms(session_id), fields)
+            except Exception:
+                log.warning("operator_trace_observer_unavailable")
+
+    def output_diagnostic(self, session_id, role, details):
+        fields = dict(details)
+        event = fields.pop("event", "output")
+        fields["role"] = role
+        self.trace(session_id, "audio-" + event, **fields)
+
+    def source_audio(self, session_id, phase, chunk):
+        session = self.store.find(session_id)
+        if self.source_callback is not None and session is not None:
+            self.source_callback(session, phase, chunk, self.elapsed_ms(session_id))
 
     def _same_takeover(self, session_id, slot):
         session = self.store.find(session_id)
@@ -1057,10 +1074,19 @@ class RelayOperatorController:
 
     async def transcript(self, session_id, speaker, text, *, final=True,
                          segment_id="", timestamp_ms=None, speech_final=None,
-                         speech_started=False, turn_end_ms=None):
+                         speech_started=False, turn_end_ms=None, word_end_ms=None,
+                         endpoint_source=None, endpoint_accepted=None, endpoint_reason=None,
+                         last_word_end_ms=None, last_vad_start_ms=None):
         """Receive canonical STT updates; only remote speech drives dialogue."""
         session = self.store.find(session_id)
         text = str(text or "").strip()
+        if session is not None and session.active and speaker == REMOTE and endpoint_source is not None:
+            self.trace(session_id, "caller-endpoint-decision", source=endpoint_source,
+                accepted=endpoint_accepted, reason=endpoint_reason, boundary_ms=turn_end_ms,
+                last_word_end_ms=last_word_end_ms, last_vad_start_ms=last_vad_start_ms)
+        if session is not None and session.active and speaker == REMOTE and final and word_end_ms is not None:
+            self.trace(session_id, "caller-words-finalized", word_end_ms=word_end_ms,
+                       result_start_ms=timestamp_ms, result_end_ms=turn_end_ms)
         if (session is None or not session.active or session.voicemail_fallback
                 or (not text and not speech_started and speech_final is not True)
                 or speaker not in (OWNER, REMOTE)):
@@ -1365,12 +1391,14 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
                              dialer=None, voice=None, *, registry=None, context_getter=None,
                              on_call_start=None, on_call_end=None, on_audio=None, on_native_audio=None,
                              on_output_audio=None, on_agent_turn=None, require_owner=None,
-                             provider_transport=None, voicemail_store=None) -> OperatorController:
+                             provider_transport=None, voicemail_store=None,
+                             on_trace=None, on_source_audio=None) -> OperatorController:
     """Mount the operator bridge beside the existing conference path."""
     controller = OperatorController(settings, store, dialer, voice=voice, registry=registry,
         context_getter=context_getter, on_call_start=on_call_start, on_call_end=on_call_end,
         on_audio=on_audio, on_native_audio=on_native_audio, on_output_audio=on_output_audio, on_agent_turn=on_agent_turn,
-        provider_transport=provider_transport, voicemail_store=voicemail_store)
+        provider_transport=provider_transport, voicemail_store=voicemail_store,
+        on_trace=on_trace, on_source_audio=on_source_audio)
     app.state.operator = store
     app.state.operator_controller = controller
     validate_twilio = twilio_validator(settings)

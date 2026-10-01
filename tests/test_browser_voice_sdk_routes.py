@@ -167,7 +167,8 @@ def test_flag_off_keeps_legacy_self_call_and_sdk_enabled_does_not_change_callbac
 
 def test_workspace_cookie_authorizes_sdk_grant_and_signed_callbacks_need_no_browser_cookie(tmp_path):
     settings = replace(SDK_SETTINGS, workspace_access_enabled=True, agent_management_enabled=True,
-                       workspace_storage_dir=str(tmp_path / "workspace"))
+                       workspace_storage_dir=str(tmp_path / "workspace"),
+                       call_details_storage_dir=str(tmp_path / "details"))
     with sdk_client(settings) as (client, dialer, _):
         access = client.app.state.workspace_access
         access.configure("642815", "test recovery phrase 924")
@@ -186,6 +187,30 @@ def test_workspace_cookie_authorizes_sdk_grant_and_signed_callbacks_need_no_brow
         response = signed_post(client, settings, "/twilio/browser-voice", app_form(call, value, settings))
         assert response.status_code == 200, response.text
         until(client, lambda: bool(call.legs[REMOTE].call_sid))
+        quality_url = f"/api/calls/{REMOTE_SID}/quality"
+        assert client.get(quality_url).status_code in {401, 403}
+        assert client.get(quality_url + "/sent.wav").status_code in {401, 403}
+        assert conference_event(client, settings, call, OWNER, sequence=1).status_code == 204
+        assert conference_event(client, settings, call, REMOTE, sequence=2).status_code == 204
+        settle(client)
+        controller = client.app.state.operator_controller
+        client.portal.call(controller.stream_started, call.id, REMOTE, "MZ" + "4" * 32)
+        client.cookies.set(SESSION_COOKIE, token)
+        payload = {"version": 1, "sequence": 1, "final": False, "elapsed_ms": 10000,
+                   "codec": "opus", "device": {},
+                   "samples": [{"elapsed_ms": 9000, "jitter": 12, "rtt": 70}], "warnings": []}
+        assert client.post(f"/api/sessions/{call.id}/browser-quality", headers=headers,
+                           json=payload).status_code == 204
+        client.portal.call(controller.output_diagnostic, call.id, REMOTE,
+                           {"event": "output-speech-stats", "role": REMOTE, "frames": 6})
+        response = client.get(quality_url)
+        assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
+        quality = response.json()
+        assert quality["browser"]["metrics"]["jitter"]["mean"] == 12
+        assert quality["voice"]["events"][-1]["event"] == "audio-output-speech-stats"
+        assert quality["voice"]["events"][-1]["frames"] == 6
+        assert client.get(quality_url + "/unknown.wav").status_code == 404
+        client.cookies.clear()
         assert signed_post(client, settings, "/twilio/browser-status",
                            app_form(call, settings=settings, CallStatus="completed")).status_code == 204
         settle(client)

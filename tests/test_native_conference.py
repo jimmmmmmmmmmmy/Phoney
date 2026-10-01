@@ -1,13 +1,17 @@
 """Focused product and boundary checks; test helpers live in support."""
 
 import asyncio
+from dataclasses import replace
+from types import SimpleNamespace
+from xml.etree import ElementTree
 
 import pytest
 
 from operator_service.native_conference import NativeConferenceRouter
+from operator_service.conference_gateway import NativeConferenceGatewayMixin, native_leg_twiml
 from operator_service.sessions import AGENT, ANNOUNCING, CONNECTED, HUMAN, OWNER, PREPARING, REMOTE
 
-from support.native_conference import BOT_SID, NativeHarness, ReadSocket, media_event, start_event
+from support.native_conference import BOT_SID, NATIVE_SETTINGS, NativeHarness, ReadSocket, media_event, start_event
 from support.operator_keypad import OWNER_SID, REMOTE_STREAM, until
 
 
@@ -15,6 +19,25 @@ def test_native_takeover_mutes_owner_before_bot_and_release_reverses_safely(tmp_
     async def run():
         h = NativeHarness(tmp_path)
         call = await h.joined()
+        assert NATIVE_SETTINGS.native_conference_jitter_buffer == "medium"
+        for jitter in ("medium", "small", "large", "off"):
+            settings = replace(NATIVE_SETTINGS, native_conference_jitter_buffer=jitter)
+            for role in (OWNER, REMOTE):
+                for rejoin in (False, True):
+                    conference = ElementTree.fromstring(native_leg_twiml(
+                        settings, call, role, rejoin=rejoin)).find("./Dial/Conference")
+                    assert conference.attrib["jitterBufferSize"] == jitter
+            options = []
+            gateway = NativeConferenceGatewayMixin()
+            gateway.settings = settings
+            gateway._client = lambda: SimpleNamespace(conferences=lambda _: SimpleNamespace(
+                participants=SimpleNamespace(create=lambda **kwargs:
+                    options.append(kwargs) or SimpleNamespace(call_sid=BOT_SID))))
+            assert await gateway.create_agent_participant(h.state.sid, call.id, 1, "offline-token") == BOT_SID
+            assert options[0]["jitter_buffer_size"] == jitter
+        for invalid in ("tiny", "", None, []):
+            with pytest.raises(ValueError, match="NATIVE_CONFERENCE_JITTER_BUFFER"):
+                replace(NATIVE_SETTINGS, native_conference_jitter_buffer=invalid)
         assert isinstance(h.router, NativeConferenceRouter)
         assert not h.router.channels[OWNER].attached
         await h.controller.set_mode(call.id, AGENT, slot="1")

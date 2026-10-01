@@ -24,9 +24,17 @@ def test_browser_configuration_from_environment_and_invalid_flag(monkeypatch):
               "NATIVE_CONFERENCE_ENABLED": "false"}
     for name, value in values.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.delenv("NATIVE_CONFERENCE_JITTER_BUFFER", raising=False)
     settings = Settings.from_env()
     assert settings.browser_voice_enabled and not settings.native_conference_enabled
+    assert settings.native_conference_jitter_buffer == "medium"
     assert settings.twilio_browser_app_sid == ENABLED.twilio_browser_app_sid
+    monkeypatch.setenv("NATIVE_CONFERENCE_JITTER_BUFFER", " LARGE ")
+    assert Settings.from_env().native_conference_jitter_buffer == "large"
+    monkeypatch.setenv("NATIVE_CONFERENCE_JITTER_BUFFER", "tiny")
+    with pytest.raises(ValueError, match="NATIVE_CONFERENCE_JITTER_BUFFER"):
+        Settings.from_env()
+    monkeypatch.setenv("NATIVE_CONFERENCE_JITTER_BUFFER", "medium")
     monkeypatch.setenv("BROWSER_VOICE_ENABLED", "yes")
     with pytest.raises(ValueError, match="BROWSER_VOICE_ENABLED"):
         Settings.from_env()

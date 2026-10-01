@@ -6,16 +6,16 @@ Run the complete suite:
 .venv/bin/python -m pytest -q
 ```
 
-The suite contains **99 collected cases across 84 test functions**. Parametrized
+The suite contains **108 collected cases across 93 test functions**. Parametrized
 variants count toward the limit. The deployment supervisor runs this same suite,
 not a separate subset. The first local run after consolidation finished in
 15.5 seconds: 93 passed and three PostgreSQL cases skipped.
 
 | Area | Cases | Behaviors checked |
 | --- | ---: | --- |
-| Calling and live evidence | 31 | Browser and phone call setup, signed session binding, hangup races, AI takeover and release, automatic detection handoff, caller barge-in, transcription, recordings, detection recovery, and voicemail. |
-| Browser and dashboard | 24 | Real HTTP asset loading and CSP, actual vendored SDK export, media setup and cancellation, codec status, keypad controls, disconnect cleanup, authentication loss, playback, network recovery, and CRM edits. |
-| Auth, storage, setup, and deployment | 31 | PIN lockout and recovery, session expiry, hashed credentials, signed HTTP/WebSocket callbacks, workspace persistence and isolation, JWT grants, Twilio App configuration, deployment draining, rollback, and commit health. |
+| Calling and live evidence | 34 | Browser and phone call setup, signed session binding, hangup races, AI takeover and release, automatic detection handoff, caller barge-in, transcription and noise endpoint recovery, recordings, paced bot output, detection recovery, and voicemail. |
+| Browser and dashboard | 27 | Real HTTP asset loading and CSP, actual vendored SDK export, media setup and cancellation, codec status, keypad controls, disconnect cleanup, authenticated quality reporting and its final flush, authentication loss, playback, network recovery, and CRM edits. |
+| Auth, storage, setup, and deployment | 34 | PIN lockout and recovery, session expiry, hashed credentials, signed HTTP/WebSocket callbacks, workspace persistence and isolation, private bounded quality diagnostics, JWT grants, Twilio App configuration, deployment draining, rollback, and commit health. |
 | Saved call products | 10 | History and exports after restart, pagination, stereo playback, recording headers, detailed/brief summaries and retries, voicemail recording callbacks, and shared notifications. |
 | Vocal delivery | 3 | Real local dialogue WebSocket protocol, complete phrase boundaries across streamed deltas, legacy reply continuity, prefetch across task/playback boundaries, caller interruption cleanup, and delivery-aware cached speech. |
 
@@ -45,6 +45,12 @@ parametrization variants. Add coverage for a distinct product behavior or an
 observed regression. Replace an obsolete or redundant check when the budget is
 full. Do not conceal unrelated input matrices inside loops or exclude a second
 test archive from normal collection.
+
+The October 1 call-quality repair is a documented exception: it retains the
+99 existing cases and adds nine distinct endpoint, playback, browser telemetry,
+and authentication/storage scenarios. The full run passed 105 cases in 13.5
+seconds, with the three isolated PostgreSQL cases skipped. Future routine
+changes should consolidate redundant coverage rather than extend this exception.
 
 This is deliberately narrower coverage than the previous 2,687-case suite.
 Repeated implementation assertions and broad input matrices were removed; some

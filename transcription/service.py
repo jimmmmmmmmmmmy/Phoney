@@ -8,6 +8,7 @@ Observer methods are synchronous, nonblocking and never change call routing.
 from __future__ import annotations
 
 import asyncio
+import array
 from collections import deque
 import copy
 from dataclasses import dataclass, field
@@ -15,9 +16,11 @@ from datetime import datetime, timezone
 import json
 import math
 import re
+import time
 from urllib.parse import urlencode
 
 import websockets
+from voice_stack.audio import ulaw_to_pcm16
 
 from . import storage
 
@@ -36,6 +39,13 @@ FLUSH_SECONDS = 10.0
 SEND_SECONDS = 3.0
 STORE_SECONDS = 5.0
 SILENCE = b"\xff" * 4000
+# A missing provider endpoint may recover only after real incoming audio is
+# quiet. Recognized words and fresh VAD both postpone recovery; an audio outage
+# never looks like silence. The threshold is approximately -48 dBFS PCM RMS.
+TURN_WORD_QUIET_SECONDS = 1.5
+TURN_AUDIO_QUIET_SECONDS = 0.75
+TURN_AUDIO_FRESH_SECONDS = 0.5
+TURN_AUDIO_RMS = 128
 SID = re.compile(r"CA[0-9a-fA-F]{32}\Z")
 STREAM_SID = re.compile(r"MZ[0-9a-fA-F]{32}\Z")
 ERRORS = {"provider-unavailable", "provider-error", "provider-disconnected", "result-invalid",
@@ -63,6 +73,21 @@ def speech_start_ms(alternative, start, end):
     return round(word_start * 1000)
 
 
+def speech_end_ms(alternative, start, end):
+    """Use the last recognized word, rather than a result's trailing silence."""
+    words = alternative.get("words")
+    if not isinstance(words, list) or not words or not isinstance(words[-1], dict):
+        return None
+    last = words[-1]
+    word, word_start, word_end = last.get("word"), last.get("start"), last.get("end")
+    if (not isinstance(word, str) or not word.strip()
+            or any(type(value) not in (int, float) or not math.isfinite(value)
+                   for value in (word_start, word_end))
+            or not start <= word_start <= word_end <= end):
+        return None
+    return round(word_end * 1000)
+
+
 class TrackFailure(Exception):
     pass
 
@@ -86,6 +111,11 @@ class _Track:
     speech_active: bool = False
     last_final_end_ms: int = 0
     last_speech_start_ms: int = 0
+    last_word_end_ms: int = -1
+    last_word_update_at: float = 0.0
+    last_vad_at: float = 0.0
+    last_audio_at: float = 0.0
+    last_loud_audio_at: float = 0.0
 
 
 @dataclass
@@ -153,7 +183,8 @@ class TranscriptionManager:
             return None
 
     def _notify_segment(self, call_sid, segment, final, *, speech_start_ms=None,
-                        speech_final=False, speech_started=False):
+                        speech_final=False, speech_started=False, word_end_ms=None,
+                        endpoint_metadata=None):
         # Observers enqueue bounded work; provider/control I/O never runs here.
         if self.on_segment is not None:
             try:
@@ -164,9 +195,52 @@ class TranscriptionManager:
                 if speech_start_ms is not None:
                     # Control-only metadata must not alter stored timing or IDs.
                     event["speech_start_ms"] = speech_start_ms
+                if word_end_ms is not None:
+                    event["word_end_ms"] = word_end_ms
+                if endpoint_metadata is not None:
+                    event.update(endpoint_metadata)
                 self.on_segment(call_sid, event, final)
             except Exception:
                 pass
+
+    @staticmethod
+    def _endpoint_metadata(track, source, accepted, reason):
+        return {"endpoint_source": source, "endpoint_accepted": accepted,
+                "endpoint_reason": reason, "last_word_end_ms": track.last_word_end_ms,
+                "last_vad_start_ms": track.last_speech_start_ms}
+
+    def _endpoint(self, session, track, timestamp_ms, *, source, accepted, reason):
+        if accepted:
+            track.pending_utterance = False
+            track.speech_active = False
+        self._notify_segment(session.call_sid, {"track": track.name,
+            "text": "", "start_ms": timestamp_ms, "end_ms": timestamp_ms},
+            False, speech_final=accepted,
+            endpoint_metadata=self._endpoint_metadata(track, source, accepted, reason))
+
+    @staticmethod
+    def _audio_is_quiet(track, clock):
+        return (track.last_audio_at > 0
+                and clock - track.last_audio_at <= TURN_AUDIO_FRESH_SECONDS
+                and clock - max(track.last_loud_audio_at, track.last_vad_at)
+                    >= TURN_AUDIO_QUIET_SECONDS)
+
+    def _recover_quiet_turn(self, session, track):
+        """Bound missing endpoints without treating absent audio as quiet."""
+        clock = time.monotonic()
+        if (track.name != "inbound" or track.finishing or not track.pending_utterance
+                or track.interim or track.last_word_end_ms > track.last_final_end_ms
+                or track.last_word_end_ms < 0 or not self._audio_is_quiet(track, clock)
+                or clock - track.last_word_update_at < TURN_WORD_QUIET_SECONDS):
+            return False
+        self._endpoint(session, track, track.last_word_end_ms, source="quiet-recovery",
+                       accepted=True, reason="quiet-audio-after-finalized-words")
+        return True
+
+    async def _watch_turn(self, session, track):
+        while True:
+            await asyncio.sleep(0.1)
+            self._recover_quiet_turn(session, track)
 
     def call_segments(self, call_sid):
         session = self.sessions.get(call_sid)
@@ -265,6 +339,13 @@ class TranscriptionManager:
             if state.task:
                 state.task.cancel()
             return
+        state.last_audio_at = time.monotonic()
+        pcm = array.array("h", ulaw_to_pcm16(payload))
+        # A short voiced frame in a larger packet must not be averaged away.
+        if any(sum(value * value for value in pcm[offset:offset + 160])
+               > TURN_AUDIO_RMS ** 2 * len(pcm[offset:offset + 160])
+               for offset in range(0, len(pcm), 160)):
+            state.last_loud_audio_at = state.last_audio_at
         state.queue.put_nowait((timestamp_ms, payload))
         state.queued_bytes += len(payload)
         state.offered_samples = timestamp_ms * 8 + len(payload)
@@ -382,7 +463,8 @@ class TranscriptionManager:
                     raise TrackFailure("flush-timeout")
 
                 deadline = asyncio.create_task(flush_guard())
-                children = [sender, receiver, deadline]
+                watcher = asyncio.create_task(self._watch_turn(session, track))
+                children = [sender, receiver, deadline, watcher]
                 done, _ = await asyncio.wait(children, return_when=asyncio.FIRST_COMPLETED)
                 if deadline in done:
                     await deadline
@@ -466,6 +548,11 @@ class TranscriptionManager:
                     continue
                 if kind in {"UtteranceEnd", "SpeechStarted"}:
                     seconds = event.get("last_word_end" if kind == "UtteranceEnd" else "timestamp")
+                    if kind == "UtteranceEnd" and seconds == -1:
+                        # Deepgram uses -1 for an already-finalized result.
+                        self._endpoint(session, track, max(0, track.last_word_end_ms),
+                            source="utterance-end", accepted=False, reason="already-finalized")
+                        continue
                     if (type(seconds) not in (int, float) or not math.isfinite(seconds)
                             or seconds < 0 or seconds * 1000 > min(
                                 self.settings.media_max_seconds * 1000,
@@ -475,16 +562,28 @@ class TranscriptionManager:
                     if kind == "SpeechStarted":
                         track.speech_active = True
                         track.last_speech_start_ms = max(track.last_speech_start_ms, timestamp_ms)
+                        track.last_vad_at = time.monotonic()
                         self._notify_segment(session.call_sid, {"track": track.name,
                             "text": "", "start_ms": timestamp_ms, "end_ms": timestamp_ms},
                             False, speech_started=True)
-                    elif ((track.pending_utterance or track.speech_active) and timestamp_ms >= max(
-                            track.last_final_end_ms, track.last_speech_start_ms)):
-                        track.pending_utterance = False
-                        track.speech_active = False
-                        self._notify_segment(session.call_sid, {"track": track.name,
-                            "text": "", "start_ms": timestamp_ms, "end_ms": timestamp_ms},
-                            False, speech_final=True)
+                    else:
+                        # last_word_end is a recognized-word boundary, not the
+                        # clock of a later empty VAD event. Reject later actual
+                        # words while allowing background noise to endpoint.
+                        open_turn = track.pending_utterance or track.speech_active
+                        current = timestamp_ms >= max(track.last_final_end_ms, track.last_word_end_ms)
+                        # A fresh raw onset may be real continuing speech whose
+                        # words have not arrived yet. Keep listening, then let
+                        # the audio-qualified recovery clear a noise-only onset.
+                        unconfirmed_vad = track.last_speech_start_ms > timestamp_ms
+                        clock = time.monotonic()
+                        quiet_audio = self._audio_is_quiet(track, clock)
+                        ready = current and (not unconfirmed_vad or quiet_audio)
+                        self._endpoint(session, track, timestamp_ms,
+                            source="utterance-end", accepted=bool(open_turn and ready),
+                            reason=("no-open-turn" if not open_turn else
+                                    "recognized-speech-after-boundary" if not current else
+                                    "unconfirmed-vad-awaiting-quiet-audio" if not ready else "word-gap"))
                     continue
                 if kind != "Results":
                     raise ValueError
@@ -506,11 +605,26 @@ class TranscriptionManager:
                     raise ValueError
             except (ValueError, KeyError, TypeError, IndexError):
                 raise TrackFailure("result-invalid")
-            # A delayed/repeated result still belongs in the transcript, but its
-            # endpoint cannot close speech that started after that audio ended.
-            speech_final = speech_final and end_ms >= track.last_speech_start_ms
             text = text.strip()
             onset_ms = speech_start_ms(alternative, start, start + duration)
+            word_end_ms = speech_end_ms(alternative, start, start + duration) if text else None
+            if text:
+                recognized_end = word_end_ms if word_end_ms is not None else end_ms
+                if recognized_end > track.last_word_end_ms or (not final and text != track.interim):
+                    track.last_word_update_at = time.monotonic()
+                track.last_word_end_ms = max(track.last_word_end_ms, recognized_end)
+            requested_endpoint = speech_final
+            # A delayed endpoint cannot close newer recognized speech. Raw VAD
+            # alone does not change the timestamp against which it is checked.
+            boundary_ms = word_end_ms if word_end_ms is not None else end_ms
+            speech_final = speech_final and boundary_ms >= track.last_word_end_ms
+            unconfirmed_vad = track.last_speech_start_ms > boundary_ms
+            if unconfirmed_vad and not self._audio_is_quiet(track, time.monotonic()):
+                speech_final = False
+            endpoint_metadata = (self._endpoint_metadata(track, "speech-final", speech_final,
+                "result-endpoint" if speech_final else
+                "unconfirmed-vad-awaiting-quiet-audio" if unconfirmed_vad else "recognized-speech-after-boundary")
+                if requested_endpoint else None)
             if final:
                 if track.interim:
                     track.interim = ""
@@ -532,11 +646,11 @@ class TranscriptionManager:
                     elif session.segments[existing] == segment:
                         # An unchanged final can carry the first endpoint signal.
                         if speech_final and (track.pending_utterance or track.speech_active):
-                            track.pending_utterance = False
-                            track.speech_active = False
-                            self._notify_segment(session.call_sid, {"track": track.name,
-                                "text": "", "start_ms": end_ms, "end_ms": end_ms},
-                                False, speech_final=True)
+                            self._endpoint(session, track, end_ms, source="speech-final",
+                                           accepted=True, reason="repeated-result-endpoint")
+                        elif requested_endpoint and not speech_final:
+                            self._endpoint(session, track, end_ms, source="speech-final",
+                                accepted=False, reason=endpoint_metadata["endpoint_reason"])
                         continue
                     else:
                         session.segments[existing] = segment
@@ -544,20 +658,17 @@ class TranscriptionManager:
                     self._touch()
                     track.pending_utterance = not speech_final
                     track.speech_active = not speech_final
-                    words = alternative.get("words")
-                    last_word_end = (words[-1].get("end") if isinstance(words, list)
-                                     and words and isinstance(words[-1], dict) else None)
-                    track.last_final_end_ms = (round(last_word_end * 1000)
-                        if type(last_word_end) in (int, float) and math.isfinite(last_word_end)
-                        and start <= last_word_end <= start + duration else start_ms)
+                    track.last_final_end_ms = max(track.last_final_end_ms,
+                        word_end_ms if word_end_ms is not None else end_ms)
                     self._notify_segment(session.call_sid, segment, True,
-                                         speech_start_ms=onset_ms, speech_final=speech_final)
+                        speech_start_ms=onset_ms, speech_final=speech_final,
+                        word_end_ms=word_end_ms, endpoint_metadata=endpoint_metadata)
                 elif speech_final and (track.pending_utterance or track.speech_active):
-                    track.pending_utterance = False
-                    track.speech_active = False
-                    self._notify_segment(session.call_sid, {"track": track.name,
-                        "text": "", "start_ms": end_ms, "end_ms": end_ms},
-                        False, speech_final=True)
+                    self._endpoint(session, track, end_ms, source="speech-final",
+                                   accepted=True, reason="silent-result-endpoint")
+                elif requested_endpoint and not speech_final:
+                    self._endpoint(session, track, end_ms, source="speech-final",
+                        accepted=False, reason=endpoint_metadata["endpoint_reason"])
             elif track.interim != text:
                 if text:
                     track.speech_active = True
@@ -565,7 +676,8 @@ class TranscriptionManager:
                 self._touch()
                 self._notify_segment(session.call_sid, {"track": track.name,
                     "text": text, "start_ms": start_ms, "end_ms": end_ms}, False,
-                    speech_start_ms=onset_ms)
+                    speech_start_ms=onset_ms, word_end_ms=word_end_ms,
+                    endpoint_metadata=endpoint_metadata)
         if not track.close_sent:
             raise TrackFailure("provider-disconnected")
 

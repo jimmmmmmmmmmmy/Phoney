@@ -1,16 +1,18 @@
 """The next sentence may prepare early, but unplayed speech never survives cancellation."""
 
 import asyncio
+from dataclasses import replace
 
 from operator_service.sessions import AGENT, HUMAN, REMOTE
 from support.operator_keypad import Harness, Provider, until
 from voice_stack.audio import FRAME_BYTES
+from voice_stack.delivery import LATEST_REALTIME_MODEL
 
 
 def test_one_phrase_prefetch_waits_for_playback_and_barge_in_closes_unheard_audio(tmp_path, monkeypatch):
     async def run():
         phrases = [
-            "I can help you understand the available options and choose what works for your schedule.",
+            "I can help you understand the available options for your schedule. Let's take this one step at a time.",
             "We can take one detail at a time so the conversation stays clear and comfortable.",
             "There is no need to rush, and we can adjust the next step once you have the information.",
         ]
@@ -40,6 +42,11 @@ def test_one_phrase_prefetch_waits_for_playback_and_barge_in_closes_unheard_audi
 
         monkeypatch.setattr("operator_service.runtime.SpeechSession", Synthesis)
         h = Harness(tmp_path, provider=Provider(reply=" ".join(phrases)), acknowledge=False)
+        h.voice = replace(h.voice, elevenlabs_model=LATEST_REALTIME_MODEL)
+        h.controller.voice = h.voice
+        # The model supplies two short sentences in its first utterance. They
+        # share synthesis/prosody and a playback mark while later phrases keep
+        # the one-phrase prefetch and cancellation contract.
         try:
             call = await h.joined()
             call.agent_snapshot = h.registry.resolve_slot("1")

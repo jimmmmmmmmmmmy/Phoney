@@ -22,6 +22,7 @@ from voice_stack.prompts import (VOICEMAIL_GREETING,
                                  three_reply_phase_instruction, voicemail_phase_instruction)
 from voice_stack.voicemail_recovery import recovery_reply
 from .sessions import AGENT, ANNOUNCING, HUMAN, OWNER, PREPARING, REMOTE, OperatorRejected
+from .audio import AGENT_QUEUE_FRAMES
 
 PHRASE_QUEUE_SIZE = 4
 MAX_CONTEXT_CHARS = 48_000
@@ -34,11 +35,13 @@ VOICEMAIL_FIRST_TEXT_SECONDS = 4.0
 VOICEMAIL_PHRASE_CHARS = 240
 PLAYBACK_ACK_SECONDS = 5.0
 FRAME_STALL_SECONDS = 2.0
+COALESCE_SECONDS = 0.2
+COALESCE_CHARS = 160
 ANNOUNCEMENT = "An AI assistant is joining this call."
 OWNER_NOTICE = "AI Detected, deploying voice agent"
 
 
-async def voicemail_greeting_audio(controller, snapshot):
+async def cached_static_audio(controller, snapshot, text):
     """Share bounded synthesis across ringing and playback; never synthesize twice.
 
     The greeting has no caller-specific data. It is cached by the selected voice,
@@ -46,7 +49,7 @@ async def voicemail_greeting_audio(controller, snapshot):
     when the last waiter leaves, unfinished synthesis is canceled as well.
     """
     voice = controller.voice
-    key = (snapshot.voice_id, voice.elevenlabs_model, voice.delivery.cache_key, VOICEMAIL_GREETING)
+    key = (snapshot.voice_id, voice.elevenlabs_model, voice.delivery.cache_key, text)
     cache = controller.announcement_cache
     if key in cache:
         return cache[key]
@@ -57,7 +60,7 @@ async def voicemail_greeting_audio(controller, snapshot):
             async with asyncio.timeout(PREPARATION_SECONDS):
                 async with httpx.AsyncClient(transport=controller.provider_transport) as http:
                     audio = await speech(http, voice.elevenlabs_api_key, snapshot.voice_id,
-                        VOICEMAIL_GREETING, model=voice.elevenlabs_model, output_format="ulaw_8000",
+                        text, model=voice.elevenlabs_model, output_format="ulaw_8000",
                         delivery=voice.delivery,
                         timeout=min(voice.request_timeout, PREPARATION_SECONDS))
             if not audio or len(audio) > MAX_AUDIO_BYTES:
@@ -82,6 +85,10 @@ async def voicemail_greeting_audio(controller, snapshot):
             if not task.done():
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+async def voicemail_greeting_audio(controller, snapshot):
+    return await cached_static_audio(controller, snapshot, VOICEMAIL_GREETING)
 
 
 async def maybe_await(value):
@@ -135,6 +142,10 @@ class DialogueRun:
         self.preparation_task = None
         self.announcement_task = None
         self.owner_cue_task = None
+        self.native_preparation_task = None
+        self.held_phrase = None
+        self.phrases_ended = False
+        self.synthesis_sequence = 0
         self.voicemail_phase = getattr(session, "voicemail_phase", "greeting")
         self.voicemail = getattr(session, "voicemail", False)
         self.bounded_replies = getattr(session, "agent_kind", "manual") == "ai-detected"
@@ -271,6 +282,10 @@ class DialogueRun:
                     async with asyncio.timeout(PREPARATION_SECONDS):
                         if not self.voicemail:
                             self.cue_task = asyncio.create_task(self._announcement(http))
+                        prepare_mode = getattr(self.controller, "prepare_audio_mode", None)
+                        if getattr(self.session, "native_conference", False) and prepare_mode:
+                            self.native_preparation_task = asyncio.create_task(
+                                prepare_mode(self.session.id, self.epoch))
                         if (getattr(self.session, "agent_kind", "manual") == "ai-detected"
                                 and not getattr(self.session, "native_conference", False)):
                             self.owner_cue_task = asyncio.create_task(self._announcement(http, OWNER_NOTICE))
@@ -319,6 +334,8 @@ class DialogueRun:
     async def _close_prepared_audio(self):
         tasks = [task for task in (self.prefetch_task, self.preparation_task,
             self.announcement_task, self.cue_task, self.owner_cue_task) if task is not None]
+        if self.native_preparation_task is not None:
+            tasks.append(self.native_preparation_task)
         for task in tasks:
             if not task.done():
                 task.cancel()
@@ -337,9 +354,12 @@ class DialogueRun:
                 raise ValueError("Empty agent reply")
             return None, None, None
         self.stage = "first-audio"
-        audio = (_bytes(await voicemail_greeting_audio(self.controller, self.snapshot))
-                 if self.voicemail and self.voicemail_phase == "greeting"
-                 else self._speech(http, first))
+        if self.voicemail and self.voicemail_phase == "greeting":
+            greeting = await voicemail_greeting_audio(self.controller, self.snapshot)
+            self._source_audio("voicemail-greeting", greeting)
+            audio = _bytes(greeting)
+        else:
+            audio = self._speech(http, first)
         self.open_audio = audio
         chunk = await anext(audio)
         if not chunk:
@@ -355,7 +375,10 @@ class DialogueRun:
             self.preparation_task.result()
         if not self.current():
             return
+        if self.native_preparation_task is not None:
+            await self.native_preparation_task
         await self.controller.transition_audio_mode(self.session.id, self.epoch, ANNOUNCING)
+        self._source_audio("announcement", cue)
         self.trace("announcement-started")
         async def caller_notice():
             await self._play_chunks(_bytes(cue), kind="announcement")
@@ -385,15 +408,7 @@ class DialogueRun:
             self.trace("announcement-cache-hit")
             return cache[key]
         started = time.monotonic()
-        audio = await speech(http, self.voice.elevenlabs_api_key, self.snapshot.voice_id,
-            text, model=self.voice.elevenlabs_model, output_format="ulaw_8000",
-            delivery=self.voice.delivery,
-            timeout=min(self.voice.request_timeout, PREPARATION_SECONDS))
-        if not audio or len(audio) > MAX_AUDIO_BYTES:
-            raise ValueError("Invalid announcement audio")
-        if len(cache) >= 16:
-            cache.pop(next(iter(cache)))
-        cache[key] = audio
+        audio = await cached_static_audio(self.controller, self.snapshot, text)
         self.trace("announcement-audio-ready", duration_ms=int((time.monotonic()-started)*1000))
         return audio
 
@@ -474,6 +489,33 @@ class DialogueRun:
         self.trace("gemini-complete", end_requested=self.end_requested)
 
     async def _next_phrase(self):
+        if self.held_phrase is not None:
+            phrase, self.held_phrase = self.held_phrase, None
+        elif self.phrases_ended:
+            return None
+        else:
+            phrase = await self._next_raw_phrase()
+        if phrase is None:
+            self.phrases_ended = True
+            return None
+        # Prepare short adjacent sentences together for continuous prosody.
+        # Long responses retain streaming and the next-phrase prefetch limit.
+        if (not self.voicemail and self.voice.elevenlabs_model.startswith(("eleven_v3", "eleven_v4"))
+                and len(phrase) < COALESCE_CHARS):
+            if not self.producer.done():
+                await asyncio.wait((self.producer,), timeout=COALESCE_SECONDS)
+            while not self.phrases.empty():
+                following = self.phrases.get_nowait()
+                if following is None:
+                    self.phrases_ended = True
+                    break
+                if len(phrase) + len(following) + 1 > COALESCE_CHARS:
+                    self.held_phrase = following
+                    break
+                phrase += " " + following
+        return phrase
+
+    async def _next_raw_phrase(self):
         # A producer exception must wake a consumer waiting on an empty queue.
         get = asyncio.create_task(self.phrases.get())
         try:
@@ -491,14 +533,25 @@ class DialogueRun:
         started = time.monotonic()
         first = True
         stream = self.synthesis.speech_bytes(phrase, previous_text=previous_text)
+        self.synthesis_sequence += 1
+        phase = f"reply-{self.synthesis_sequence}"
         try:
             async for chunk in stream:
+                self._source_audio(phase, chunk)
                 if first and chunk:
                     self.trace("elevenlabs-first-audio", duration_ms=int((time.monotonic()-started)*1000))
                     first = False
                 yield chunk
         finally:
             await stream.aclose()
+
+    def _source_audio(self, phase, chunk):
+        callback = getattr(self.controller, "source_audio", None)
+        if callback is not None and chunk:
+            try:
+                callback(self.session.id, f"{self.epoch}:{phase}", chunk)
+            except Exception:
+                self.trace("source-audio-diagnostic-unavailable")
 
     async def _phrase(self, phrase, chunks):
         self.stage = "reply-playback"
@@ -545,7 +598,7 @@ class DialogueRun:
     async def _frame(self, frame, kind, *, role=REMOTE):
         router = self.controller.router(self.session.id)
         deadline = time.monotonic() + FRAME_STALL_SECONDS
-        while router.pending_agent(role) >= 4:
+        while router.pending_agent(role) >= AGENT_QUEUE_FRAMES:
             if not self.current():
                 raise asyncio.CancelledError
             if time.monotonic() >= deadline:

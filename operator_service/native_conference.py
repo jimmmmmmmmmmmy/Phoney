@@ -328,7 +328,41 @@ class NativeConferenceMixin:
         state = self.native_state(session_id)
         if session and session.active and {OWNER, REMOTE} <= state.participants:
             await self.store.mark_connected(session_id)
+            if self.voice_ready and not getattr(session, "_announcement_warmed", False):
+                session._announcement_warmed = True
+                if not hasattr(self, "_native_announcement_tasks"):
+                    self._native_announcement_tasks = {}
+                self._native_announcement_tasks[session_id] = self.store.spawn(
+                    self._warm_native_announcement(session_id))
             self._maybe_auto_takeover(session_id)
+
+    async def _warm_native_announcement(self, session_id):
+        """Prepare the default disclosure while the human conversation continues."""
+        from .runtime import ANNOUNCEMENT, cached_static_audio
+        try:
+            session = self.store.find(session_id)
+            snapshot = await asyncio.to_thread(self.registry.resolve_slot, "1")
+            if session is None or not session.active or snapshot is None:
+                return
+            await cached_static_audio(self, snapshot, ANNOUNCEMENT)
+            self.trace(session_id, "announcement-warm-ready")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.trace(session_id, "announcement-warm-failed", error=type(exc).__name__)
+        finally:
+            getattr(self, "_native_announcement_tasks", {}).pop(session_id, None)
+
+    async def prepare_audio_mode(self, session_id, epoch):
+        """Provision a muted bot in parallel with synthesis, before any mute changes."""
+        session, state = self.store.find(session_id), self.native_state(session_id)
+        if not session or not session.active or session.reply_epoch != epoch:
+            raise OperatorRejected("stale-reply")
+        async with state.control:
+            if not session.active or session.reply_epoch != epoch:
+                raise OperatorRejected("stale-reply")
+            await self._ensure_native_bot(session)
+        self.trace(session_id, "native-agent-prepared")
 
     def native_audio(self, session_id, role, track, frame, stamp):
         session = self.store.find(session_id)
@@ -437,6 +471,10 @@ class NativeConferenceMixin:
             raise OperatorRejected("native-resume-failed") from None
 
     async def _on_session_end(self, session_id):
+        warmer = getattr(self, "_native_announcement_tasks", {}).pop(session_id, None)
+        if warmer is not None and warmer is not asyncio.current_task():
+            warmer.cancel()
+            await asyncio.gather(warmer, return_exceptions=True)
         session = self.store.find(session_id)
         if session and session.native_conference:
             state = self.native_state(session_id)

@@ -4,6 +4,57 @@
 
 Twilio **Media Streams** always exports mono μ-law at 8000 samples per second. Its `start.mediaFormat` contract fixes the encoding, rate, and channel count. That applies to the WebSocket stream this repository receives, including when the original caller uses a VoIP endpoint. It is not a statement that every Twilio product or every VoIP call is narrowband. [Twilio Media Streams format](https://www.twilio.com/docs/voice/media-streams/websocket-messages).
 
+## Call reliability and response timing
+
+The October 1 call repair addresses long waits after the caller finishes and
+interruptions within generated speech:
+
+- Caller endpoints use recognized word timing. Empty noise/VAD events no longer
+  permanently veto a valid endpoint. A recovery timer requires finalized words,
+  fresh incoming audio, at least 750 ms of quiet, and 1.5 seconds without word
+  progress. Continuing speech, unresolved interim words, and a disconnected
+  audio stream prevent that fallback.
+- Bot output uses a 20 ms frame cadence, an initial reserve of up to 120 ms,
+  and a producer queue target of 300 ms. Marks and clears do not consume audio
+  time slots. An underrun is recorded rather than filled with an extra burst of
+  synthetic silence. A socket stall resets the cadence rather than sending a
+  catch-up burst.
+- The native conference defaults to `NATIVE_CONFERENCE_JITTER_BUFFER=medium`
+  for human and bot participants, including rejoins. `small`, `medium`, `large`,
+  and `off` are accepted. A larger buffer trades latency for tolerance of late
+  packets; choose another value only after examining actual call measurements.
+  [Twilio conference jitter buffer](https://www.twilio.com/docs/voice/twiml/conference).
+- The default agent's disclosure is synthesized while the human call connects.
+  Bot provisioning and disclosure preparation also run concurrently during
+  takeover. Short adjacent sentences are combined into one v3/v4 synthesis
+  request, with a maximum 200 ms wait and 160-character target, to reduce
+  repeated synthesis setup and prosody resets. Playback acknowledgments and
+  caller interruption still bound prefetch and cancel unheard speech.
+
+Authenticated browser calls now save SDK jitter, round-trip time, packet loss,
+estimated MOS, warnings, negotiated codec, and coarse microphone processing
+settings. Packet loss is reported as a percentage. These are browser-leg
+observations, not measurements of every carrier leg. The diagnostic upload is
+bounded and best effort; its failure cannot terminate a call. It excludes audio,
+tokens, IP addresses, device labels, and unique browser device identifiers.
+
+Owner-authenticated `GET /api/calls/{call_sid}/quality` returns the browser
+observations and voice timing/buffer events under the remote call SID used by
+history. When the existing `MEDIA_CAPTURE_ENABLED` setting is enabled, the voice
+diagnostics also retain up to 180 seconds per track of generated source bytes
+and bytes actually sent to Twilio. After the call, the owner can retrieve
+`/api/calls/{call_sid}/quality/generated.wav` and `sent.wav`. These WAVs concatenate
+their source bytes; they are **not a synchronized call recording**. Use the
+diagnostic event offsets and truncation fields when comparing them with the
+existing call recording. Generated chunks can interleave between the currently
+playing phrase and a prefetched phrase; their phase identifiers identify each
+source. Files are private and live under
+`CALL_DETAILS_STORAGE_DIR/audio-quality` and `browser-quality`.
+
+The next real call is needed to confirm carrier and browser quality. The repair
+does not enable paid Twilio Voice Insights or change the fixed Media Streams
+format. It preserves the browser's existing preference for Opus.
+
 ## Distinguish the call from its exported stream
 
 | Layer | This project's current path | What a change can achieve |

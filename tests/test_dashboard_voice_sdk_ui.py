@@ -72,3 +72,74 @@ assert.equal(typeof browser.Twilio?.Device,'function');
 assert.equal(typeof browser.Twilio?.Call,'function');
 """, str(asset)], capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr
+
+
+def test_sdk_quality_samples_warnings_metadata_and_final_report_exclude_private_fields():
+    run_sdk(r"""
+const reports=[];window.fetch=async(url,options)=>{reports.push({url,options,body:JSON.parse(options.body)});return {ok:true};};
+navigator.userAgent='Mozilla/5.0 Macintosh Chrome/140.0 Safari/537.36';
+Device.version='2.18.5';
+track.getSettings=()=>({deviceId:'private-device',groupId:'private-group',label:'Private microphone',
+  sampleRate:48000,channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:false});
+const audio=await prepareSdk();await sdkAttach(audio);
+calls[0].emit('sample',{jitter:37,rtt:470,mos:2.7,packetsLostFraction:7,packetsLost:3,
+  packetsReceived:44,packetsSent:50,audioInputLevel:2200,audioOutputLevel:1100,
+  codecName:'opus',timestamp:123456,totals:{packetsLost:35},remoteAddress:'192.0.2.1',token:'jwt-secret'});
+calls[0].emit('warning','high-jitter',{message:'jwt-secret',samples:[{ip:'192.0.2.1'}]});
+calls[0].emit('warning-cleared','high-jitter');
+calls[0].emit('warning','jwt-secret');
+audio.stop();await tick();
+assert.equal(reports.length,1);const report=reports[0];
+assert.equal(report.url,`/api/sessions/${sid}/browser-quality`);
+assert.equal(report.options.credentials,'same-origin');assert.equal(report.options.keepalive,true);
+assert.deepEqual(report.options.headers,{'Content-Type':'application/json','X-Agent-Request':'1'});
+assert.equal(report.body.final,true);assert.equal(report.body.codec,'opus');
+assert.equal(report.body.samples[0].jitter,37);assert.equal(report.body.samples[0].packetsLostFraction,7);
+assert.deepEqual(report.body.warnings.map(value=>[value.name,value.cleared]),[['high-jitter',false],['high-jitter',true]]);
+assert.deepEqual(report.body.device,{browser:'chrome',platform:'mac',sdk_version:'2.18.5',
+  audio_track_count:1,sample_rate:48000,channel_count:1,echo_cancellation:true,noise_suppression:true,auto_gain_control:false});
+for(const secret of ['jwt-secret','one-time-nonce','private-device','private-group','Private microphone','192.0.2.1','123456']) {
+  assert.equal(report.options.body.includes(secret),false,secret);
+}
+assert.equal(timers.size,0);assert.equal(calls[0].disconnects,1);
+""")
+
+
+def test_sdk_quality_reporting_is_bounded_and_failed_fetch_never_interrupts_call():
+    run_sdk(r"""
+const reports=[];window.fetch=async(url,options)=>{reports.push(JSON.parse(options.body));throw Error('network failed');};
+const audio=await prepareSdk();await sdkAttach(audio);
+for(let i=0;i<1000;i++) {
+  calls[0].emit('sample',{jitter:i,rtt:Infinity,mos:NaN,packetsLostFraction:150,codecName:'pcmu'});
+  calls[0].emit('warning','low-mos');
+}
+assert.equal(audio.quality.samples.length,15);assert.equal(audio.quality.warnings.length,16);
+const timer=[...timers.values()].find(value=>value.ms===10000);assert.ok(timer);timer.callback();await tick();
+assert.equal(reports.length,1);assert.equal(reports[0].samples.length,15);
+assert.equal(reports[0].warnings.length,16);assert.equal(reports[0].codec,'pcmu');
+assert.equal(reports[0].samples[0].rtt,undefined);assert.equal(reports[0].samples[0].mos,undefined);
+assert.equal(reports[0].samples[0].packetsLostFraction,undefined);
+assert.equal(audio.connected,true);assert.equal(audio.stopped,false);
+audio.sendDigits('5');assert.deepEqual(calls[0].digits,['5']);
+audio.stop();await tick();assert.equal(reports.length,2);assert.equal(reports[1].final,true);
+""")
+
+
+def test_sdk_final_quality_flush_waits_for_inflight_batch_and_navigation_flush_is_idempotent():
+    run_sdk(r"""
+const reports=[],pageEvents={};let finish;
+window.addEventListener=(name,handler)=>pageEvents[name]=handler;
+window.removeEventListener=(name,handler)=>{if(pageEvents[name]===handler)delete pageEvents[name];};
+window.fetch=(url,options)=>{reports.push(JSON.parse(options.body));
+  return reports.length===1?new Promise(resolve=>finish=resolve):Promise.resolve({ok:true});};
+const audio=await prepareSdk();await sdkAttach(audio);
+calls[0].emit('sample',{jitter:12,mos:4.2});audio.quality.flush();await tick();
+assert.equal(reports.length,1);assert.equal(reports[0].final,false);
+calls[0].emit('sample',{jitter:40,mos:2.9});pageEvents.pagehide();audio.stop();
+assert.equal(reports.length,1,'In-flight reports do not spawn parallel fetches');
+finish({ok:true});await tick();
+assert.equal(reports.length,2);assert.equal(reports[1].final,true);
+assert.equal(reports[1].sequence,2);assert.equal(reports[1].samples[0].jitter,40);
+assert.equal(pageEvents.pagehide,undefined);assert.equal(timers.size,0);
+audio.stop();await tick();assert.equal(reports.length,2);
+""")

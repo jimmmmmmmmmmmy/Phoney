@@ -139,7 +139,8 @@ def test_invalid_observer_identity_cannot_place_provider_request(call_sid, role,
     ("remote", "both_tracks", "false"), ("owner", "inbound_track", "true"),
 ])
 def test_human_tap_is_passive_and_humans_join_native_conference(role, track, starts):
-    session = SimpleNamespace(id=SESSION, legs={role: SimpleNamespace(generation=3, token="auth&token")})
+    session = SimpleNamespace(id=SESSION, legs={role: SimpleNamespace(
+        transport="phone", generation=3, token="auth&token")})
     response = ET.fromstring(native_leg_twiml(SETTINGS, session, role))
     assert [element.tag for element in response] == ["Start", "Dial"]
     assert response.find("Connect") is None
@@ -167,7 +168,7 @@ def test_human_tap_is_passive_and_humans_join_native_conference(role, track, sta
 @pytest.mark.parametrize("mode", ["human", "preparing", "announcing", "agent"])
 def test_owner_rejoins_muted_until_callback_reconciles_without_restarting_observer(mode):
     session = SimpleNamespace(id=SESSION, mode=mode,
-                              legs={"owner": SimpleNamespace(generation=1, token="token")})
+                              legs={"owner": SimpleNamespace(transport="phone", generation=1, token="token")})
     response = ET.fromstring(native_leg_twiml(SETTINGS, session, "owner", rejoin=True))
     assert [element.tag for element in response] == ["Dial"]
     assert response.find("Dial/Conference").attrib["muted"] == "true"

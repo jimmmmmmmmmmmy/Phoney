@@ -42,6 +42,7 @@ from webhooks import require_sid, twilio_validator, valid_media_signature
 
 from .audio import CallRouter
 from .conference_gateway import NativeConferenceGatewayMixin
+from .browser_voice import browser_voice_token
 from .native_conference import NativeConferenceMixin, register_native_routes
 from .controls import (DIGITS, HASH, PROFILE, RELEASE, REPORTED, Command, Keypad)
 from .sessions import (AGENT, ANNOUNCING, PREPARING, CALL_SID, CONNECTED, HUMAN, MODES, OWNER, OWNER_PROMPT, REMOTE, ROLES,
@@ -604,10 +605,12 @@ class RelayOperatorController:
 
     # ----------------------------------------------------------------- call flow
 
-    async def start_outbound(self, to, goal, idempotency_key, *, browser_allowed=True):
+    async def start_outbound(self, to, goal, idempotency_key, *, browser_allowed=True,
+                             browser_requested=False):
         """Reserve the session, let the API answer, then dial in a tracked task."""
         session, reused = await self.store.reserve_outbound(
-            to, goal, idempotency_key, voice_id=self.voice_id, browser_allowed=browser_allowed)
+            to, goal, idempotency_key, voice_id=self.voice_id, browser_allowed=browser_allowed,
+            browser_requested=browser_requested)
         if not reused and not session.browser_audio:
             self.store.spawn(self._dial_owner(session.id))
         return session, reused
@@ -1447,6 +1450,22 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
         if authenticated:
             result["self_call_number"] = (settings.owner_number
                 if settings.owner_number != settings.twilio_number else "")
+            result["browser_voice_enabled"] = bool(getattr(settings, "browser_voice_enabled", False))
+            result["manual_takeover_enabled"] = controller.voice_ready
+            result["voice_ready"] = controller.voice_ready
+            if registry is not None:
+                agents = []
+                for slot in tuple("123456789"):
+                    resolver = registry.resolve_slot
+                    try:
+                        async with asyncio.timeout(3):
+                            snapshot = (await resolver(slot) if inspect.iscoroutinefunction(resolver)
+                                        else await asyncio.to_thread(resolver, slot))
+                    except Exception:
+                        snapshot = None
+                    if snapshot is not None:
+                        agents.append({"slot": slot, "name": snapshot.name})
+                result["agents"] = agents
         return JSONResponse(result, headers=SAFE_HEADERS)
 
     @app.get("/api/operator/sessions", dependencies=[Depends(require_admin)])
@@ -1482,20 +1501,27 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
         except ValueError:
             raise HTTPException(400, "Expected a JSON object") from None
         if (not isinstance(payload, dict) or "to" not in payload
-                or set(payload) - {"to", "goal"} or not isinstance(payload["to"], str)
-                or not isinstance(payload.get("goal", ""), str)):
+                or set(payload) - {"to", "goal", "browser_audio"} or not isinstance(payload["to"], str)
+                or not isinstance(payload.get("goal", ""), str)
+                or type(payload.get("browser_audio", False)) is not bool):
             raise HTTPException(400, 'Expected {"to": "<permitted E.164>", "goal": "..."}')
         if not full_access and payload["to"].strip() == settings.owner_number:
             raise HTTPException(403, "Owner authentication required for browser calling")
+        if payload.get("browser_audio", False):
+            if not full_access:
+                raise HTTPException(403, "Owner authentication required for browser calling")
+            if not getattr(settings, "browser_voice_enabled", False):
+                raise HTTPException(409, "Browser Voice SDK calling is disabled")
         try:
             session, reused = await controller.start_outbound(
                 payload["to"], payload.get("goal", ""), request.headers.get("idempotency-key", ""),
-                browser_allowed=bool(full_access))
+                browser_allowed=bool(full_access), browser_requested=payload.get("browser_audio", False))
         except OperatorRejected as exc:
             raise HTTPException(_status_for(exc.reason),
                                 f"Cannot start a call: {exc.reason}") from None
         return JSONResponse({"session_id": session.id, "phase": session.phase,
                              "browser_audio": session.browser_audio,
+                             "audio_path": "native-conference" if session.native_conference else "relay",
                              "duplicate": reused,
                              "status_url": f"/api/sessions/{session.id}"},
                             status_code=202, headers={"Cache-Control": "no-store"})
@@ -1503,11 +1529,19 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
     @app.post("/api/sessions/{session_id}/browser-token", dependencies=[Depends(require_admin)])
     async def browser_token(session_id: str):
         try:
-            token = await store.issue_browser_token(session_id)
+            session = store.find(session_id)
+            if session and session.native_conference:
+                nonce = await store.issue_browser_voice_nonce(session_id)
+                token = browser_voice_token(settings, session)
+                grant = {"transport": "twilio-voice-sdk", "token": token,
+                         "params": {"SessionId": session_id, "Token": nonce}}
+            else:
+                token = await store.issue_browser_token(session_id)
+                grant = {"url": f"/browser-media/{session_id}/", "token": token}
         except OperatorRejected as exc:
             raise HTTPException(404 if exc.reason == "unknown-session" else 409,
                                 f"Cannot attach browser audio: {exc.reason}") from None
-        return JSONResponse({"url": f"/browser-media/{session_id}/", "token": token},
+        return JSONResponse(grant,
                             headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
     @app.websocket("/browser-media/{session_id}/")
@@ -1524,7 +1558,7 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
                 and origin.path in {"", "/"} and not origin.query and not origin.fragment)
         except ValueError:
             same_origin = False
-        if (session is None or not session.active or not session.browser_audio
+        if (session is None or not session.active or not session.browser_audio or session.native_conference
                 or not same_origin or websocket.scope.get("query_string")):
             await websocket.close(code=1008)
             return
@@ -1535,7 +1569,7 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
     @app.websocket("/media/{session_id}/{role}/")
     async def bridge_socket(websocket: WebSocket, session_id: str, role: str):
         session = store.find(session_id)
-        if (role not in ROLES or session is None or not session.active
+        if (role not in ROLES or session is None or not session.active or session.native_conference
                 or session.legs[role].transport != "phone"
                 or not valid_media_signature(settings, websocket)):
             log.warning("operator_handshake_rejected session=%s role=%s", session_id, role)

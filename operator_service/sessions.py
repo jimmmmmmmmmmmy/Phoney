@@ -158,6 +158,12 @@ class OperatorSession:
     browser_audio: bool = False
     native_conference: bool = False
     native_owner_muted: bool = False
+    browser_voice_nonce: str = field(default="", repr=False)
+    browser_voice_issued: float = field(default=0.0, repr=False)
+    browser_voice_generation: int = field(default=0, repr=False)
+    browser_voice_used: bool = field(default=False, repr=False)
+    browser_voice_twiml: str = field(default="", repr=False)
+    browser_voice_terminal: dict[str, str] = field(default_factory=dict, repr=False)
     call_token: str = field(default="", repr=False)
     to: str = field(default="", repr=False)
     goal: str = ""
@@ -367,7 +373,8 @@ class OperatorSessions:
 
     # ------------------------------------------------------------- reservations
 
-    async def reserve_outbound(self, to, goal, idempotency_key, *, voice_id="", browser_allowed=True):
+    async def reserve_outbound(self, to, goal, idempotency_key, *, voice_id="", browser_allowed=True,
+                               browser_requested=False):
         """Reserve both legs and one idempotency key; return ``(session, reused)``."""
         key = str(idempotency_key or "").strip()
         try:
@@ -376,6 +383,11 @@ class OperatorSessions:
             raise OperatorRejected("invalid-idempotency-key") from None
         destination = str(to or "").strip()
         text = str(goal or "").strip()
+        self_call = bool(destination == self.settings.owner_number
+                         and destination != self.settings.twilio_number)
+        if browser_requested and (not browser_allowed or not getattr(self.settings, "browser_voice_enabled", False)):
+            raise OperatorRejected("browser-audio-unavailable")
+        browser_audio = bool(self_call or browser_requested)
         async with self._lock:
             if self.closed:
                 raise OperatorRejected("shutting-down")
@@ -384,6 +396,8 @@ class OperatorSessions:
                 session = self.sessions[existing]
                 if session.browser_audio and not browser_allowed:
                     raise OperatorRejected("destination-not-allowed")
+                if session.to != destination or session.browser_audio != browser_audio:
+                    raise OperatorRejected("idempotency-conflict")
                 return session, True
             if self.draining:
                 raise OperatorRejected("draining")
@@ -393,9 +407,7 @@ class OperatorSessions:
                 raise OperatorRejected("not-configured")
             if len(text) > MAX_GOAL_CHARS:
                 raise OperatorRejected("goal-too-long")
-            browser_audio = bool(destination == self.settings.owner_number
-                                 and destination != self.settings.twilio_number)
-            if (browser_audio and not browser_allowed) or (not browser_audio
+            if (browser_audio and not browser_allowed) or (not self_call
                     and not self.destination_allowed(destination)):
                 raise OperatorRejected("destination-not-allowed")
             self._prune()
@@ -569,7 +581,7 @@ class OperatorSessions:
             session = self._require(session_id)
             leg = self._leg(session, role)
             sid = str(call_sid or "")
-            if leg.transport != "phone":
+            if leg.transport not in {"phone", "sdk"}:
                 raise OperatorRejected("wrong-transport")
             if not CALL_SID.fullmatch(sid):
                 raise OperatorRejected("invalid-call-sid")
@@ -584,6 +596,8 @@ class OperatorSessions:
                 if leg.call_sid != sid:
                     raise OperatorRejected("call-sid-mismatch")
                 return "matched"
+            if leg.transport == "sdk":
+                raise OperatorRejected("browser-not-bound")
             leg.call_sid = sid
             leg.uncertain = False
             if leg.state == LEG_RESERVED:
@@ -607,7 +621,7 @@ class OperatorSessions:
         async with self._lock:
             session = self._require(session_id)
             leg = self._leg(session, role)
-            if leg.transport != "phone":
+            if leg.transport not in {"phone", "sdk"}:
                 raise OperatorRejected("wrong-transport")
             if not session.active or leg.ended:
                 raise OperatorRejected("session-ended")
@@ -641,6 +655,8 @@ class OperatorSessions:
                 raise OperatorRejected("duplicate-binding")
             if leg.call_sid and leg.call_sid != call_sid:
                 raise OperatorRejected("call-sid-mismatch")
+            if leg.transport == "sdk" and not leg.call_sid:
+                raise OperatorRejected("browser-not-bound")
             leg.call_sid = leg.call_sid or call_sid
             leg.stream_sid = stream_sid
             leg.token_used = True
@@ -655,7 +671,7 @@ class OperatorSessions:
         async with self._lock:
             session = self._require(session_id)
             leg = session.legs[OWNER]
-            if not session.active or not session.browser_audio:
+            if not session.active or not session.browser_audio or session.native_conference:
                 raise OperatorRejected("browser-audio-unavailable")
             if leg.attached or leg.token_used:
                 raise OperatorRejected("browser-already-attached")
@@ -668,7 +684,7 @@ class OperatorSessions:
         async with self._lock:
             session = self._require(session_id)
             leg = session.legs[OWNER]
-            if not session.active or not session.browser_audio or leg.ended:
+            if not session.active or not session.browser_audio or session.native_conference or leg.ended:
                 raise OperatorRejected("browser-audio-unavailable")
             if not isinstance(token, str) or not token.isascii() or not hmac.compare_digest(token, leg.token):
                 raise OperatorRejected("token-mismatch")
@@ -681,6 +697,76 @@ class OperatorSessions:
             leg.state = LEG_STARTED
             leg.stream_sid = "browser-" + session.id
             return leg
+
+    async def issue_browser_voice_nonce(self, session_id) -> str:
+        """Mint a browser-app credential separate from the passive stream token."""
+        async with self._lock:
+            session = self._require(session_id)
+            leg = session.legs[OWNER]
+            if (not session.active or not session.browser_audio or not session.native_conference
+                    or leg.transport != "sdk" or leg.ended):
+                raise OperatorRejected("browser-audio-unavailable")
+            if leg.call_sid or session.browser_voice_used:
+                raise OperatorRejected("browser-already-attached")
+            session.browser_voice_generation += 1
+            session.browser_voice_nonce = f"{session.browser_voice_generation}.{secrets.token_urlsafe(32)}"
+            session.browser_voice_issued = time.monotonic()
+            return session.browser_voice_nonce
+
+    async def bind_browser_voice(self, session_id, call_sid, token) -> SessionLeg:
+        """Consume one SDK app credential; retrying the same Call SID is safe."""
+        async with self._lock:
+            session = self._require(session_id)
+            leg = session.legs[OWNER]
+            if (not session.active or not session.browser_audio or not session.native_conference
+                    or leg.transport != "sdk" or leg.ended):
+                raise OperatorRejected("browser-audio-unavailable")
+            if (not isinstance(token, str) or not token.isascii() or not session.browser_voice_nonce
+                    or not hmac.compare_digest(token, session.browser_voice_nonce)):
+                raise OperatorRejected("token-mismatch")
+            if not isinstance(call_sid, str) or not CALL_SID.fullmatch(call_sid):
+                raise OperatorRejected("invalid-call-sid")
+            if session.browser_voice_used:
+                if leg.call_sid != call_sid:
+                    raise OperatorRejected("call-sid-mismatch")
+                return leg
+            if time.monotonic() - session.browser_voice_issued > TOKEN_SECONDS:
+                raise OperatorRejected("expired-token")
+            if leg.call_sid:
+                raise OperatorRejected("duplicate-binding")
+            leg.call_sid = call_sid
+            leg.answered = True
+            leg.state = LEG_DIALING
+            session.browser_voice_used = True
+            pending = session.browser_voice_terminal.get(call_sid)
+            if pending:
+                leg.status = pending
+                leg.ended = True
+                leg.state = LEG_ENDED
+            return leg
+
+    async def remember_unbound_browser_status(self, session_id, call_sid, status) -> bool:
+        """Remember terminal facts without letting a status callback bind a leg.
+
+        A browser can hang up before Twilio's app webhook reaches us. Only a
+        later successful nonce binding to the same Call SID consumes that fact.
+        """
+        async with self._lock:
+            session = self._require(session_id)
+            leg = session.legs[OWNER]
+            if leg.transport != "sdk":
+                raise OperatorRejected("wrong-transport")
+            if not isinstance(call_sid, str) or not CALL_SID.fullmatch(call_sid):
+                raise OperatorRejected("invalid-call-sid")
+            if status not in CALL_STATUSES:
+                raise OperatorRejected("invalid-status")
+            if leg.call_sid:
+                return False
+            if session.active and status in TERMINAL_STATUSES:
+                session.browser_voice_terminal[call_sid] = status
+                while len(session.browser_voice_terminal) > 16:
+                    del session.browser_voice_terminal[next(iter(session.browser_voice_terminal))]
+            return True
 
     async def detach_socket(self, session_id, role, generation) -> bool:
         """Release the socket slot after its reader loop ends."""
@@ -718,7 +804,7 @@ class OperatorSessions:
         async with self._lock:
             session = self._require(session_id)
             leg = self._leg(session, role)
-            if leg.transport != "phone":
+            if leg.transport not in {"phone", "sdk"}:
                 raise OperatorRejected("wrong-transport")
             if not session.active:
                 return {"action": "ignored", "reason": session.ended_reason or "ended"}
@@ -730,6 +816,8 @@ class OperatorSessions:
                 raise OperatorRejected("invalid-call-sid")
             if leg.call_sid and leg.call_sid != sid:
                 raise OperatorRejected("call-sid-mismatch")
+            if leg.transport == "sdk" and not leg.call_sid:
+                raise OperatorRejected("browser-not-bound")
             if session.voicemail and role == OWNER:
                 leg.call_sid = sid
                 leg.status = raw

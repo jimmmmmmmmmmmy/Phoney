@@ -234,7 +234,8 @@ def create_app(settings: Settings, gateway=None, transcription_connector=None, s
                   "media_capture_enabled": settings.media_capture_enabled and settings.switchboard_ready,
                   "transcription_enabled": settings.transcription_enabled and settings.switchboard_ready,
                   "voicemail_enabled": settings.voicemail_enabled and settings.switchboard_ready,
-                  "operator_enabled": settings.operator_ready}
+                  "operator_enabled": settings.operator_ready,
+                  "browser_voice_enabled": settings.browser_voice_enabled}
         if settings.deploy_commit:
             result["commit"] = settings.deploy_commit
         if settings.agent_management_enabled:

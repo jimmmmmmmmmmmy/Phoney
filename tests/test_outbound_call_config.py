@@ -63,7 +63,8 @@ def test_owner_can_recover_ringing_call_without_origin_and_end_with_csrf_headers
         assert before == {"authenticated": True, "enabled": True, "public_calling": False,
             "owner_label": "•••• 0101", "destinations": [DESTINATION],
             "countries": [], "active_session": None, "busy": False,
-            "self_call_number": OWNER_NUMBER}
+            "self_call_number": OWNER_NUMBER, "browser_voice_enabled": False,
+            "manual_takeover_enabled": False, "voice_ready": False, "agents": []}
         key = str(uuid.uuid4())
         headers = {**owner_headers(settings), "Idempotency-Key": key}
         started = client.post("/api/calls/outbound", json={"to": DESTINATION}, headers=headers)

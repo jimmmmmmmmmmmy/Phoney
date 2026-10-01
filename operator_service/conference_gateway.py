@@ -59,8 +59,11 @@ def native_leg_twiml(settings, session, role: str, *, rejoin: bool = False) -> s
         stream.parameter(name="token", value=leg.token)
     dial_options = {"method": "POST"}
     if role == "owner":
-        dial_options.update(action=settings.public_base_url + f"/twilio/native-menu/{session.id}",
-                            hangup_on_star=True)
+        if leg.transport == "sdk":
+            dial_options["action"] = settings.public_base_url + f"/twilio/browser-finished/{session.id}"
+        else:
+            dial_options.update(action=settings.public_base_url + f"/twilio/native-menu/{session.id}",
+                                hangup_on_star=True)
     else:
         dial_options["action"] = settings.public_base_url + f"/twilio/native-finished/{session.id}/{role}"
     dial = response.dial(**dial_options)
@@ -69,7 +72,7 @@ def native_leg_twiml(settings, session, role: str, *, rejoin: bool = False) -> s
         participant_label=role,
         beep=False,
         start_conference_on_enter=role == "owner",
-        end_conference_on_exit=role == "remote",
+        end_conference_on_exit=role == "remote" or leg.transport == "sdk",
         muted=(role == "owner" and (rejoin or getattr(session, "mode", "human") not in {"human", "preparing"})),
         max_participants=3,
         jitter_buffer_size="small",

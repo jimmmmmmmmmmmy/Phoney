@@ -35,7 +35,9 @@ TWILIO_HTTP = re.compile(
     + r"|/twilio/voicemail/(?:finished|recording)/" + CALL_SID
     + r"|/twilio/native-agent|/twilio/native-agent/status/" + OPERATOR_SID + r"/[1-9][0-9]*"
     + r"|/twilio/native-(?:owner|menu|command|conference)/" + OPERATOR_SID
-    + r"|/twilio/native-finished/" + OPERATOR_SID + r"/remote)\Z")
+    + r"|/twilio/native-finished/" + OPERATOR_SID + r"/remote"
+    + r"|/twilio/browser-voice|/twilio/browser-status"
+    + r"|/twilio/browser-(?:status|finished)/" + OPERATOR_SID + r")\Z")
 TWILIO_WS = re.compile(r"(?:/media/" + CALL_SID + r"/|/media/" + OPERATOR_SID
                        + r"/(?:owner|remote)/|/conference-media/" + OPERATOR_SID
                        + r"/(?:owner|remote)/|/native-agent-media/" + OPERATOR_SID + r"/)\Z")

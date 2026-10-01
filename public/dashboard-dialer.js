@@ -7,12 +7,14 @@
   let config = null, session = null, attempt = null;
   let dialed = "", countryNormalized = false;
   let mutation = false, generation = 0, refreshing = null, error = "", readError = false, initialized = false;
-  let browserAudio = null, audioEpoch = 0;
+  let browserAudio = null, audioEpoch = 0, preparationController = null;
   let trigger, dialog, offline, loading, unlockForm, code, unlockButton;
   let callForm, number, callButton, setup, status, statusTitle, statusBody;
   let keypad, backspace, clearNumber, content, minimizeButton, restoreButton;
   const keys = [];
   let errorBox, endButton, anotherButton, resumeAudioButton, selfCallHelp, dialogActions;
+  let liveKeypad, agentControls, agentButtons, humanButton, agentSignature = "";
+  const liveKeys = [], agentKeys = [];
 
   function node(tag, className, text) {
     const element = document.createElement(tag);
@@ -44,6 +46,8 @@
   const canCall = () => Boolean(config?.authenticated || config?.public_calling);
   const visitor = () => Boolean(config?.public_calling && !config?.authenticated);
   const selfCall = to => Boolean(config?.authenticated && PHONE.test(config?.self_call_number || "") && to === config.self_call_number);
+  const sdkCallingEnabled = () => Boolean(config?.authenticated && (config.browser_voice_enabled || config.browser_transport === "twilio-voice-sdk"));
+  const browserDestination = to => sdkCallingEnabled() || selfCall(to);
   const destination = value => !value.startsWith("+") && /^[0-9]{10}$/.test(value) && selfCall("+1" + value)
     ? "+1" + value : value.startsWith("+") ? value : "+" + value;
   const browserCall = () => Boolean(session?.browser_audio);
@@ -100,13 +104,18 @@
 
   function stopBrowserAudio() {
     audioEpoch++;
+    preparationController?.abort(); preparationController = null;
     if (browserAudio) {browserAudio.stop(); browserAudio = null;}
   }
 
   async function prepareBrowserAudio() {
     const epoch = audioEpoch;
     if (!window.DashboardBrowserAudio) throw new Error("Browser audio is unavailable. Refresh this page and try again.");
-    const prepared = await window.DashboardBrowserAudio.prepare();
+    const controller = preparationController = new AbortController();
+    let prepared;
+    try {prepared = await window.DashboardBrowserAudio.prepare({
+      transport: sdkCallingEnabled() ? "twilio-voice-sdk" : "legacy", signal: controller.signal
+    });} finally {if (preparationController === controller) preparationController = null;}
     if (epoch !== audioEpoch) {prepared.stop(); throw new Error("Browser calling was cancelled. Try again.");}
     if (prepared.stopped) throw new Error("Browser audio was interrupted before the call started. Try again.");
     browserAudio = prepared;
@@ -114,8 +123,32 @@
       if (browserAudio !== prepared) return;
       browserAudio = null; audioEpoch++;
       if (active()) error = message;
-      render(); refresh();
+      render();
+      // An ended SDK leg also closes the remote phone leg. Reconcile explicitly
+      // once; disconnect handlers never start or retry a call.
+      if (prepared.transport === "twilio-voice-sdk" && active()) end(); else refresh();
     };
+  }
+
+  function sendPhoneDigit(digit) {
+    if (mutation || !online() || !config?.authenticated || !active() || !audioConnected() || typeof browserAudio?.sendDigits !== "function") return;
+    try {browserAudio.sendDigits(digit);} catch (_) {error = "That keypad digit could not be sent. Try again."; render();}
+  }
+
+  async function controlAgent(slot) {
+    if (mutation || !online() || !config?.authenticated || !config?.manual_takeover_enabled ||
+        !active() || session.phase !== "connected" || !audioConnected() || browserAudio?.transport !== "twilio-voice-sdk") return;
+    if (slot !== "0" && !(config.agents || []).some(agent => String(agent.slot) === slot)) return;
+    const id = session.id;
+    mutation = true; generation++; error = ""; readError = false; render();
+    try {
+      const result = await request(`/api/sessions/${id}/${slot === "0" ? "mode" : "takeover"}`, {
+        method: "POST", body: JSON.stringify(slot === "0" ? {mode: "human"} : {slot})
+      });
+      if (session?.id === id && active()) session = {...session, mode: result.mode};
+    } catch (failure) {error = failure.status ? failure.message : "Could not confirm the agent change. Check call status before trying again.";}
+    finally {mutation = false; generation++; render();}
+    await refresh();
   }
 
   async function attachBrowserAudio() {
@@ -164,9 +197,11 @@
     backspace.disabled = clearNumber.disabled = mutation || Boolean(attempt) || !dialed;
     callButton.disabled = mutation || !online() || Boolean(config?.busy && !active()) || (!dialed && !attempt);
     const displayedDestination = /^[0-9]{10}$/.test(dialed) && usNumber() ? "+1" + dialed : destination(dialed);
-    const ownDestination = selfCall(displayedDestination);
-    selfCallHelp.hidden = !ownDestination || callForm.hidden;
-    const callLabel = mutation ? "Starting call…" : attempt ? "Retry same request" : ownDestination ? "Call from this browser" : publicVisitor ? "Call owner's phone" : "Call my phone";
+    const browserDestinationSelected = browserDestination(displayedDestination);
+    selfCallHelp.hidden = !browserDestinationSelected || callForm.hidden;
+    setText(selfCallHelp, sdkCallingEnabled() ? "Speak and listen through this browser's microphone and speaker. Keep this tab open during the call."
+      : "Calling your own number uses this browser's microphone and speaker. Your phone rings once; no need to press 1.");
+    const callLabel = mutation ? "Starting call…" : attempt ? "Retry same request" : browserDestinationSelected ? "Call from this browser" : publicVisitor ? "Call owner's phone" : "Call my phone";
     callButton.setAttribute("aria-label", callLabel);
     status.hidden = !allowed || !hasCall;
     status.setAttribute("data-ended", String(session?.phase === "ended"));
@@ -188,8 +223,15 @@
         phase[0] = mutation ? "Connecting browser audio" : "Use browser audio";
         phase[1] = "Use the microphone in this tab to speak and listen. If this call is open in another tab, continue there.";
       } else {
-        phase[0] = session.phase === "connected" ? "Connected" : session.phase === "reserved" ? "Starting your call" : "Ringing your phone";
-        phase[1] = session.phase === "connected" ? "Speak and listen here. Keep this tab open; minimizing the dialer keeps the call connected."
+        const sdk = browserAudio.transport === "twilio-voice-sdk";
+        const codec = browserAudio.codec === "opus" ? "Opus" : browserAudio.codec === "pcmu" ? "PCMU" : "";
+        const browserStatus = `Browser audio connected${sdk && codec ? ` (${codec})` : ""}`;
+        const agentSpeaking = session.mode === "agent" || session.mode === "announcing";
+        phase[0] = session.phase === "connected" ? (agentSpeaking ? "AI agent speaking" : sdk ? browserStatus : "Connected")
+          : session.phase === "reserved" ? "Starting your call" : sdk ? "Calling the other person" : "Ringing your phone";
+        phase[1] = session.phase === "connected" ? (sdk && agentSpeaking ? `${browserStatus}. Listen while the agent speaks. Use #0 Speak again to return to speaking. Keep this tab open.`
+          : "Speak and listen here. Keep this tab open; minimizing the dialer keeps the call connected.")
+          : sdk ? `${browserStatus}. Waiting for the other person to answer; no need to press 1. Keep this tab open.`
           : "Your phone rings once. Answer it to connect; no need to press 1. Speak and listen here, and keep this tab open.";
       }
     }
@@ -202,6 +244,22 @@
     anotherButton.disabled = mutation;
     resumeAudioButton.hidden = !allowed || !config?.authenticated || !active() || !browserCall() || audioConnected();
     resumeAudioButton.disabled = mutation || !online();
+    const liveBrowser = Boolean(active() && config?.authenticated && audioConnected() && browserAudio.transport === "twilio-voice-sdk");
+    liveKeypad.hidden = !liveBrowser || session.phase !== "connected";
+    for (const key of liveKeys) key.disabled = mutation || !online();
+    const agents = (config?.agents || []).filter(agent => /^[1-9]$/.test(String(agent.slot)));
+    const signature = JSON.stringify(agents.map(agent => [String(agent.slot), String(agent.name || "Agent")]));
+    if (signature !== agentSignature) {
+      agentSignature = signature; agentKeys.length = 0; agentButtons.replaceChildren();
+      for (const agent of agents) {
+        const slot = String(agent.slot), key = button(`#${slot} ${agent.name || "Agent"}`, "toolbar-secondary-button", `dialer-agent-${slot}`);
+        key.addEventListener("click", () => controlAgent(slot)); agentKeys.push(key); agentButtons.append(key);
+      }
+    }
+    agentControls.hidden = !liveBrowser || session.phase !== "connected" || !config?.manual_takeover_enabled ||
+      (!agents.length && session?.mode === "human");
+    for (const key of agentKeys) key.disabled = mutation || !online() || !config?.voice_ready;
+    humanButton.disabled = mutation || !online() || session?.mode === "human";
     dialogActions.hidden = endButton.hidden && anotherButton.hidden && resumeAudioButton.hidden;
     offline.hidden = online();
     setText(offline, browserCall() && active() ? "You're offline. Browser audio will disconnect and the call will end. Reconnect before starting another call." : active()
@@ -291,7 +349,7 @@
         render(); number.focus(); return;
       }
       if (!crypto.randomUUID) {error = "Calling needs a secure connection. Open this site with HTTPS."; render(); return;}
-      attempt = {key: crypto.randomUUID(), payload: {to, goal: ""}, browser: selfCall(to)};
+      attempt = {key: crypto.randomUUID(), payload: {to, goal: "", ...(sdkCallingEnabled() ? {browser_audio: true} : {})}, browser: browserDestination(to)};
     }
     mutation = true; generation++; error = ""; readError = false; render();
     let posted = false;
@@ -300,7 +358,8 @@
       posted = true;
       const result = await request("/api/calls/outbound", {method: "POST", headers: {"Idempotency-Key": attempt.key}, body: JSON.stringify(attempt.payload)});
       if (!SESSION.test(result.session_id)) throw new Error("Invalid call response");
-      adopt({id: result.session_id, phase: result.phase, browser_audio: result.browser_audio === true});
+      adopt({id: result.session_id, phase: result.phase, browser_audio: result.browser_audio === true,
+        audio_path: result.audio_path, mode: result.mode});
       if (browserCall() && active()) {
         if (!browserAudio) throw new Error("Browser audio is unavailable. Use the microphone button to connect.");
         await attachBrowserAudio();
@@ -410,6 +469,21 @@
     dialog.addEventListener("paste", pasteNumber);
     status = node("section", "dialer-state"); status.id = "dialer-status"; status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite"); status.setAttribute("aria-atomic", "true");
     statusTitle = node("h3"); statusBody = node("p"); status.append(statusTitle, statusBody);
+    liveKeypad = node("div", "dialer-keypad"); liveKeypad.id = "dialer-live-keypad";
+    liveKeypad.setAttribute("role", "group"); liveKeypad.setAttribute("aria-label", "Send phone keypad tones");
+    for (const digit of ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"]) {
+      const name = digit === "*" ? "star" : digit === "#" ? "hash" : digit;
+      const key = button(digit, "dialer-key", `dialer-live-key-${name}`);
+      key.setAttribute("aria-label", `Send ${digit === "*" ? "star" : digit === "#" ? "hash" : digit} to the phone call`);
+      key.addEventListener("click", () => sendPhoneDigit(digit)); liveKeys.push(key); liveKeypad.append(key);
+    }
+    agentControls = node("section"); agentControls.id = "dialer-agent-controls";
+    agentControls.setAttribute("aria-label", "AI agent controls");
+    agentControls.append(node("p", "dialer-help", "Choose an agent to speak while you listen. Use #0 to speak again."));
+    agentButtons = node("div", "dialer-actions");
+    humanButton = button("#0 Speak again", "toolbar-primary-button", "dialer-agent-human");
+    humanButton.addEventListener("click", () => controlAgent("0"));
+    agentControls.append(agentButtons, humanButton);
     errorBox = node("p", "toolbar-error dialer-error"); errorBox.id = "dialer-error"; errorBox.setAttribute("role", "alert");
     endButton = button("End call", "toolbar-secondary-button dialer-end", "dialer-end"); endButton.addEventListener("click", end);
     anotherButton = button("Start another call", "toolbar-primary-button", "dialer-another");
@@ -417,7 +491,7 @@
     resumeAudioButton = button("Use microphone in this tab", "toolbar-primary-button", "dialer-resume-audio");
     resumeAudioButton.addEventListener("click", resumeBrowserAudio);
     dialogActions = node("div", "dialer-actions"); dialogActions.append(resumeAudioButton, endButton, anotherButton);
-    content.append(controls, offline, loading, unlockForm, setup, callForm, status, errorBox, dialogActions);
+    content.append(controls, offline, loading, unlockForm, setup, callForm, status, liveKeypad, agentControls, errorBox, dialogActions);
     dialog.append(content, restoreButton); document.body.append(dialog);
     const open = () => {
       content.hidden = false; restoreButton.hidden = true;

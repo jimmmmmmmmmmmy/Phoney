@@ -5,8 +5,10 @@ pass. The flag defaults to false. This pilot moves **outbound phone-to-phone
 calls** into Twilio's conference mixer while retaining a separate streamed AI
 participant for takeover.
 
-Incoming calls keep the existing agent-capable relay and voicemail path. The
-dashboard's browser microphone exception also keeps its existing relay. For
+Incoming calls keep the existing agent-capable relay and voicemail path. Browser
+microphone calls use their independent `BROWSER_VOICE_ENABLED` flag; see
+[native browser calling](BROWSER_CALLING.md). With that flag off they keep the
+existing relay. For
 other dashboard destinations, the owner-first phone callback and press-1
 acceptance remain in use. Native mode is selected when a new session is created;
 changing configuration does not convert an active call.
@@ -46,7 +48,8 @@ configured TwiML App to `PUBLIC_BASE_URL/twilio/native-agent`, using POST. It
 verifies the account and reads the settings back. The original App Voice URL and
 method are saved once in the private `.runtime/twilio-before-native-application.json`
 backup. Running the helper without `--apply` only reports configuration,
-including `native_agent_matches`; disabled native mode does not update the App.
+including `native_agent_matches`. The App is synchronized when either native
+phone mode or native browser calling is enabled; disabling both skips the App.
 
 ## Call flow and controls
 

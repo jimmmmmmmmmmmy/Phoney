@@ -20,6 +20,8 @@ from twilio.twiml.voice_response import VoiceResponse
 from twilio.base.exceptions import TwilioRestException
 
 from webhooks import require_sid, valid_media_signature
+
+from .browser_voice import browser_voice_identity
 from voice_stack.audio import FRAME_MS, iter_frames
 from .codecs import decode_payload
 from .audio import CallRouter, MAX_BAD_MESSAGES, MAX_MESSAGE_BYTES
@@ -243,12 +245,15 @@ class NativeConferenceMixin:
             self.routers[session_id] = NativeConferenceRouter(session_id, self)
         return self.routers[session_id]
 
-    async def start_outbound(self, to, goal, idempotency_key, *, browser_allowed=True):
+    async def start_outbound(self, to, goal, idempotency_key, *, browser_allowed=True,
+                             browser_requested=False):
         session, reused = await self.store.reserve_outbound(to, goal, idempotency_key,
-                                                          voice_id=self.voice_id, browser_allowed=browser_allowed)
+            voice_id=self.voice_id, browser_allowed=browser_allowed, browser_requested=browser_requested)
         if not reused:
-            session.native_conference = bool(getattr(self.settings, "native_conference_enabled", False)
-                                             and not session.browser_audio)
+            session.native_conference = bool(getattr(self.settings,
+                "browser_voice_enabled" if session.browser_audio else "native_conference_enabled", False))
+            if session.native_conference and session.browser_audio:
+                session.legs[OWNER].transport = "sdk"
             if not session.browser_audio:
                 self.store.spawn(self._dial_owner(session.id))
         return session, reused
@@ -467,9 +472,84 @@ def register_native_routes(app, settings, store, controller, validate_twilio):
                 raise HTTPException(400, "Native callback does not match the leg")
         return session
 
+    def browser_session(session_id, form, *, bound=True):
+        session = session_for(session_id, form)
+        if not session.browser_audio or session.legs[OWNER].transport != "sdk":
+            raise HTTPException(400, "Unknown browser voice session")
+        if form.get("From") != "client:" + browser_voice_identity(session.id):
+            raise HTTPException(403, "Browser voice identity does not match")
+        for name in ("ApplicationSid", "ToAppSid"):
+            if form.get(name) and form[name] != settings.twilio_browser_app_sid:
+                raise HTTPException(403, "Browser voice application does not match")
+        call_sid = require_sid(form.get("CallSid"))
+        if bound and session.legs[OWNER].call_sid != call_sid:
+            raise HTTPException(400, "Browser voice callback does not match the leg")
+        return session
+
+    @app.post("/twilio/browser-voice")
+    async def browser_voice(form=Depends(validate_twilio)):
+        session = browser_session(form.get("SessionId"), form, bound=False)
+        if not session.active:
+            return hangup()
+        try:
+            leg = await store.bind_browser_voice(session.id, form.get("CallSid"), form.get("Token"))
+        except OperatorRejected as exc:
+            raise HTTPException(403, "Invalid browser voice binding") from exc
+        if leg.ended:
+            await controller.end(session.id, "owner-" + leg.status)
+            return hangup()
+        await store.mark_owner_prompt(session.id)
+        if await store.begin_remote_dial(session.id):
+            store.spawn(controller._dial_remote(session.id))
+        if not session.active:
+            return hangup()
+        if not session.browser_voice_twiml:
+            session.browser_voice_twiml = native_leg_twiml(settings, session, OWNER)
+        return xml(session.browser_voice_twiml)
+
+    async def apply_browser_status(session_id, form):
+        session = browser_session(session_id, form, bound=False)
+        # A global App callback may arrive before its voice webhook. It cannot
+        # authorize a dial or claim a browser leg without the one-use nonce.
+        if not session.legs[OWNER].call_sid:
+            try:
+                if await store.remember_unbound_browser_status(session.id, form.get("CallSid"), form.get("CallStatus")):
+                    return Response(status_code=204)
+            except OperatorRejected as exc:
+                raise HTTPException(400, "Browser voice callback does not match") from exc
+        browser_session(session_id, form)
+        try:
+            result = await store.record_status(session.id, OWNER, form.get("CallSid"), form.get("CallStatus"))
+        except OperatorRejected as exc:
+            raise HTTPException(400, "Browser voice callback does not match") from exc
+        if result["action"] == "terminal":
+            await controller.end(session.id, "owner-" + result["reason"])
+        return Response(status_code=204)
+
+    @app.post("/twilio/browser-status")
+    async def global_browser_status(form=Depends(validate_twilio)):
+        identity = form.get("From", "")
+        prefix = "client:phoney_"
+        if not isinstance(identity, str) or not identity.startswith(prefix):
+            raise HTTPException(403, "Invalid browser voice identity")
+        return await apply_browser_status(identity[len(prefix):], form)
+
+    @app.post("/twilio/browser-status/{session_id}")
+    async def browser_status(session_id: str, form=Depends(validate_twilio)):
+        return await apply_browser_status(session_id, form)
+
+    @app.post("/twilio/browser-finished/{session_id}")
+    async def browser_finished(session_id: str, form=Depends(validate_twilio)):
+        session = browser_session(session_id, form)
+        if session.active:
+            await controller.end(session.id, "browser-conference-finished")
+        return hangup()
+
     @app.post("/twilio/native-owner/{session_id}")
     async def accept_owner(session_id: str, form=Depends(validate_twilio)):
         session = session_for(session_id, form, OWNER)
+        if session.browser_audio:
+            raise HTTPException(400, "Browser voice does not use phone acceptance")
         if not session.active or form.get("Digits") != "1":
             return hangup()
         await store.bind_call_sid(session_id, OWNER, form["CallSid"])
@@ -481,6 +561,8 @@ def register_native_routes(app, settings, store, controller, validate_twilio):
     @app.post("/twilio/native-menu/{session_id}")
     async def owner_menu(session_id: str, form=Depends(validate_twilio)):
         session = session_for(session_id, form, OWNER)
+        if session.browser_audio:
+            raise HTTPException(400, "Browser voice does not use the phone menu")
         if not session.active:
             return hangup()
         # Conference completion also invokes Dial's action; it is not a menu.
@@ -494,6 +576,8 @@ def register_native_routes(app, settings, store, controller, validate_twilio):
     @app.post("/twilio/native-command/{session_id}")
     async def owner_command(session_id: str, form=Depends(validate_twilio)):
         session = session_for(session_id, form, OWNER)
+        if session.browser_audio:
+            raise HTTPException(400, "Browser voice does not use the phone menu")
         if not session.active:
             return hangup()
         state = controller.native_state(session_id)
@@ -563,8 +647,8 @@ def register_native_routes(app, settings, store, controller, validate_twilio):
             if role == OWNER:
                 state.owner_reconcile_pending = False
                 session.native_owner_muted = True
-            if role == REMOTE:
-                await controller.end(session_id, "remote-left-conference")
+            if role == REMOTE or (role == OWNER and session.browser_audio):
+                await controller.end(session_id, role + "-left-conference")
         elif event == "conference-end":
             await controller.end(session_id, "native-conference-ended")
         if len(state.events) < 2048:

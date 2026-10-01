@@ -140,7 +140,7 @@ def test_health_identifies_build_and_readiness_without_call_data(switchboard):
     assert client.get("/health").json() == {
         "status": "ok", "service": "passive-operator", "build": 3, "switchboard_ready": True,
         "media_capture_enabled": False, "transcription_enabled": False, "voicemail_enabled": False,
-        "operator_enabled": False
+        "operator_enabled": False, "browser_voice_enabled": False
     }
 
 

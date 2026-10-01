@@ -1,4 +1,4 @@
-"""Check or set voice, caller-status and enabled native-agent webhooks. Does not place calls."""
+"""Check or set number and enabled native voice App webhooks. Does not place calls."""
 
 import argparse
 import json
@@ -15,6 +15,22 @@ from twilio.http.http_client import TwilioHttpClient
 from twilio.rest import Client
 
 from config import Settings
+
+
+def _application_backup(path, application, *, status=False):
+    """Preserve the initial App routing privately across later URL changes."""
+    fields = {"application_sid": application.sid, "account_sid": application.account_sid,
+              "voice_url": application.voice_url, "voice_method": application.voice_method}
+    if status:
+        fields.update(status_callback=application.status_callback,
+                      status_callback_method=application.status_callback_method)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return
+    with os.fdopen(descriptor, "w") as backup_file:
+        json.dump(fields, backup_file, indent=2)
+        backup_file.write("\n")
 
 
 def main():
@@ -41,12 +57,22 @@ def main():
     expected = settings.public_base_url + "/voice"
     expected_status = settings.public_base_url + "/status"
     expected_agent = settings.public_base_url + "/twilio/native-agent"
+    expected_browser = settings.public_base_url + "/twilio/browser-voice"
+    expected_browser_status = settings.public_base_url + "/twilio/browser-status"
     application = None
     application_sid = getattr(settings, "twilio_conference_app_sid", "")
-    if getattr(settings, "native_conference_enabled", False) and application_sid:
+    browser_enabled = getattr(settings, "browser_voice_enabled", False)
+    if (getattr(settings, "native_conference_enabled", False) or browser_enabled) and application_sid:
         application = client.applications(application_sid).fetch()
         if application.sid != application_sid or application.account_sid != settings.account_sid:
             raise ValueError("Expected the configured native-agent TwiML App in this account.")
+    browser_application = None
+    browser_application_sid = getattr(settings, "twilio_browser_app_sid", "")
+    if browser_enabled and browser_application_sid:
+        browser_application = client.applications(browser_application_sid).fetch()
+        if (browser_application.sid != browser_application_sid
+                or browser_application.account_sid != settings.account_sid):
+            raise ValueError("Expected the configured browser-voice TwiML App in this account.")
     if args.apply:
         runtime = ROOT / ".runtime"
         runtime.mkdir(mode=0o700, exist_ok=True)
@@ -62,20 +88,10 @@ def main():
                 "status_callback_method": current.status_callback_method}, indent=2) + "\n")
             status_backup.chmod(0o600)
         if application is not None:
-            # Exclusive creation preserves the original settings across tunnel
-            # changes; mode 0600 is private from the first write.
-            application_backup = runtime / "twilio-before-native-application.json"
-            try:
-                descriptor = os.open(application_backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            except FileExistsError:
-                pass
-            else:
-                with os.fdopen(descriptor, "w") as backup_file:
-                    json.dump({"application_sid": application.sid,
-                        "account_sid": application.account_sid,
-                        "voice_url": application.voice_url,
-                        "voice_method": application.voice_method}, backup_file, indent=2)
-                    backup_file.write("\n")
+            _application_backup(runtime / "twilio-before-native-application.json", application)
+        if browser_application is not None:
+            _application_backup(runtime / "twilio-before-browser-application.json",
+                                browser_application, status=True)
         client.incoming_phone_numbers(current.sid).update(
             voice_url=expected, voice_method="POST",
             status_callback=expected_status, status_callback_method="POST")
@@ -83,6 +99,10 @@ def main():
         if application is not None:
             client.applications(application_sid).update(voice_url=expected_agent, voice_method="POST")
             application = client.applications(application_sid).fetch()
+        if browser_application is not None:
+            client.applications(browser_application_sid).update(voice_url=expected_browser, voice_method="POST",
+                status_callback=expected_browser_status, status_callback_method="POST")
+            browser_application = client.applications(browser_application_sid).fetch()
     output = {"phone_number": current.phone_number, "voice_url": current.voice_url,
                       "voice_method": current.voice_method,
                       "status_callback": current.status_callback,
@@ -94,12 +114,24 @@ def main():
             native_agent_voice_url=application.voice_url, native_agent_voice_method=application.voice_method,
             native_agent_matches=(application.sid == application_sid and application.account_sid == settings.account_sid
                 and application.voice_url == expected_agent and application.voice_method == "POST"))
+    if browser_application is not None:
+        output.update(browser_voice_application_sid=browser_application.sid,
+            browser_voice_url=browser_application.voice_url, browser_voice_method=browser_application.voice_method,
+            browser_status_callback=browser_application.status_callback,
+            browser_status_callback_method=browser_application.status_callback_method,
+            browser_voice_matches=(browser_application.sid == browser_application_sid
+                and browser_application.account_sid == settings.account_sid
+                and browser_application.voice_url == expected_browser and browser_application.voice_method == "POST"
+                and browser_application.status_callback == expected_browser_status
+                and browser_application.status_callback_method == "POST"))
     print(json.dumps(output, indent=2))
     if args.apply and (current.voice_url != expected or current.voice_method != "POST"
                       or current.status_callback != expected_status or current.status_callback_method != "POST"):
         raise ValueError("Twilio read-back did not match the requested webhook.")
     if args.apply and application is not None and not output["native_agent_matches"]:
         raise ValueError("Twilio read-back did not match the requested native-agent webhook.")
+    if args.apply and browser_application is not None and not output["browser_voice_matches"]:
+        raise ValueError("Twilio read-back did not match the requested browser-voice webhooks.")
 
 
 if __name__ == "__main__":

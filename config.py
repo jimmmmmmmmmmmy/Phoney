@@ -56,6 +56,8 @@ class Settings:
     operator_inbound_enabled: bool = False
     native_conference_enabled: bool = False
     twilio_conference_app_sid: str = ""
+    browser_voice_enabled: bool = False
+    twilio_browser_app_sid: str = ""
     automatic_takeover_enabled: bool = False
     voicemail_agent_enabled: bool = False
     voicemail_agent_ring_seconds: int = 10
@@ -75,6 +77,17 @@ class Settings:
             raise ValueError("TWILIO_CONFERENCE_APP_SID must be a TwiML application SID.")
         if self.native_conference_enabled and not self.twilio_conference_app_sid:
             raise ValueError("Set TWILIO_CONFERENCE_APP_SID before enabling native conferences.")
+        if type(self.browser_voice_enabled) is not bool:
+            raise ValueError("BROWSER_VOICE_ENABLED must be true or false.")
+        if self.twilio_browser_app_sid and not re.fullmatch(r"AP[0-9a-fA-F]{32}", self.twilio_browser_app_sid):
+            raise ValueError("TWILIO_BROWSER_APP_SID must be a TwiML application SID.")
+        if self.browser_voice_enabled:
+            if not self.api_key or not self.api_secret:
+                raise ValueError("Set TWILIO_API_KEY and TWILIO_API_SECRET before enabling browser voice.")
+            if not self.twilio_browser_app_sid or not self.twilio_conference_app_sid:
+                raise ValueError("Set TWILIO_BROWSER_APP_SID and TWILIO_CONFERENCE_APP_SID before enabling browser voice.")
+            if self.twilio_browser_app_sid == self.twilio_conference_app_sid:
+                raise ValueError("Browser voice and conference agent require separate TwiML Apps.")
         if not self.account_sid.startswith("AC") or len(self.account_sid) != 34:
             raise ValueError("Set TWILIO_ACCOUNT_SID in .env to your account SID.")
         if not self.auth_token or self.auth_token == "REPLACE_ME":
@@ -270,6 +283,9 @@ class Settings:
         native_flag = os.getenv("NATIVE_CONFERENCE_ENABLED", "false").strip().lower()
         if native_flag not in {"true", "false"}:
             raise ValueError("NATIVE_CONFERENCE_ENABLED must be true or false.")
+        browser_voice_flag = os.getenv("BROWSER_VOICE_ENABLED", "false").strip().lower()
+        if browser_voice_flag not in {"true", "false"}:
+            raise ValueError("BROWSER_VOICE_ENABLED must be true or false.")
         public_calling_flag = os.getenv("PUBLIC_CALLING_ENABLED", "false").strip().lower()
         if public_calling_flag not in {"true", "false"}:
             raise ValueError("PUBLIC_CALLING_ENABLED must be true or false.")
@@ -356,6 +372,8 @@ class Settings:
             operator_inbound_enabled=inbound_flag == "true",
             native_conference_enabled=native_flag == "true",
             twilio_conference_app_sid=os.getenv("TWILIO_CONFERENCE_APP_SID", "").strip(),
+            browser_voice_enabled=browser_voice_flag == "true",
+            twilio_browser_app_sid=os.getenv("TWILIO_BROWSER_APP_SID", "").strip(),
             automatic_takeover_enabled=auto_flag == "true",
             voicemail_agent_enabled=voicemail_agent_flag == "true",
             voicemail_agent_ring_seconds=int(os.getenv("VOICEMAIL_AGENT_RING_SECONDS", "10")),

@@ -1,4 +1,4 @@
-/* Browser half of an owner self-call. Tokens and audio stay in this tab. */
+/* Browser audio for authenticated dashboard calls. Tokens stay in this tab. */
 (() => {
   "use strict";
   const READY_MS = 10000, MAX_BACKLOG = 1, MAX_SEND_BYTES = 64000;
@@ -10,6 +10,132 @@
     if (failure?.name === "NotFoundError") return new Error("Connect a microphone, then try the call again.");
     if (failure?.name === "NotReadableError") return new Error("Your microphone is unavailable. Close other apps using it, then try again.");
     return new Error("Browser audio could not start. Check your microphone and try again.");
+  }
+
+  const cancelled = () => new Error("Browser calling was cancelled. Try again.");
+
+  // Browser permission prompts cannot be dismissed programmatically. A cancelled
+  // request releases any stream that arrives later and never proceeds to dial.
+  function requestMicrophone(signal) {
+    if (signal?.aborted) return Promise.reject(cancelled());
+    const microphone = navigator.mediaDevices.getUserMedia({audio: {
+      echoCancellation: true, noiseSuppression: true, autoGainControl: true
+    }, video: false});
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const abort = () => {if (!settled) {settled = true; reject(cancelled());}};
+      signal?.addEventListener("abort", abort, {once: true});
+      microphone.then(stream => {
+        signal?.removeEventListener("abort", abort);
+        if (settled || signal?.aborted) {
+          for (const track of stream.getTracks()) track.stop();
+          if (!settled) reject(cancelled());
+          return;
+        }
+        settled = true; resolve(stream);
+      }, failure => {
+        signal?.removeEventListener("abort", abort);
+        if (!settled) {settled = true; reject(microphoneError(failure));}
+      });
+    });
+  }
+
+  class VoiceSdkAudio {
+    constructor(stream) {
+      this.stream = stream;
+      this.transport = "twilio-voice-sdk";
+      this.sessionId = null;
+      this.connected = false;
+      this.codec = null;
+      this.stopped = false;
+      this.device = null;
+      this.call = null;
+      this.cancelAttach = null;
+      this.onDisconnect = null;
+      this.microphoneEnded = () => this.fail("The microphone disconnected or its permission was revoked. The call is ending.");
+      for (const track of stream.getTracks()) track.addEventListener("ended", this.microphoneEnded);
+    }
+
+    async attach(credentials, sessionId) {
+      if (this.stopped) throw cancelled();
+      if (this.device) throw new Error("Browser audio is already connecting.");
+      const params = credentials?.params;
+      if (credentials?.transport !== this.transport || !/^[0-9a-f]{32}$/.test(sessionId) ||
+          typeof credentials.token !== "string" || !credentials.token || credentials.token.length > 16384 ||
+          !params || Object.keys(params).sort().join(",") !== "SessionId,Token" || params.SessionId !== sessionId ||
+          typeof params.Token !== "string" || !params.Token || params.Token.length > 2048) {
+        throw new Error("Invalid browser audio response.");
+      }
+      this.sessionId = sessionId;
+      await new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = failure => {
+          if (settled) return;
+          settled = true; clearTimeout(timeout); this.cancelAttach = null;
+          if (failure) {this.stop(); reject(failure);} else resolve();
+        };
+        const timeout = setTimeout(() => finish(new Error("Browser audio did not connect. Try again.")), READY_MS);
+        this.cancelAttach = finish;
+        const failed = message => {
+          if (this.stopped) return;
+          if (!settled) finish(new Error(message)); else this.fail(message);
+        };
+        try {
+          const device = this.device = new window.Twilio.Device(credentials.token, {
+            codecPreferences: ["opus", "pcmu"], allowIncomingWhileBusy: false,
+            closeProtection: false, logLevel: "silent",
+            // Reuse the microphone granted in the click gesture. The SDK owns
+            // encoding/playback; this path never uses the 8 kHz capture worklet.
+            getUserMedia: () => this.stopped ? Promise.reject(cancelled()) : Promise.resolve(this.stream)
+          });
+          device.on("incoming", call => call.reject());
+          device.on("error", () => failed("Browser audio disconnected. The call is ending."));
+          // Outgoing only: register() would enable incoming SDK calls.
+          Promise.resolve(device.connect({params: {SessionId: params.SessionId, Token: params.Token}})).then(call => {
+            if (this.stopped) {try {call.disconnect();} catch (_) {} return;}
+            this.call = call;
+            const accepted = () => {
+              if (this.stopped || this.connected) return;
+              this.codec = ["opus", "pcmu"].includes(call.codec) ? call.codec : null;
+              this.connected = true; finish();
+            };
+            call.on("accept", accepted);
+            call.on("disconnect", () => failed("The call ended."));
+            call.on("cancel", () => failed("The call ended before browser audio connected."));
+            call.on("reject", () => failed("Browser audio could not connect. Try again."));
+            call.on("error", () => failed("Browser audio disconnected. The call is ending."));
+            if (call.status() === "open") accepted();
+          }).catch(() => failed("Browser audio could not connect. Check your connection and try again."));
+        } catch (_) {finish(new Error("Browser audio could not start. Refresh this page and try again."));}
+      });
+    }
+
+    sendDigits(digit) {
+      if (!this.connected || this.stopped || !/^[0-9*#]$/.test(digit)) return;
+      this.call.sendDigits(digit);
+    }
+
+    fail(message) {
+      if (this.stopped) return;
+      const notify = this.onDisconnect;
+      this.stop();
+      if (notify) notify(message);
+    }
+
+    stop() {
+      if (this.stopped) return;
+      this.stopped = true; this.connected = false; this.codec = null;
+      const cancel = this.cancelAttach; this.cancelAttach = null;
+      if (cancel) cancel(cancelled());
+      for (const track of this.stream.getTracks()) {
+        track.removeEventListener("ended", this.microphoneEnded); track.stop();
+      }
+      const call = this.call, device = this.device;
+      this.call = this.device = null;
+      try {call?.disconnect();} catch (_) {}
+      try {device?.destroy();} catch (_) {}
+      call?.removeAllListeners(); device?.removeAllListeners();
+    }
   }
 
   class BrowserAudio {
@@ -154,7 +280,18 @@
     }
   }
 
-  async function prepare() {
+  async function prepare(options = {}) {
+    if (options.transport === "twilio-voice-sdk") {
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.Twilio?.Device) {
+        throw new Error("Browser calling needs HTTPS and a browser with microphone support. Refresh this page in current Chrome, Edge, Firefox, or Safari.");
+      }
+      const stream = await requestMicrophone(options.signal);
+      if (!stream.getTracks().length || stream.getTracks().some(track => track.readyState !== "live")) {
+        for (const track of stream.getTracks()) track.stop();
+        throw new Error("Browser audio was interrupted before the call started. Try again.");
+      }
+      return new VoiceSdkAudio(stream);
+    }
     const Audio = window.AudioContext || window.webkitAudioContext;
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !Audio || typeof AudioWorkletNode !== "function" || typeof WebSocket !== "function") {
       throw new Error("Browser calling needs HTTPS and a browser with microphone support. Open this site in current Chrome, Edge, Firefox, or Safari.");

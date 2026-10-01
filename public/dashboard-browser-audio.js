@@ -282,8 +282,14 @@
 
   async function prepare(options = {}) {
     if (options.transport === "twilio-voice-sdk") {
-      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.Twilio?.Device) {
-        throw new Error("Browser calling needs HTTPS and a browser with microphone support. Refresh this page in current Chrome, Edge, Firefox, or Safari.");
+      if (!window.isSecureContext) {
+        throw new Error("Browser calling needs HTTPS. Open the secure Phoney dashboard and try again.");
+      }
+      if (typeof window.Twilio?.Device !== "function") {
+        throw new Error("The calling library did not load. Refresh this page and try again.");
+      }
+      if (typeof navigator.mediaDevices?.getUserMedia !== "function") {
+        throw new Error("This browser cannot access the microphone. Open the secure dashboard in a browser with microphone support.");
       }
       const stream = await requestMicrophone(options.signal);
       if (!stream.getTracks().length || stream.getTracks().some(track => track.readyState !== "live")) {

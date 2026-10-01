@@ -56,7 +56,7 @@ def _workspace_origin(value):
         return None
 
 
-def html_page(filename, *, websocket_origin=""):
+def html_page(filename, *, websocket_origin="", browser_voice_enabled=False):
     """Allow our same-origin assets and hash the HTML's inline scripts/styles."""
     html = (Path(__file__).parent / filename).read_text()
     scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
@@ -68,10 +68,20 @@ def html_page(filename, *, websocket_origin=""):
 
     headers = dict(SAFE_HEADERS)
     headers["Permissions-Policy"] = "microphone=(self)"
+    connect_sources = "'self'" + (" " + websocket_origin if websocket_origin else "")
+    media_sources = "'self'"
+    if filename == "dashboard.html" and browser_voice_enabled:
+        # Exact default-edge endpoints from the pinned Voice SDK's CSP policy:
+        # https://github.com/twilio/twilio-voice.js/blob/2.18.5/README.md#content-security-policy-csp
+        # The SDK script stays local. Its sounds use these media hosts; remote
+        # audio uses MediaStream objects with a blob URL fallback.
+        connect_sources += (" https://eventgw.twilio.com wss://voice-js.roaming.twilio.com"
+                            " https://media.twiliocdn.com https://sdk.twilio.com")
+        media_sources += " mediastream: blob: https://media.twiliocdn.com https://sdk.twilio.com"
     headers["Content-Security-Policy"] = (
         "default-src 'none'; script-src 'self' " + hashes(scripts) + "; style-src 'self' " + hashes(styles)
-        + "; connect-src 'self'" + (" " + websocket_origin if websocket_origin else "")
-        + "; media-src 'self'; img-src 'self' data:; base-uri 'none'; "
+        + "; connect-src " + connect_sources
+        + "; media-src " + media_sources + "; img-src 'self' data:; base-uri 'none'; "
           "frame-ancestors 'none'; form-action 'self'")
     return HTMLResponse(html, headers=headers)
 
@@ -251,7 +261,8 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
 
     @app.get("/dashboard", response_class=HTMLResponse)
     async def page():
-        return html_page("dashboard.html", websocket_origin=settings.public_base_url.replace("https://", "wss://", 1))
+        return html_page("dashboard.html", websocket_origin=settings.public_base_url.replace("https://", "wss://", 1),
+                         browser_voice_enabled=getattr(settings, "browser_voice_enabled", False))
 
     @app.get("/team")
     async def team_page():
@@ -277,6 +288,13 @@ def register_dashboard(app, settings, manager, voicemail_store=None, recording_l
         if not artwork.is_file():
             raise HTTPException(404, "Team artwork is unavailable", headers=SAFE_HEADERS)
         return FileResponse(artwork, media_type="image/webp", headers=SAFE_HEADERS)
+
+    @app.api_route("/assets/vendor/twilio-voice-sdk-2.18.5.min.js", methods=["GET", "HEAD"])
+    def browser_voice_sdk():
+        asset = PUBLIC_DIRECTORY / "vendor" / "twilio-voice-sdk-2.18.5.min.js"
+        if not asset.is_file():
+            raise HTTPException(404, "Browser calling library is unavailable", headers=SAFE_HEADERS)
+        return FileResponse(asset, media_type="text/javascript", headers=SAFE_HEADERS)
 
     @app.api_route("/assets/{filename}", methods=["GET", "HEAD"])
     def workspace_asset(filename: str):

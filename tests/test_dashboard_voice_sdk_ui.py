@@ -58,6 +58,34 @@ def run_sdk(checks, *, before=""):
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("before,message", [
+    ("window.isSecureContext=false;", "Browser calling needs HTTPS"),
+    ("window.Twilio=undefined;", "The calling library did not load"),
+    ("window.Twilio={Device:{}};", "The calling library did not load"),
+    ("navigator.mediaDevices=undefined;", "This browser cannot access the microphone"),
+])
+def test_sdk_capability_failures_identify_the_missing_requirement_without_dialing(before, message):
+    run_sdk(r"""
+await assert.rejects(prepareSdk(),error=>error.message.startsWith(MESSAGE));
+assert.deepEqual(events,[],'Capability failure never asks for the microphone');
+assert.equal(devices.length,0);assert.equal(calls.length,0);assert.equal(sockets.length,0);
+""".replace("MESSAGE", repr(message)), before=before)
+
+
+def test_mobile_webkit_capabilities_can_use_sdk_without_desktop_audio_worklet():
+    run_sdk(r"""
+const audio=await prepareSdk();await sdkAttach(audio);
+assert.equal(audio.connected,true);assert.equal(audio.codec,'opus');
+assert.deepEqual(events,['microphone']);
+assert.equal(contexts.length,0);assert.equal(captures.length,0);assert.equal(sockets.length,0);
+audio.stop();assert.equal(track.stopped,true);
+""", before=r"""
+navigator.userAgent='Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1';
+navigator.vendor='Apple Computer, Inc.';
+window.AudioContext=undefined;window.webkitAudioContext=undefined;AudioWorkletNode=undefined;
+""")
+
+
 def test_sdk_owns_wideband_media_and_uses_exact_authenticated_params_once():
     run_sdk(r"""
 const audio=await prepareSdk();
@@ -165,3 +193,19 @@ def test_vendored_sdk_is_pinned_unmodified_and_loaded_before_the_adapter():
     html = (root / "dashboard.html").read_text()
     assert html.index('/assets/vendor/twilio-voice-sdk-2.18.5.min.js') < html.index('/assets/dashboard-browser-audio.js')
     assert "https://sdk.twilio.com" not in html
+
+
+def test_actual_vendored_browser_bundle_installs_the_twilio_device_global():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is needed for browser SDK tests")
+    asset = SCRIPT.parents[1] / "public/vendor/twilio-voice-sdk-2.18.5.min.js"
+    result = subprocess.run([node, "-e", r"""
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const browser={console,setTimeout,clearTimeout,navigator:{}};
+browser.window=browser;browser.self=browser;vm.createContext(browser);
+vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),browser);
+assert.equal(typeof browser.Twilio?.Device,'function');
+assert.equal(typeof browser.Twilio?.Call,'function');
+""", str(asset)], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr

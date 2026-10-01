@@ -6,7 +6,7 @@ Run the complete suite:
 .venv/bin/python -m pytest -q
 ```
 
-The suite contains **96 collected cases across 81 test functions**. Parametrized
+The suite contains **99 collected cases across 84 test functions**. Parametrized
 variants count toward the limit. The deployment supervisor runs this same suite,
 not a separate subset. The first local run after consolidation finished in
 15.5 seconds: 93 passed and three PostgreSQL cases skipped.
@@ -17,6 +17,7 @@ not a separate subset. The first local run after consolidation finished in
 | Browser and dashboard | 24 | Real HTTP asset loading and CSP, actual vendored SDK export, media setup and cancellation, codec status, keypad controls, disconnect cleanup, authentication loss, playback, network recovery, and CRM edits. |
 | Auth, storage, setup, and deployment | 31 | PIN lockout and recovery, session expiry, hashed credentials, signed HTTP/WebSocket callbacks, workspace persistence and isolation, JWT grants, Twilio App configuration, deployment draining, rollback, and commit health. |
 | Saved call products | 10 | History and exports after restart, pagination, stereo playback, recording headers, detailed/brief summaries and retries, voicemail recording callbacks, and shared notifications. |
+| Vocal delivery | 3 | Real local dialogue WebSocket protocol, prefetch across task/playback boundaries, caller interruption cleanup, and delivery-aware cached speech. |
 
 ## Test structure
 

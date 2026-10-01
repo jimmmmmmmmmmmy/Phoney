@@ -35,6 +35,7 @@ import binascii
 from dataclasses import dataclass, field
 import httpx
 
+from .delivery import DEFAULT_DELIVERY, VoiceDelivery
 from .settings import ELEVENLABS_MODEL as ELEVENLABS_MODEL_PATTERN
 from .settings import VOICE_ID as VOICE_ID_PATTERN
 from .tts import TTSError
@@ -43,7 +44,7 @@ DESIGN_URL = "https://api.elevenlabs.io/v1/text-to-voice/design"
 CREATE_URL = "https://api.elevenlabs.io/v1/text-to-voice"
 # The design model is a different family from the synthesis model in
 # ``ELEVENLABS_MODEL``: it produces a voice, it does not speak for the agent.
-DEFAULT_DESIGN_MODEL = "eleven_multilingual_ttv_v2"
+DEFAULT_DESIGN_MODEL = "eleven_ttv_v3"
 MIN_DESCRIPTION_CHARS = 20
 MAX_DESCRIPTION_CHARS = 1000
 # A supplied line has to satisfy the provider's own window. Omitting it is
@@ -199,7 +200,8 @@ def _checked_previews(payload) -> list[Preview]:
 def design_previews(api_key: str, voice_description: str, *, text=None,
                     model_id: str = DEFAULT_DESIGN_MODEL, loudness=None,
                     guidance_scale=None, seed=None, transport=None,
-                    timeout: float = DESIGN_SECONDS) -> Design:
+                    timeout: float = DESIGN_SECONDS,
+                    delivery: VoiceDelivery = DEFAULT_DELIVERY) -> Design:
     """Ask for candidate voices. This promotes nothing and enrolls nothing.
 
     ``text`` is optional: when it is absent the provider is explicitly asked to
@@ -209,7 +211,8 @@ def design_previews(api_key: str, voice_description: str, *, text=None,
     if not api_key:
         raise ValueError("ELEVENLABS_API_KEY is required before designing a voice.")
     body = {
-        "voice_description": _checked_description(voice_description),
+        "voice_description": _checked_description(
+            delivery.description_for(_checked_description(voice_description))),
         "model_id": _checked_model(model_id),
     }
     sample = _checked_sample_text(text)
@@ -247,7 +250,8 @@ def design_previews(api_key: str, voice_description: str, *, text=None,
 
 def create_designed_voice(api_key: str, voice_name: str, voice_description: str,
                           generated_voice_id: str, *, labels=None, transport=None,
-                          timeout: float = DESIGN_SECONDS) -> dict:
+                          timeout: float = DESIGN_SECONDS,
+                          delivery: VoiceDelivery = DEFAULT_DELIVERY) -> dict:
     """Promote one chosen preview into a reusable voice in the account."""
     if not api_key:
         raise ValueError("ELEVENLABS_API_KEY is required before creating a voice.")
@@ -258,7 +262,8 @@ def create_designed_voice(api_key: str, voice_name: str, voice_description: str,
         raise ValueError("Use a generated_voice_id from a design preview.")
     body = {
         "voice_name": name,
-        "voice_description": _checked_description(voice_description),
+        "voice_description": _checked_description(
+            delivery.description_for(_checked_description(voice_description))),
         "generated_voice_id": generated_voice_id,
     }
     if labels:

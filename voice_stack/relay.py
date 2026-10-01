@@ -19,6 +19,7 @@ import time
 import httpx
 
 from .agent import DEFAULT_MODEL, Conversation, SentenceBuffer
+from .delivery import DEFAULT_DELIVERY, VoiceDelivery
 from .settings import TWILIO_FORMAT
 from .tts import DEFAULT_MODEL as DEFAULT_VOICE_MODEL
 from .tts import speech
@@ -42,6 +43,7 @@ async def speak_reply(http: httpx.AsyncClient, conversation: Conversation, *,
                       tts_api_key: str = "", voice_id: str = "",
                       voice_model: str = DEFAULT_VOICE_MODEL,
                       output_format: str = TWILIO_FORMAT,
+                      delivery: VoiceDelivery = DEFAULT_DELIVERY,
                       on_text=None) -> SpokenReply:
     """Stream one reply, synthesising each finished phrase as it appears.
 
@@ -67,6 +69,7 @@ async def speak_reply(http: httpx.AsyncClient, conversation: Conversation, *,
     async def render(phrase: str) -> None:
         audio.extend(await speech(http, tts_api_key, voice_id, phrase,
                                   model=voice_model, output_format=output_format,
+                                  delivery=delivery,
                                   timeout=request_timeout))
         if reply.first_audio_ms is None:
             reply.first_audio_ms = elapsed()

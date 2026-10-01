@@ -1,24 +1,42 @@
-# Build the voice pipeline
+# Voice pipeline and vocal delivery
 
-**Future voice-agent reference:** the baseline includes Twilio routing, passive capture, [Build 3 live Deepgram transcripts](BUILD_3.md), and optional [Gemini summaries after calls](CALL_SUMMARIES.md). Detection, Gemini dialogue, ElevenLabs voice generation, and keypad takeover remain partner work. Use [PARTNER_HANDOFF.md](PARTNER_HANDOFF.md) for the available audio and text interfaces.
+The running operator uses Deepgram transcripts, Gemini dialogue, and ElevenLabs speech. See [MANUAL_AGENTS.md](MANUAL_AGENTS.md) for keypad takeover, voicemail, and automatic screening. Gemini's semantic/personality prompts are separate from the vocal-delivery profile below. Older integration recipes later in this document describe the original implementation.
 
-Implement **Deepgram Nova-3 → Google Gemini 3.8 Flash → ElevenLabs Flash v2.5** inside the Python relay in [IMPLEMENTATION.md](IMPLEMENTATION.md). These are implementation instructions and adapter examples; Build 3 implements observational Deepgram STT and a separate Gemini summary worker after calls; spoken Gemini replies, cloned speech, and the takeover relay below remain unimplemented. The summary worker uses `GEMINI_SUMMARY_MODEL`; the future dialogue adapter below uses `GEMINI_MODEL`. Provider contracts were checked against official documentation on September 26, 2026. Real API and phone tests remain part of implementation.
+## Shared vocal delivery (checked October 1, 2026)
+
+Every selected voice uses one acoustic profile in `voice_stack/delivery.py`:
+
+> Relaxed conversational delivery, subtle warmth and emotion, natural pace and intonation.
+
+The profile changes how speech is performed; it does not rewrite spoken words, add filler sounds, or change agent tasks. `VOICE_DELIVERY_PROMPT` overrides this acoustic direction. `VOICE_DELIVERY_STABILITY=0.5` balances variation and repeatability; `VOICE_DELIVERY_SIMILARITY=0.75` applies on the legacy REST transport. These are experiment settings, not a guarantee that all voices perform identically. Voice training audio and voice selection still affect the result. [Voice settings](https://elevenlabs.io/docs/eleven-creative/playground/text-to-speech).
+
+The new default is **`eleven_v4_turbo`**, the current expressive realtime model. It uses the Text-to-Dialogue WebSocket, with the acoustic direction passed as a provider-only audio tag. The current WebSocket schema exposes stability; unsupported style/speed/similarity fields are omitted. Legacy Flash and Multilingual models still use REST with numeric delivery settings and unchanged speech text. V3 stability maps to its supported discrete presets. There is no universal freeform prompt field across these APIs. [Models](https://elevenlabs.io/docs/overview/models), [realtime dialogue](https://elevenlabs.io/docs/eleven-api/guides/how-to/websockets/realtime-tdd), [delivery prompting](https://elevenlabs.io/docs/overview/capabilities/text-to-speech/best-practices#prompting-eleven-v4).
+
+Calls, cached disclosures, voicemail greetings, typed voice checks, and newly designed voices share the profile. Cache fingerprints include its settings and revision. Existing voice IDs are preserved; no voices are automatically cloned or remixed. New voice design defaults to `eleven_ttv_v3` and combines identity descriptors with the shared delivery direction, validating the combined description length. [Voice design contract](https://elevenlabs.io/docs/api-reference/text-to-voice/design).
+
+Live playback prepares one next phrase while the current phrase plays. Playback marks still decide what is recorded as heard, and interruptions cancel unheard audio. Each v4 phrase uses a documented closing WebSocket; this preserves phrase acknowledgments but does not give v4 whole-reply prosody context. Phone bot audio remains raw mono `ulaw_8000`; changing speech synthesis does not change that bandwidth.
+
+The linked API-reference prose still describes v3-only dialogue, while the current realtime guide explicitly demonstrates v4 Turbo. Verify a short synthesis with the account before activating a new model. Model-list permission is separate from speech permission; a denied catalog read alone does not invalidate a working speech key.
+
+The October 1 live check used the existing slot-1 voice clone and identical text through Flash without overrides and v4 Turbo with the shared profile. The initial 40% stability/longer-tag sample repeated its opening, as confirmed by Deepgram transcription. Shortening the direction and testing 50% and 60% stability produced the intended words without that repetition or spoken control tags. The selected 50% sample is 7.520 seconds; the Flash baseline is 6.733 seconds. Samples are private under `voice_output/tuning-2026-10-01/`. This confirms model/account/format compatibility and one sample's word fidelity; whether the delivery sounds better still requires listening.
 
 ## Set up configuration
 
-1. When implementing this partner component, add `httpx` as a direct runtime dependency; `websockets` is already present in the baseline. Regenerate `requirements-lock.txt` after testing. The examples use `websockets.asyncio.client.connect` with `additional_headers`, the current asyncio API. HTTPX supports asynchronous streamed responses. [websockets client](https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html), [HTTPX streaming](https://www.python-httpx.org/async/).
-2. Add the variables below to `.env.example` without values for secrets. Extend the app settings loader to read them. Use these defaults; do not spend the first build evaluating vendors.
+1. Install the repository's locked dependencies. HTTPX and WebSockets are already direct dependencies.
+2. Use the defaults below. Secrets belong only in the private environment file.
 3. Put actual settings in the local development `.env`, or in `~/Library/Application Support/NewCollegeOperator/.env` for the installed server. Restart that service after configuration changes, following [SERVER.md](SERVER.md). A GitHub push changes code; it does not populate private credentials.
 
 ```dotenv
 DEEPGRAM_API_KEY=
 DEEPGRAM_MODEL=nova-3
 GEMINI_API_KEY=
-GEMINI_MODEL=gemini-3.8-flash
+GEMINI_MODEL=gemini-3.5-flash-lite
 ELEVENLABS_API_KEY=
 ELEVENLABS_VOICE_ID=
-ELEVENLABS_MODEL=eleven_flash_v2_5
+ELEVENLABS_MODEL=eleven_v4_turbo
 ELEVENLABS_OUTPUT_FORMAT=ulaw_8000
+VOICE_DELIVERY_STABILITY=0.5
+VOICE_DELIVERY_SIMILARITY=0.75
 ```
 
 The selected Gemini ID is stable in Google's September 26, 2026 model catalog. Keep it configurable and run a credential/model smoke test before integrating audio; an advertised model is not proof of access for this project's account. The catalog recommends current models for new projects and limits Gemini 2.5 access to prior users. [Gemini models](https://ai.google.dev/gemini-api/docs/models).

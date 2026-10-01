@@ -104,7 +104,7 @@ class Harness:
         self.voicemails = VoicemailStore(self.settings)
         self.delivered = []
         voice = VoiceSettings(enabled=True, gemini_api_key="test", elevenlabs_api_key="test",
-                              output_dir=str(tmp_path))
+                              output_dir=str(tmp_path), elevenlabs_model="eleven_flash_v2_5")
         self.controller = OperatorController(self.settings, self.store, self.dialer,
             voice=voice, registry=Registry(), provider_transport=self.provider.transport(),
             voicemail_store=self.voicemails,

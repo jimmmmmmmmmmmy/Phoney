@@ -121,7 +121,8 @@ class NativeHarness:
         self.store = OperatorSessions(NATIVE_SETTINGS)
         self.observed, self.delivered, self.ends = [], [], []
         self.voice = VoiceSettings(enabled=True, gemini_api_key="test", elevenlabs_api_key="test",
-            output_dir=str(tmp_path), elevenlabs_voice_id="")
+            output_dir=str(tmp_path), elevenlabs_voice_id="",
+            elevenlabs_model="eleven_flash_v2_5")
         self.controller = OperatorController(NATIVE_SETTINGS, self.store, self.dialer,
             voice=self.voice, registry=self.registry, provider_transport=self.provider.transport(),
             on_native_audio=lambda *args: self.observed.append(args),

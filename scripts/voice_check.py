@@ -100,7 +100,8 @@ def relay_options(settings, voice_id: str, speak: bool) -> dict:
     if speak:
         options.update(tts_api_key=settings.elevenlabs_api_key, voice_id=voice_id,
                        voice_model=settings.elevenlabs_model,
-                       output_format=settings.elevenlabs_output_format)
+                       output_format=settings.elevenlabs_output_format,
+                       delivery=settings.delivery)
     return options
 
 
@@ -237,6 +238,7 @@ async def say(settings, text: str, *, voice_id: str | None = None, play: bool = 
         audio = await speech(http, settings.elevenlabs_api_key, voice_id,
                              text, model=settings.elevenlabs_model,
                              output_format=settings.elevenlabs_output_format,
+                             delivery=settings.delivery,
                              timeout=settings.request_timeout)
     path, stored = store_audio(settings, audio, "voice-check")
     result = {"voice_id": voice_id, "model": settings.elevenlabs_model,

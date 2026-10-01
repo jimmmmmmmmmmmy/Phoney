@@ -117,7 +117,8 @@ class Harness:
         self.registry, self.dialer = Registry(), Dialer()
         self.store = OperatorSessions(SETTINGS)
         self.voice = VoiceSettings(enabled=True, gemini_api_key="test", elevenlabs_api_key="test",
-            output_dir=str(tmp_path), elevenlabs_voice_id="") if voice else None
+            output_dir=str(tmp_path), elevenlabs_voice_id="",
+            elevenlabs_model="eleven_flash_v2_5") if voice else None
         self.delivered, self.output, self.starts, self.ends = [], [], [], []
         self.controller = OperatorController(SETTINGS, self.store, self.dialer, voice=self.voice,
             registry=self.registry, provider_transport=self.provider.transport(),

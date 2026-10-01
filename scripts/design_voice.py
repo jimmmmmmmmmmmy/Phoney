@@ -85,7 +85,8 @@ def promote(settings, args, directory: Path) -> None:
         }, indent=2))
         return
     created = create_designed_voice(settings.elevenlabs_api_key, args.create,
-                                    args.description, args.generated_voice_id)
+                                    args.description, args.generated_voice_id,
+                                    delivery=settings.delivery)
     voice_id = created["voice_id"]
     print(json.dumps({
         "voice_id": voice_id,
@@ -156,7 +157,8 @@ def main() -> None:
         print(json.dumps({
             "endpoint": "https://api.elevenlabs.io/v1/text-to-voice/design",
             "model_id": args.model_id,
-            "description_chars": len(args.description.strip()),
+            "description_chars": len(settings.delivery.description_for(args.description)),
+            "delivery_prompt": settings.delivery.prompt,
             # The provider writes the line only when asked, so say which it is.
             "sample_text": sample or None,
             "auto_generate_text": not sample,
@@ -166,7 +168,8 @@ def main() -> None:
         return
 
     design = design_previews(settings.elevenlabs_api_key, args.description,
-                             text=args.text, model_id=args.model_id)
+                             text=args.text, model_id=args.model_id,
+                             delivery=settings.delivery)
     paths = save_previews(design, directory)
     chosen = choose(design, args.index)
     result = {

@@ -284,7 +284,8 @@ class ClipLibrary:
             raise ValueError("VOICE_OUTPUT_DIR must be set before a clip can be cached.")
         digest = hashlib.sha256("\0".join((
             str(key), phrase, self.voice.elevenlabs_voice_id, self.voice.elevenlabs_model,
-            self.voice.elevenlabs_output_format)).encode("utf-8")).hexdigest()[:16]
+            self.voice.elevenlabs_output_format,
+            self.voice.delivery.cache_key)).encode("utf-8")).hexdigest()[:16]
         return self.directory / f"{key}-{digest}.ulaw"
 
     def cached(self, key: str, phrase: str) -> bytes:
@@ -310,6 +311,7 @@ class ClipLibrary:
             audio = await speech(http, self.voice.elevenlabs_api_key,
                                  self.voice.elevenlabs_voice_id, phrase,
                                  model=self.voice.elevenlabs_model,
+                                 delivery=self.voice.delivery,
                                  output_format=self.voice.elevenlabs_output_format,
                                  timeout=timeout)
         if not audio:

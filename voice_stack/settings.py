@@ -16,6 +16,8 @@ from pathlib import Path
 
 from dotenv import dotenv_values, load_dotenv
 
+from .delivery import DEFAULT_DELIVERY_PROMPT, LATEST_REALTIME_MODEL, VoiceDelivery
+
 GEMINI_MODEL = re.compile(r"[a-z0-9.-]{1,80}\Z")
 ELEVENLABS_MODEL = re.compile(r"[A-Za-z0-9._-]{1,80}\Z")
 VOICE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
@@ -39,15 +41,18 @@ class VoiceSettings:
     gemini_model: str = "gemini-3.5-flash-lite"
     elevenlabs_api_key: str = field(default="", repr=False)
     elevenlabs_voice_id: str = ""
-    elevenlabs_model: str = "eleven_flash_v2_5"
+    elevenlabs_model: str = LATEST_REALTIME_MODEL
     elevenlabs_output_format: str = TWILIO_FORMAT
     output_dir: str = ""
     max_reply_tokens: int = 2048
     request_timeout: float = 20.0
+    delivery: VoiceDelivery = field(default_factory=VoiceDelivery)
 
     def __post_init__(self):
         if type(self.enabled) is not bool:
             raise ValueError("VOICE_AGENT_ENABLED must be true or false.")
+        if not isinstance(self.delivery, VoiceDelivery):
+            raise ValueError("Voice delivery must be a VoiceDelivery profile.")
         if not GEMINI_MODEL.fullmatch(self.gemini_model):
             raise ValueError("GEMINI_MODEL must be a model identifier, without the models/ prefix.")
         if not ELEVENLABS_MODEL.fullmatch(self.elevenlabs_model):
@@ -132,9 +137,14 @@ class VoiceSettings:
             gemini_model=value("GEMINI_MODEL", "gemini-3.5-flash-lite"),
             elevenlabs_api_key=value("ELEVENLABS_API_KEY"),
             elevenlabs_voice_id=value("ELEVENLABS_VOICE_ID"),
-            elevenlabs_model=value("ELEVENLABS_MODEL", "eleven_flash_v2_5"),
+            elevenlabs_model=value("ELEVENLABS_MODEL", LATEST_REALTIME_MODEL),
             elevenlabs_output_format=value("ELEVENLABS_OUTPUT_FORMAT", TWILIO_FORMAT),
             output_dir=value("VOICE_OUTPUT_DIR"),
             max_reply_tokens=int(value("VOICE_MAX_REPLY_TOKENS", "2048")),
             request_timeout=float(value("VOICE_REQUEST_TIMEOUT", "20")),
+            delivery=VoiceDelivery(
+                prompt=value("VOICE_DELIVERY_PROMPT", DEFAULT_DELIVERY_PROMPT),
+                stability=float(value("VOICE_DELIVERY_STABILITY", "0.5")),
+                similarity=float(value("VOICE_DELIVERY_SIMILARITY", "0.75")),
+            ),
         )

@@ -55,7 +55,7 @@ These files implement the switchboard. The external callback contract remains th
 | `switchboard/models.py` | `CallSession`: inbound SID, conference name/SID, outbound SID, phase, timestamps, joined/started facts, event identities and dial reservation. |
 | `switchboard/service.py` | In-memory session dictionary, lock-protected transitions, Twilio client calls, timeout/cleanup tasks. |
 | `switchboard/gateway.py` / `webhooks.py` | Async facade over bounded Twilio REST calls, and shared exact-URL signature/account validation. |
-| `tests/test_switchboard.py` / `tests/test_switchboard_engine.py` | Mocked Twilio API, signed webhook requests, duplicate/racing events, failure and cleanup behavior. |
+| `tests/test_live_transcription_routes.py` / `tests/test_voicemail_engine.py` | Signed inbound call/audio integration and voicemail deployment draining; see the [focused suite](TESTING.md) for current calling and cleanup checks. |
 
 Run one Uvicorn worker without reload during calls. State uses a dictionary plus `asyncio.Lock`, with up to 16 active sessions and 4,096 total records; completed records remain for 24 hours. Automatic deployment drains active sessions and pending REST work before replacing the app. An explicit stop ends calls, and state disappears on a crash. Shared persistence remains a later milestone.
 

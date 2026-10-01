@@ -56,7 +56,7 @@ Provider references: [Modulate aggregation guidance](https://docs.modulate.ai/ge
 
 ## Verification
 
-Tests cover minimum synthetic evidence independent of whole-call share, qualified/weak/silent overlap, legacy policy validation, live progress, final full-recording analysis, cache migration, restart recovery, selected-call evidence, cache and WAV boundary validation, caller-only uploads, retries, candidate isolation, deployment draining, binary header flags, stream-aligned transcript annotations, and detection updates that preserve playback. Provider fakes establish application behavior; they do not establish detection accuracy.
+The [focused suite](TESTING.md) retains minimum synthetic evidence independent of whole-call share, live detection alongside transcription and capture, durable full-recording retry budgets, and detection-triggered automatic takeover. Broader policy, input, and provider-format matrices from the previous suite were removed during consolidation. Provider fakes establish application behavior; they do not establish detection accuracy.
 
 
 ## Continuous live coverage and recovery

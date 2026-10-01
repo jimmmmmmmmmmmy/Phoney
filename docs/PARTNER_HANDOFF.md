@@ -190,8 +190,8 @@ The values above illustrate the schema; they are not a claim that a real call wa
 4. **Treat playback and takeover as a separate milestone.** Observing these files cannot send speech into the call, mute participants, or select prompts. The planned bidirectional bridge and command routes are described in [the implementation recipe](IMPLEMENTATION.md).
 5. **Keep recordings out of Git.** Runtime captures are excluded from Git; the public dashboard intentionally serves finalized WAVs. Use locally generated or explicitly shared fixtures for partner tests; never commit a real call capture or provider credentials.
 
-Verify this seam without any phone or provider account:
+Verify the retained recording and transcript checks without a phone or provider account:
 
 ```bash
-.venv/bin/python -m pytest tests/test_partner_scaffold.py -q
+.venv/bin/python -m pytest -q tests/test_native_pipeline.py tests/test_live_transcription_routes.py
 ```

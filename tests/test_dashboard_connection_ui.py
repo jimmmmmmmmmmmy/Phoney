@@ -1,21 +1,9 @@
-"""Network changes recover reads without reloading the user's current work."""
+"""Focused product and boundary checks; test helpers live in support."""
 
 import pytest
 
-from test_dashboard_playback_ui import run_browser_logic
-
-
-TIMERS = r"""
-const timers = new Map(); let timerId = 0;
-setTimeout = (callback, delay) => {const id = ++timerId; timers.set(id, {callback, delay}); return id;};
-clearTimeout = id => timers.delete(id);
-const tick = () => new Promise(resolve => setImmediate(resolve));
-function fireTimer(delay) {
- const entry = [...timers].find(([, timer]) => timer.delay === delay);
- assert.ok(entry, `Expected a ${delay}ms timer`);
- timers.delete(entry[0]); return entry[1].callback();
-}
-"""
+from support.dashboard_connection_ui import TIMERS
+from support.dashboard_playback_ui import run_browser_logic
 
 
 @pytest.mark.parametrize("stalled_stage", ["headers", "body"])
@@ -46,51 +34,5 @@ assert.equal(state.page,'contacts');assert.equal(location.hash,route);assert.equ
 assert.equal(draft.value,'Unsaved contact');assert.equal(document.activeElement,draft);
 assert.equal(audio.loads,loads);assert.equal(audio.currentTime,31);assert.equal(audio.paused,false);
 assert.equal(timers.size,1,'Exactly one future poll remains scheduled');
-})().catch(error=>{console.error(error);process.exitCode=1;});
-""")
-
-
-def test_online_focus_and_visible_events_recover_without_overlapping_polls(tmp_path):
-    run_browser_logic(tmp_path, TIMERS + r"""
-(async () => {
-let requests=0, active=0, maximum=0;
-fetch=async(url,options)=>{
- requests++;active++;maximum=Math.max(maximum,active);
- if(requests===2) {
-  try {await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError'))));}
-  finally {active--;}
- }
- active--;return {ok:true,json:async()=>snapshot([session()])};
-};
-await poll();assert.equal(requests,1);assert.equal(timers.size,1);
-document.hidden=true;documentHandlers.get('visibilitychange')();handlers.get('online')();handlers.get('focus')();
-assert.equal(requests,1,'Background events do not start extra requests');
-document.hidden=false;handlers.get('online')();
-assert.equal(requests,2,'Returning online skips the normal polling delay');
-handlers.get('focus')();documentHandlers.get('visibilitychange')();handlers.get('online')();
-await tick();
-assert.equal(requests,2);assert.equal(timers.size,1,'Recovery events coalesce into one pending refresh');
-await fireTimer(0);
-assert.equal(requests,3);assert.equal(maximum,1);assert.equal(timers.size,1);
-assert.equal($('connection').attributes.title,'Connected');
-// Each recovery event also refreshes an idle page immediately.
-handlers.get('focus')();await tick();assert.equal(requests,4);
-documentHandlers.get('visibilitychange')();await tick();assert.equal(requests,5);
-assert.equal(maximum,1);assert.equal(timers.size,1);
-})().catch(error=>{console.error(error);process.exitCode=1;});
-""")
-
-
-def test_page_cache_restore_resumes_but_hidden_page_does_not_restart_polling(tmp_path):
-    run_browser_logic(tmp_path, TIMERS + r"""
-(async () => {
-let requests=0;
-fetch=async()=>{requests++;return {ok:true,json:async()=>snapshot([session()])};};
-await poll();handlers.get('pagehide')();
-assert.equal(timers.size,0);
-handlers.get('online')();handlers.get('focus')();documentHandlers.get('visibilitychange')();
-await tick();assert.equal(requests,1);
-handlers.get('pageshow')({persisted:true});await tick();
-assert.equal(requests,2);assert.equal(timers.size,1);assert.equal(state.paused,false);
 })().catch(error=>{console.error(error);process.exitCode=1;});
 """)

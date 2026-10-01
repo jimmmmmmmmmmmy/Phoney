@@ -66,7 +66,7 @@ Run network-free protocol fixtures:
 
 ```sh
 .venv/bin/python scripts/evaluate_voice_prompts.py
-.venv/bin/python -m pytest -q tests/test_voice_prompts.py
+.venv/bin/python -m pytest -q tests/test_operator_keypad.py tests/test_operator_bounded_replies.py tests/test_operator_voicemail_integration.py
 ```
 
 Run a bounded real-model sequence using the installed private environment file:

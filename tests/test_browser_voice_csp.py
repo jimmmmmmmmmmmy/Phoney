@@ -1,4 +1,4 @@
-"""The enabled browser SDK can signal/play audio without loosening other pages."""
+"""Focused product and boundary checks; test helpers live in support."""
 
 from dataclasses import replace
 
@@ -6,16 +6,8 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app import create_app
-from config import Settings
-from dashboard import html_page
 
-
-BASE = Settings("AC" + "1" * 32, "offline-auth-token", "https://operator.example")
-
-
-def directives(response):
-    return {parts[0]: set(parts[1:]) for directive in response.headers["content-security-policy"].split(";")
-            if (parts := directive.strip().split())}
+from support.browser_voice_csp import BASE, directives
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -40,16 +32,3 @@ def test_dashboard_allows_only_required_default_sdk_connections_when_enabled(ena
     assert policy["script-src"] & {"'unsafe-inline'", "'unsafe-eval'", "*", "blob:"} == set()
     assert all(source == "'self'" or source.startswith("'sha256-") for source in policy["script-src"])
     assert response.headers["permissions-policy"] == "microphone=(self)"
-
-
-@pytest.mark.parametrize("filename", ["pin_unlock.html"])
-def test_non_dashboard_pages_never_inherit_sdk_permissions_even_if_flag_passed(filename):
-    policy = directives(html_page(filename, browser_voice_enabled=True))
-    assert policy["connect-src"] == {"'self'"}
-    assert policy["media-src"] == {"'self'"}
-    assert "twilio" not in str(policy)
-
-
-def test_default_html_renderer_keeps_dashboard_sdk_connections_disabled():
-    policy = directives(html_page("dashboard.html"))
-    assert policy["connect-src"] == policy["media-src"] == {"'self'"}

@@ -68,9 +68,12 @@ class MissionPack:
     aliases: tuple[str, ...]
     spoken_goal: str
     account_name: str
+    account_holder_name: str
     account_number: str
     billing_zip: str
     lines: tuple[Line, ...]
+    ivr_lookup: str
+    unattended_requires: tuple[str, ...]
     identity_env: dict[str, str]
     secret_env: dict[str, str]
     constraints: tuple[str, ...]
@@ -156,6 +159,9 @@ def parse_pack(data: dict) -> MissionPack:
     name = str(identity.get("account_name", "")).strip()
     if not name or len(name) > 80:
         raise MissionSchemaError("identity.account_name must be a short name.")
+    holder = str(identity.get("account_holder_name", "")).strip() or name
+    if len(holder) > 80:
+        raise MissionSchemaError("identity.account_holder_name must be a short name.")
     billing_zip = str(identity.get("billing_zip", "")).strip()
     if billing_zip and not re.fullmatch(r"\d{5}", billing_zip):
         raise MissionSchemaError("billing_zip must be 5 digits when set.")
@@ -210,7 +216,7 @@ def parse_pack(data: dict) -> MissionPack:
             raise MissionSchemaError(f"secrets.{label} is not a known secret slot.")
     env_names = {}
     for label, raw in identity_env.items():
-        if label not in {"account_name", "account_number", "lines"}:
+        if label not in {"account_name", "account_holder_name", "account_number", "lines"}:
             raise MissionSchemaError(f"identity.env.{label} is not overridable.")
         env_names[label] = _env_name({"env": raw} if isinstance(raw, str) else raw, f"identity.env.{label}")
     brief = str(data.get("brief_template", "")).strip()
@@ -236,9 +242,13 @@ def parse_pack(data: dict) -> MissionPack:
         aliases=tuple(aliases),
         spoken_goal=str(data.get("spoken_goal", "")).strip()[:300],
         account_name=name,
+        account_holder_name=holder,
         account_number=account,
         billing_zip=billing_zip,
         lines=_lines(identity.get("lines")),
+        ivr_lookup="none" if str(data.get("ivr_lookup", "line")) == "none" else "line",
+        unattended_requires=tuple(str(item) for item in data.get("unattended_requires", [])
+                                  if isinstance(data.get("unattended_requires", []), list)),
         identity_env=env_names,
         secret_env=secret_env,
         constraints=tuple(str(item) for item in constraints),

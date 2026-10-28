@@ -31,10 +31,16 @@ def _voice(environ):
         return exc
 
 
+def _preflight_status(mission: str, environ, *, dial: bool) -> str | None:
+    from .preflight import preflight_block
+    return preflight_block(load_pack(mission), environ, dial=dial)
+
+
 def prepare(mission: str, environ=None) -> str:
     pack = load_pack(mission)
     brief = assemble_brief(pack, environ)
     brief.assert_public_safe()
+    blocked = _preflight_status(mission, environ, dial=False)
     return "\n".join([
         f"mission {pack.id} prepared (no call placed)",
         f"destination: {pack.destination_e164}",
@@ -44,6 +50,7 @@ def prepare(mission: str, environ=None) -> str:
         f"min_months: {pack.retention.min_months}",
         f"public_chars: {len(brief.public_text())}",
         "password: not loaded",
+        f"preflight: {blocked or 'ok'}",
     ])
 
 
@@ -93,6 +100,8 @@ def check(mission: str, environ=None) -> str:
         f"owner gate: {'skipped' if attended else 'press 1 required'}",
         *([] if attended else [reason]),
         "Deepgram is the only STT implementation. A configured DEEPGRAM_API_KEY selects it.",
+        "persona: account holder, first person",
+        f"preflight: {_preflight_status(mission, env, dial=False) or 'ok'}",
     ])
 
 
@@ -110,6 +119,10 @@ def place_call(mission: str, base: str, environ=None) -> dict:
     if reason:
         raise SystemExit(reason)
     pack = load_pack(mission)
+    from .preflight import preflight_block
+    blocked = preflight_block(pack, env, dial=True)
+    if blocked:
+        raise SystemExit(blocked)
     token = str(env.get("OPERATOR_ADMIN_TOKEN", ""))
     if len(token) < 32:
         raise SystemExit("OPERATOR_ADMIN_TOKEN is missing.")
@@ -152,23 +165,29 @@ def main(argv=None) -> int:
     try:
         if args.simulate:
             from .artificial import run_artificial_call
-            result = asyncio.run(run_artificial_call(args.mission))
+            report_root = Path(__file__).resolve().parent / "reports"
+            result = asyncio.run(run_artificial_call(args.mission, report_root=str(report_root)))
             print(result.summary())
-            if not (result.unattended and result.brief_has_cancel_facts and not result.owner_dialed
-                    and not result.press_1 and result.dtmf_updates >= 1 and result.calls_created == 1
+            if result.report_dir:
+                print("report: " + result.report_dir)
+            if not (result.unattended and result.brief_has_cancel_facts and result.cover_held
+                    and not result.owner_dialed and not result.press_1
+                    and result.dtmf_updates >= 1 and result.calls_created == 1
                     and not any(host not in {"127.0.0.1", "localhost"} for host in result.hosts)):
                 print("artificial call did not meet the mission checks", file=sys.stderr)
                 return 1
             return 0
         if args.command == "prep":
-            print(prepare(args.mission))
-            return 0
+            text = prepare(args.mission)
+            print(text)
+            return 2 if "Refusing to dial" in text else 0
         if args.command == "research":
             print(research(args.mission))
             return 0
         if args.command == "check":
-            print(check(args.mission))
-            return 0
+            text = check(args.mission)
+            print(text)
+            return 2 if "Refusing to dial" in text else 0
         if args.command == "report":
             print(report(args.mission))
             return 0

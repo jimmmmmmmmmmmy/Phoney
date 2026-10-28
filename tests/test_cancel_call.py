@@ -93,7 +93,9 @@ def test_artificial_high_risk_forks_skip_the_model(monkeypatch):
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     pin = asyncio.run(run_artificial_call(scenario="pin-missing"))
     assert pin.llm_calls == 0 and pin.ended_reason == "agent-end-call"
-    assert any("account holder" in line.lower() for line in pin.spoken)
+    assert any("call back" in line.lower() for line in pin.spoken)
+    assert not any("account holder" in line.lower() for line in pin.spoken)
+    assert pin.notes and pin.notes[0]["kind"] == "blocked"
     assert pin.calls_created == 1 and all(host == "127.0.0.1" for host in pin.hosts)
 
     supervisor = asyncio.run(run_artificial_call(scenario="supervisor"))
@@ -130,9 +132,16 @@ def test_artificial_research_trick_forks(monkeypatch):
     assert any("confirmation number" in line.lower() for line in callback.spoken)
 
     ivr = asyncio.run(run_artificial_call(scenario="ivr-route"))
-    assert ivr.llm_calls == 0 and ivr.dtmf_updates == 0
-    assert [line.lower() for line in ivr.spoken[:2]] == ["i don't have one.", "i don't have one."]
+    assert ivr.llm_calls == 0
+    assert any('digits="7739882659"' in twiml for twiml in ivr.dtmf_markup)
     assert ivr.spoken[-1].lower() == "something else."
+
+    reveal = asyncio.run(run_artificial_call(scenario="reveal"))
+    assert reveal.llm_calls == 0 and reveal.cover_held
+    assert any("James Liu" in line for line in reveal.spoken)
+    otp = asyncio.run(run_artificial_call(scenario="otp"))
+    assert otp.ended_reason == "agent-end-call" and otp.notes[0]["reason"] == "verification"
+    assert any("call back" in line.lower() for line in otp.spoken)
 
 
 def test_cancel_brief_allowlist_and_playbook():
@@ -140,7 +149,9 @@ def test_cancel_brief_allowlist_and_playbook():
     assert "252027408" in prompt
     assert "773-988-2659" in prompt and "312-545-2413" in prompt
     assert "Beata" in prompt
-    assert "need the account holder" in prompt
+    assert "James Liu" in prompt
+    assert "first person" in prompt
+    assert "account holder on the line" not in prompt
     assert "PIN 1234" not in prompt and "SSN last four 1234" not in prompt
     assert len(CANCEL_GOAL_KEY) < 300
     store = OperatorSessions(_settings())

@@ -50,6 +50,6 @@ after 2026-10-29 00:00 UTC. Do not add secrets or legal claims from those posts.
 | Unpair the watch | Say so, then continue | `unpair-watch` |
 | Cancel refused | Supervisor once | `supervisor` |
 | After they cancel | Confirmation number and effective date, then readback | `ask-confirm`, `readback` |
-| Missing PIN, SSN, or OTP | Do not invent one | `need-holder`, then hang up |
-| IVR number prompt | S3 route | `ivr-no-number` twice, then `ivr-something-else` |
+| Missing PIN, SSN, or OTP during a call | Do not invent one. Say you will call back | `call-back`, then `goodbye` |
+| IVR number prompt | Give the line number when that is the lookup | DTMF the pack line, else `ivr-no-number` |
 | Whole account, port, or suspend | Named lines only | `only-named`, `leave-others` |

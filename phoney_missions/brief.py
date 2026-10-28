@@ -61,9 +61,13 @@ def _env(environ, name: str) -> str:
 
 
 def resolve_identity(pack: MissionPack, environ=None) -> tuple[str, str, tuple]:
-    name, account, lines = pack.account_name, pack.account_number, pack.lines
+    """Spoken name, account number, and lines. The name is the account holder."""
+    name = pack.account_holder_name or pack.account_name
+    account, lines = pack.account_number, pack.lines
     mapping = pack.identity_env
-    if "account_name" in mapping and _env(environ, mapping["account_name"]):
+    if "account_holder_name" in mapping and _env(environ, mapping["account_holder_name"]):
+        name = _env(environ, mapping["account_holder_name"])[:80]
+    elif "account_name" in mapping and _env(environ, mapping["account_name"]) and not pack.account_holder_name:
         name = _env(environ, mapping["account_name"])[:80]
     if "account_number" in mapping and _env(environ, mapping["account_number"]):
         account = _env(environ, mapping["account_number"])
@@ -83,16 +87,15 @@ def _authentication_public(secrets: list[Secret]) -> str:
     configured = [secret.env_name for secret in secrets if secret.configured]
     if configured:
         return (
-            "The trusted runtime authentication block has the configured PIN or SSN last four. "
-            "Say each at most once, only if asked. Do not volunteer them. "
-            "If asked for anything else, say you need the account holder on the line and end the call. "
-            "You do not have an account password. Never invent one, and never log one."
+            "If they ask for your PIN or the last four of your SSN, answer once from the "
+            "trusted runtime block. Do not volunteer them. "
+            "If they ask for a text code, a selfie, or a store visit, say you will call back and end the call. "
+            "Never invent a PIN, an SSN, or a password."
         )
     return (
-        "You do not have the account PIN, passcode, SSN, or SSN last four. "
-        "If the representative requires any of those, say you need the account holder "
-        "on the line and end the call. Never invent a PIN, passcode, SSN, or last four. "
-        "You do not have an account password. Never invent one, and never log one."
+        "You do not have a PIN or SSN last four in this session. Do not invent one. "
+        "If they ask, say you will call back and end the call. "
+        "Never invent a PIN, an SSN, or a password."
     )
 
 
@@ -120,6 +123,7 @@ def _research_lines(pack: MissionPack, name: str, account: str, lines, secrets: 
         "line_display": first.display,
         "line_label": first.label,
         "account_name": name,
+        "account_holder_name": name,
         "account_number": account,
         "billing_zip": getattr(pack, "billing_zip", ""),
     }
@@ -148,7 +152,9 @@ def assemble_brief(pack: MissionPack, environ=None, *, include_research: bool = 
         lines=line_text,
         destination_display=pack.destination_display,
     )
+    from .persona import persona_rules
     parts = [
+        persona_rules(name),
         task,
         "Covered forks use the canned lines below. Say one canned line and do not improvise that fork.",
         _authentication_public(secrets),

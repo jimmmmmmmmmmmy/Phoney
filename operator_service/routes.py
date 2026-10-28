@@ -1421,6 +1421,9 @@ class RelayOperatorController:
             session.mission_supervisor = True
         if plan.decision == "ivr-no-number":
             session.mission_ivr_no_number = int(getattr(session, "mission_ivr_no_number", 0) or 0) + 1
+        for note in plan.notes:
+            if note.get("kind") == "blocked":
+                session.mission_notes.append(dict(note))
         if plan.silent:
             return True
         if plan.digits:

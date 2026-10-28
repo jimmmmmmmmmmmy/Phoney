@@ -587,7 +587,21 @@ class DialogueRun:
                 phrase += " " + following
         if self._strict_brevity():
             phrase = fit_spoken_phrase(phrase)
+        if getattr(self.session, "agent_kind", "") in {CANCEL_AGENT_KIND, MISSION_AGENT_KIND}:
+            phrase = self._hold_cover(phrase)
         return phrase
+
+    def _hold_cover(self, phrase: str) -> str:
+        from phoney_missions.persona import hold_cover
+        fallback = "Please cancel that line."
+        try:
+            from phoney_missions.bridge import load_for_goal
+            pack = load_for_goal(self.session.goal)
+            if pack.lines:
+                fallback = f"Please cancel line {pack.lines[0].display}."
+        except Exception:
+            pass
+        return hold_cover(phrase, fallback)
 
     def _strict_brevity(self) -> bool:
         if getattr(self.session, "agent_kind", "") not in {CANCEL_AGENT_KIND, MISSION_AGENT_KIND}:

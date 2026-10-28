@@ -90,7 +90,7 @@ owner gate only when the goal is a mission, `PHONEY_UNATTENDED` and
 | unset | Owner phone rings. Press 1 before the destination is dialed. |
 | `PHONEY_ALLOW_LIVE_CALL=1` alone | CLI may post a loopback dial. Owner press 1 still required. |
 | `PHONEY_UNATTENDED=1` alone | Ignored. Press 1 still required. |
-| both `=1`, not CI | Mission dials the destination without ringing the owner. |
+| both `=1`, not CI | Mission dials the destination without ringing the owner. This is the T-Mobile live recipe. The caller speaks as the account holder. `check` and `place-call` refuse if the pack's required PIN or SSN last four is missing. |
 | `CI` or `GITHUB_ACTIONS` | CLI refuses. Server keeps press 1 even if both flags are set. |
 
 Non-mission calls always ring the owner. Unattended missions use the two-leg

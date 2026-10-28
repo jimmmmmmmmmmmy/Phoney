@@ -6,7 +6,7 @@ Run the complete suite:
 .venv/bin/python -m pytest -q
 ```
 
-The suite contains **126 collected cases**. Parametrized variants count toward
+The suite contains **127 collected cases**. Parametrized variants count toward
 the limit. The deployment supervisor runs this same suite, not a separate
 subset. Three PostgreSQL cases skip unless `PHONEY_TEST_DATABASE_URL` is set.
 The artificial T-Mobile mission call is

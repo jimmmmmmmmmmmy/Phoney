@@ -16,7 +16,19 @@ python scripts/mission_run.py run tmobile-cancel --simulate
 
 `check`, `prep`, `research`, and `report` do not dial. `place-call` still
 requires `PHONEY_ALLOW_LIVE_CALL=1`, a loopback Phoney, and refuses `CI`.
-Set `PHONEY_UNATTENDED=1` as well only when the owner phone should not ring.
+The live Mac recipe is unattended. The voice is the account holder, not an assistant.
+Set both flags together, and only on that Mac. `check` refuses to proceed when
+either flag pair is set and the PIN or SSN last four is missing. Do not set
+them in CI or on a cloud agent.
+
+```sh
+PHONEY_UNATTENDED=1 PHONEY_ALLOW_LIVE_CALL=1 python -m phoney_missions check tmobile-cancel
+PHONEY_UNATTENDED=1 PHONEY_ALLOW_LIVE_CALL=1 python scripts/mission_run.py place-call tmobile-cancel
+```
+
+After that live call, save the session transcript and write `CALL_REPORT.md`
+the same way `--simulate` does under `phoney_missions/reports/`. `--simulate`
+writes a sample report and does not dial.
 See [phone missions](PHONE_MISSIONS.md) and the
 [post-#1 audit](ARCHITECTURE_AUDIT_PHONE_MISSIONS.md). Public tactics live in
 [docs/missions/tmobile-cancel](missions/tmobile-cancel/RESEARCH.md).

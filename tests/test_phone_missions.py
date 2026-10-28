@@ -164,6 +164,15 @@ def test_research_cache_and_cli_do_not_dial(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("PHONEY_ALLOW_LIVE_CALL", raising=False)
     monkeypatch.delenv("PHONEY_UNATTENDED", raising=False)
     assert main(["check", "tmobile-cancel"]) == 0
+    monkeypatch.setenv("PHONEY_UNATTENDED", "1")
+    monkeypatch.setenv("PHONEY_ALLOW_LIVE_CALL", "1")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("CANCEL_ACCOUNT_PIN", raising=False)
+    monkeypatch.delenv("CANCEL_SSN_LAST4", raising=False)
+    assert main(["check", "tmobile-cancel"]) == 2
+    monkeypatch.delenv("PHONEY_UNATTENDED", raising=False)
+    monkeypatch.delenv("PHONEY_ALLOW_LIVE_CALL", raising=False)
     assert main(["place-call", "tmobile-cancel"]) == 2
     assert main(["run", "tmobile-cancel"]) == 0
     assert called == []

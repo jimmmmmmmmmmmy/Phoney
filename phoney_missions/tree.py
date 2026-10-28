@@ -88,7 +88,8 @@ def _values(pack: MissionPack, state: ForkState, secrets: dict[str, Secret], **e
         "line_last4": current.last4,
         "line_display": current.display,
         "line_label": current.label,
-        "account_name": pack.account_name,
+        "account_name": pack.account_holder_name or pack.account_name,
+        "account_holder_name": pack.account_holder_name or pack.account_name,
         "account_number": pack.account_number,
         "billing_zip": pack.billing_zip,
         "pin": pin.reveal() if pin and pin.configured else "",
@@ -102,6 +103,15 @@ def _values(pack: MissionPack, state: ForkState, secrets: dict[str, Secret], **e
 
 def _say(bank: dict[str, str], ident: str, values: dict) -> str:
     return " ".join(bank[ident].format(**values).split())
+
+
+def _soft_exit(bank: dict[str, str], values: dict, reason: str) -> ForkPlan:
+    return ForkPlan(
+        "blocked-verification",
+        speech=(_say(bank, "call-back", values), _say(bank, "goodbye", values)),
+        notes=({"kind": "blocked", "reason": "verification", "detail": reason},),
+        hangup=True,
+    )
 
 
 def _secret_ready(secrets: dict[str, Secret], slot: str) -> bool:
@@ -133,13 +143,9 @@ def match_fork(pack: MissionPack, remote: str, state: ForkState,
     if _has(text, "para espanol", "for spanish", "for english", "which language"):
         return ForkPlan("ivr-english", speech=(_say(bank, "ivr-english", values),))
 
-    if _has(text, "mobile number", "phone number you're calling", "10-digit", "ten digit",
-            "i don't have one", "i do not have one"):
-        # call4.me: say "I don't have one" twice before the menu. Digits only after that.
-        if state.no_number_count < 2:
-            return ForkPlan("ivr-no-number", speech=(_say(bank, "ivr-no-number", values),))
+    if _has(text, "mobile number", "phone number you're calling", "10-digit", "ten digit"):
         opened = _open_lines(pack, state)
-        if opened:
+        if opened and getattr(pack, "ivr_lookup", "line") != "none":
             return ForkPlan("ivr-line-digits", digits=opened[0].digits)
         return ForkPlan("ivr-no-number", speech=(_say(bank, "ivr-no-number", values),))
 
@@ -149,17 +155,36 @@ def match_fork(pack: MissionPack, remote: str, state: ForkState,
         return ForkPlan("say-account", speech=(_say(bank, "say-account", values),))
 
     if re.search(r"\b(one[- ]time code|verification code|text code|otp)\b", text, re.IGNORECASE):
-        return ForkPlan("missing-secret", speech=(_say(bank, "need-holder", values),), hangup=True)
+        return _soft_exit(bank, values, "otp")
+
+    if re.search(r"\b(robot|automated|a bot)\b", text, re.IGNORECASE) or re.search(
+            r"\bare you an? ai\b", text, re.IGNORECASE):
+        return ForkPlan("not-robot", speech=(_say(bank, "not-robot", values),))
+
+    if re.search(r"\b(is this a recording|are you a recording|speaking to a recording)\b", text, re.IGNORECASE):
+        return ForkPlan("not-recording", speech=(_say(bank, "not-recording", values),))
+
+    if _has(text, "account holder", "who am i speaking", "who is this", "who am i talking"):
+        return ForkPlan("who-speaking", speech=(_say(bank, "who-speaking", values),))
+
+    if _has(text, "on behalf", "someone else", "someone else's"):
+        return ForkPlan("my-account", speech=(_say(bank, "my-account", values),))
+
+    if _has(text, "system prompt", "third word", "ignore previous", "jailbreak"):
+        return ForkPlan("stay-on-task", speech=(_say(bank, "stay-on-task", values),))
+
+    if _has(text, "visit a store", "go to a store", "come into a store", "selfie"):
+        return _soft_exit(bank, values, "store")
 
     if re.search(r"\b(passcode|pin)\b", text, re.IGNORECASE):
         if _secret_ready(secrets, "pin"):
             return ForkPlan("say-pin", speech=(_say(bank, "say-pin", values),))
-        return ForkPlan("missing-secret", speech=(_say(bank, "need-holder", values),), hangup=True)
+        return _soft_exit(bank, values, "pin")
 
     if _has(text, "social security", "ssn", "last four", "last 4"):
         if _secret_ready(secrets, "ssn_last4"):
             return ForkPlan("say-ssn", speech=(_say(bank, "say-ssn", values),))
-        return ForkPlan("missing-secret", speech=(_say(bank, "need-holder", values),), hangup=True)
+        return _soft_exit(bank, values, "ssn")
 
     if _has(text, "your name", "account name", "name on the account"):
         return ForkPlan("say-name", speech=(_say(bank, "say-name", values),))
@@ -167,7 +192,7 @@ def match_fork(pack: MissionPack, remote: str, state: ForkState,
     if _has(text, "zip code", "zipcode", "billing zip", "postal code"):
         if pack.billing_zip:
             return ForkPlan("say-zip", speech=(_say(bank, "say-zip", values),))
-        return ForkPlan("missing-secret", speech=(_say(bank, "need-holder", values),), hangup=True)
+        return _soft_exit(bank, values, "zip")
 
     if _has(text, "unpair"):
         return ForkPlan("unpair-watch", speech=(_say(bank, "unpair-watch", values),))

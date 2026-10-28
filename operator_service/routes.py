@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 from contextlib import asynccontextmanager
 
 import httpx
+from agent_registry import AgentSnapshot
 from agent_registry.auth import SAFE_HEADERS, owner_authenticated, require_agent_origin
 from caller_id import forwarding_identity
 from partner_detection.analysis import validate_analysis
@@ -38,6 +39,9 @@ from twilio.http.http_client import TwilioHttpClient
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse
 
+from voice_stack.cancel_agent import (CANCEL_AGENT_KIND, CANCEL_PROFILE,
+                                     cancel_prompt, cancel_snapshot_voice_id, is_cancel_goal)
+from voice_stack.ivr import load_playbook, suggest_dtmf
 from webhooks import require_sid, twilio_validator, valid_media_signature
 
 from .audio import CallRouter
@@ -45,6 +49,7 @@ from .conference_gateway import NativeConferenceGatewayMixin
 from .browser_voice import browser_voice_token
 from .native_conference import NativeConferenceMixin, register_native_routes
 from .controls import (DIGITS, HASH, PROFILE, RELEASE, REPORTED, Command, Keypad)
+from .dtmf import TwilioDigitSender
 from .sessions import (AGENT, ANNOUNCING, PREPARING, CALL_SID, CONNECTED, HUMAN, MODES, OWNER, OWNER_PROMPT, REMOTE, ROLES,
                        OperatorRejected, OperatorSession, OperatorSessions)
 from .runtime import DialogueRun, PREPARATION_SECONDS, maybe_await, voicemail_greeting_audio
@@ -268,9 +273,11 @@ class RelayOperatorController:
         # Stage 3 installs a listener here; a sink must be synchronous and
         # bounded so a reader never waits on a provider.
         self.audio_sink = None
-        # Stage 4 installs the "play digits on the existing remote call" path
-        # here; nothing in this stage sends a remote IVR digit.
-        self.digit_sender = None
+        # Remote IVR digits update the existing Twilio call with <Play digits>
+        # and reconnect that leg's media stream. This does not place a call.
+        self.digit_sender = TwilioDigitSender(self)
+        self._cancel_consumed = set()
+        self._ivr_playbook = None
         store.on_timeout = self.on_timeout
         store.on_end = self._on_session_end
 
@@ -534,10 +541,19 @@ class RelayOperatorController:
         return bool(session and session.active and session.phase == CONNECTED)
 
     @property
+    def delegate_ready(self):
+        """Whether a built-in agent can speak. Local providers do not need cloud keys."""
+        voice = self.voice
+        if not (getattr(self.settings, "voice_agent_enabled", False)
+                and voice and voice.enabled and voice.llm_configured and voice.tts_configured):
+            return False
+        if getattr(voice, "tts_provider", "elevenlabs") == "phonon":
+            return True
+        return bool(voice.elevenlabs_api_key and voice.twilio_ready)
+
+    @property
     def voice_ready(self):
-        return bool(getattr(self.settings, "voice_agent_enabled", False)
-                    and self.voice and self.voice.enabled and self.voice.gemini_api_key
-                    and self.voice.elevenlabs_api_key and self.voice.twilio_ready and self.registry)
+        return bool(self.delegate_ready and self.registry)
 
     async def _callback(self, callback, *args, _budget=3, **kwargs):
         if callback is None:
@@ -734,6 +750,10 @@ class RelayOperatorController:
         session = self.store.sessions.get(session_id)
         if session is None or not session.active:
             return
+        if role == REMOTE and session.remote_dtmf_pending:
+            session.remote_dtmf_pending = False
+            self.trace(session_id, "dtmf-stream-restored",
+                       generation=session.legs[REMOTE].generation)
         if session.browser_audio and role == OWNER:
             await self.store.mark_owner_prompt(session_id)
             if await self.store.begin_remote_dial(session_id):
@@ -780,6 +800,7 @@ class RelayOperatorController:
             self.router(session_id).stop_cue()
             log.info("operator_connected session=%s", session_id)
         self._maybe_auto_takeover(session_id)
+        self._maybe_cancel_takeover(session_id)
 
     async def stream_stopped(self, session_id: str, role: str, reason: str):
         # A stream ending is not a hangup: Twilio may still be running the
@@ -809,7 +830,11 @@ class RelayOperatorController:
             # Native Record deliberately replaces the stream, but still needs
             # terminal-status recovery when Twilio's callbacks are missed.
         elif session is not None and session.mode != HUMAN:
-            await self._release(session_id)
+            if role == REMOTE and session.remote_dtmf_pending:
+                # <Play digits> closes the media stream without ending the call.
+                log.info("operator_remote_stream_paused_for_dtmf session=%s", session_id)
+            else:
+                await self._release(session_id)
         if session is not None and session.active and hasattr(self.dialer, "read_status"):
             leg = session.legs[role]
             if not leg.attached and leg.call_sid:
@@ -1192,6 +1217,8 @@ class RelayOperatorController:
                 self._remote_turn_open.discard(session_id)
                 self._remote_turn_onsets.pop(session_id, None)
                 await self.store.invalidate_reply(session_id)
+                if await self._maybe_playbook_dtmf(session):
+                    return
                 self._start_dialogue(session)
         finally:
             if self._reply_timers.get(session_id) is asyncio.current_task():
@@ -1236,17 +1263,108 @@ class RelayOperatorController:
             return
         await self._release(session_id)
 
-    async def _queue_ivr(self, session_id: str, digits: str):
-        """Hand remote IVR digits to the sender, or record that none is installed.
+    def ivr_playbook(self):
+        if self._ivr_playbook is None:
+            self._ivr_playbook = load_playbook()
+        return self._ivr_playbook
 
-        The digit count is logged, never the digits: a menu answer can be an
-        account number, and the keypad is the only place they arrived from.
+    def _maybe_cancel_takeover(self, session_id):
+        """Start the T-Mobile cancel agent once, after the destination answers.
+
+        The owner still has to press 1 before the remote leg is dialed. This
+        does not speak over the first menu; it listens until T-Mobile talks.
         """
+        session = self.store.find(session_id)
+        if (session is None or session.direction != "outbound" or session.native_conference
+                or not is_cancel_goal(session.goal) or session_id in self._cancel_consumed
+                or session.phase != CONNECTED or session.mode != HUMAN):
+            return
+        if not self.delegate_ready:
+            self.trace(session_id, "cancel-agent-skipped", reason="voice-not-ready")
+            return
+        router = self.router(session_id)
+        if not all(router.attached(role) for role in ROLES):
+            return
+        self._cancel_consumed.add(session_id)
+        request_id = self._takeover_requests.get(session_id, 0) + 1
+        self._takeover_requests[session_id] = request_id
+        self.store.spawn(self._activate_cancel(session_id, request_id))
+
+    async def _activate_cancel(self, session_id, request_id):
+        session = self.store.find(session_id)
+        def current():
+            return bool(session and session.active
+                        and self._takeover_requests.get(session_id) == request_id
+                        and session_id not in self._auto_suppressed)
+        try:
+            voice_id = cancel_snapshot_voice_id(self.voice)
+            if not voice_id and self.registry is not None:
+                try:
+                    voice_id = (await self._internal_snapshot("voicemail")).voice_id
+                except Exception:
+                    voice_id = ""
+            if not voice_id:
+                raise OperatorRejected("voice-not-ready")
+            snapshot = AgentSnapshot(
+                "internal-cancel-tmobile", "T-Mobile cancel", cancel_prompt(), 1,
+                None, voice_id, None)
+            if not current():
+                return False
+            router = self.router(session_id)
+            if session.phase != CONNECTED or not all(router.attached(role) for role in ROLES):
+                raise OperatorRejected("call-not-connected")
+            await self.store.select_profile(session_id, CANCEL_PROFILE, mode=AGENT)
+            if not current():
+                return False
+            self._note_cleared(session_id, router.set_mode(AGENT))
+            session.agent_snapshot = snapshot
+            session.agent_name = snapshot.name
+            session.voice_id = snapshot.voice_id
+            session.agent_kind = CANCEL_AGENT_KIND
+            self._accepted_takeovers[session_id] = request_id
+            self._agent_reply_counts[session_id] = 0
+            self.trace(session_id, "cancel-agent-listening", agent_revision=snapshot.revision)
+            return True
+        except Exception as exc:
+            self.trace(session_id, "cancel-agent-failed", error=type(exc).__name__)
+            if current():
+                await self._abandon(session_id, "cancel-agent-unavailable")
+            return False
+
+    async def _maybe_playbook_dtmf(self, session) -> bool:
+        """Send a playbook digit and skip a spoken reply when the menu was explicit."""
+        if getattr(session, "agent_kind", "") != CANCEL_AGENT_KIND:
+            return False
+        latest = next((turn.get("text", "") for turn in reversed(session.turns)
+                       if turn.get("speaker") == REMOTE), "")
+        digits = suggest_dtmf(latest, self.ivr_playbook())
+        if not digits:
+            return False
+        self.trace(session.id, "ivr-playbook-dtmf", count=len(digits))
+        await self._queue_ivr(session.id, digits)
+        return True
+
+    async def send_ivr(self, session_id: str, digits: str):
+        """Send digits on the live remote call. Raises when the call cannot play them."""
         if self.digit_sender is None:
             log.info("operator_ivr_digits_unmapped session=%s count=%d",
-                     session_id, len(digits))
-            return
+                     session_id, len(str(digits)))
+            raise OperatorRejected("dtmf-unavailable")
         await self.digit_sender(session_id, digits)
+
+    async def _queue_ivr(self, session_id: str, digits: str):
+        """Hand remote IVR digits to the sender.
+
+        The digit count is logged, never the digits: a menu answer can be an
+        account number. Keypad and model failures stay on this call.
+        """
+        try:
+            await self.send_ivr(session_id, digits)
+        except (OperatorRejected, ValueError) as exc:
+            reason = getattr(exc, "reason", "invalid-digits")
+            log.info("operator_ivr_digits_rejected session=%s reason=%s count=%d",
+                     session_id, reason, len(str(digits)))
+            self.trace(session_id, "dtmf-rejected", reason=reason, count=len(str(digits)))
 
     def playing(self, session_id: str) -> bool:
         """Whether generation or playback is still in progress for this session."""
@@ -1749,6 +1867,27 @@ def register_operator_routes(app: FastAPI, settings, store: OperatorSessions,
                                 f"Cannot change mode: {exc.reason}") from None
         return JSONResponse({"session_id": session_id, "mode": store.find(session_id).mode,
                              "changed": changed}, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/sessions/{session_id}/dtmf", dependencies=[Depends(require_admin)])
+    async def session_dtmf(session_id: str, request: Request):
+        """Play digits on the existing remote call. Does not create a call."""
+        try:
+            payload = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Expected a JSON object") from None
+        if (not isinstance(payload, dict) or set(payload) != {"digits"}
+                or not isinstance(payload.get("digits"), str)):
+            raise HTTPException(400, 'Expected {"digits": "0"}')
+        try:
+            await controller.send_ivr(session_id, payload["digits"])
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except OperatorRejected as exc:
+            raise HTTPException(404 if exc.reason == "unknown-session" else 409,
+                                f"Cannot send digits: {exc.reason}") from None
+        return JSONResponse({"session_id": session_id, "sent": True,
+                             "count": len(payload["digits"])},
+                            headers={"Cache-Control": "no-store"})
 
     @app.post("/api/sessions/{session_id}/end")
     async def session_end(session_id: str, full_access: bool = Depends(require_call_access)):

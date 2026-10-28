@@ -77,6 +77,7 @@ SETUP_CEILING_SECONDS = 90.0
 RECONCILE_SECONDS = 5.0
 RECONNECT_LIMIT = 2
 RECONNECT_WINDOW_SECONDS = 10.0
+MAX_DTMF_SENDS = 16
 TOKEN_SECONDS = SETUP_CEILING_SECONDS
 
 # ``call`` is absent on purpose: its length comes from ``settings.max_call_seconds``.
@@ -186,6 +187,8 @@ class OperatorSession:
     voicemail: bool = False
     voicemail_phase: str = ""
     voicemail_fallback: bool = False
+    remote_dtmf_pending: bool = False
+    dtmf_sends: int = 0
     agent_snapshot: object = field(default=None, repr=False)
     legs: dict[str, SessionLeg] = field(default_factory=dict, repr=False)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -777,6 +780,62 @@ class OperatorSessions:
                 return False
             leg.attached = False
             return True
+
+    async def begin_remote_dtmf(self, session_id):
+        """Reserve the next remote stream generation for one ``<Play digits>`` update.
+
+        This does not place a call. The remote Call SID stays the same. The
+        accidental-reconnect budget is left alone so a menu can take more than
+        two digit presses. ``previous`` is enough to roll back a definite REST
+        failure; a timeout is not rolled back and is not retried.
+        """
+        async with self._lock:
+            session = self._require(session_id)
+            if not session.active or session.phase != CONNECTED or session.native_conference:
+                raise OperatorRejected("dtmf-unavailable")
+            if session.remote_dtmf_pending:
+                raise OperatorRejected("dtmf-busy")
+            leg = self._leg(session, REMOTE)
+            if (leg.transport != "phone" or leg.ended or not leg.call_sid
+                    or leg.state not in {LEG_STARTED, LEG_RECONNECTING}):
+                raise OperatorRejected("dtmf-unavailable")
+            if session.dtmf_sends >= MAX_DTMF_SENDS:
+                raise OperatorRejected("dtmf-limit")
+            previous = {
+                "generation": leg.generation, "token": leg.token,
+                "token_issued": leg.token_issued, "token_used": leg.token_used,
+                "state": leg.state, "attached": leg.attached,
+                "stream_sid": leg.stream_sid, "sends": session.dtmf_sends,
+            }
+            session.dtmf_sends += 1
+            session.remote_dtmf_pending = True
+            leg.generation += 1
+            leg.token = secrets.token_urlsafe(32)
+            leg.token_issued = time.monotonic()
+            leg.token_used = False
+            leg.attached = False
+            leg.stream_sid = ""
+            leg.state = LEG_RECONNECTING
+            return leg.call_sid, leg.generation, leg.token, previous
+
+    async def abort_remote_dtmf(self, session_id, previous) -> None:
+        """Restore the remote stream after a DTMF update that did not apply."""
+        async with self._lock:
+            session = self.find(session_id)
+            leg = session.legs.get(REMOTE) if session is not None else None
+            if leg is None or not isinstance(previous, dict):
+                return
+            if leg.generation != previous.get("generation", 0) + 1:
+                return
+            leg.generation = previous["generation"]
+            leg.token = previous["token"]
+            leg.token_issued = previous["token_issued"]
+            leg.token_used = previous["token_used"]
+            leg.state = previous["state"]
+            leg.attached = previous["attached"]
+            leg.stream_sid = previous["stream_sid"]
+            session.dtmf_sends = previous["sends"]
+            session.remote_dtmf_pending = False
 
     async def rotate_token(self, session_id, role) -> SessionLeg:
         """Issue the next stream generation for a reconnecting leg."""

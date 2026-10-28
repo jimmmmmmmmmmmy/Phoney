@@ -40,6 +40,7 @@ END_CALL = "[/END CALL]"
 
 # The fixed half of the instruction. A selected mode appends its own goal and
 # boundaries after this text rather than replacing the delegate rules.
+from .ivr import DTMF_LINE
 from .prompts import SHARED_PHONE_INSTRUCTION, reply_progress_instruction
 
 DELEGATE_INSTRUCTION = SHARED_PHONE_INSTRUCTION
@@ -408,24 +409,50 @@ class Conversation:
         commands.finish()
 
 
+def _held_marker(pending: str) -> str | None:
+    """How to treat a not-yet-spoken control prefix, or None to speak it."""
+    if pending in (END_CALL + "\n", END_CALL + "\r\n"):
+        return "commit-end"
+    end_hold = END_CALL.startswith(pending) or pending == END_CALL + "\r"
+    dtmf_open = "[/DTMF"
+    if end_hold and dtmf_open.startswith(pending):
+        return "either"
+    if end_hold:
+        return "end"
+    if dtmf_open.startswith(pending) or pending.startswith("[/DTMF"):
+        if "\n" not in pending and len(pending) < 48:
+            return "dtmf"
+        if DTMF_LINE.fullmatch(pending.strip()):
+            return "commit-dtmf"
+        if pending.endswith("\n"):
+            return "drop-dtmf"
+    return None
+
+
 class ReplyCommandBuffer:
-    """Separate a final standalone end-call command from streamed model speech.
+    """Separate end-call and DTMF commands from streamed model speech.
 
     Only ``finish`` authorizes a command, after the provider completed normally.
     Exact marker lines are suppressed even if later text invalidates them.
     Inline/quoted text, unknown markup, and fenced examples remain ordinary
     speech. A possible marker prefix is held across chunks and dropped at EOF,
-    so incomplete control syntax never reaches synthesis.
+    so incomplete control syntax never reaches synthesis. ``[/DTMF digits]``
+    is collected and never spoken. At most three digit commands are kept.
     """
 
     def __init__(self):
         self.end_call = False
+        self.dtmf: list[str] = []
         self._pending = ""
         self._ordinary = False
         self._line = ""
         self._fence = None
         self._commands = 0
         self._trailing_text = False
+
+    def _remember_dtmf(self, digits: str) -> None:
+        if len(self.dtmf) < 3:
+            self.dtmf.append(digits)
 
     def feed(self, text: str) -> str:
         if not isinstance(text, str):
@@ -438,15 +465,23 @@ class ReplyCommandBuffer:
             candidate = self._pending + char
             if self._ordinary or self._fence:
                 output.append(char)
-            elif candidate in (END_CALL + "\n", END_CALL + "\r\n"):
-                self._commands += 1
-                self._pending = ""
-            elif END_CALL.startswith(candidate) or candidate == END_CALL + "\r":
-                self._pending = candidate
             else:
-                output.append(candidate)
-                self._pending = ""
-                self._ordinary = True
+                kind = _held_marker(candidate)
+                if kind == "commit-end":
+                    self._commands += 1
+                    self._pending = ""
+                elif kind == "commit-dtmf":
+                    match = DTMF_LINE.fullmatch(candidate.strip())
+                    self._remember_dtmf(match.group(1))
+                    self._pending = ""
+                elif kind == "drop-dtmf":
+                    self._pending = ""
+                elif kind in {"end", "dtmf", "either"}:
+                    self._pending = candidate
+                else:
+                    output.append(candidate)
+                    self._pending = ""
+                    self._ordinary = True
             if char == "\n":
                 line = self._line.strip()
                 if self._fence:
@@ -459,9 +494,11 @@ class ReplyCommandBuffer:
         return "".join(output)
 
     def finish(self) -> None:
-        """Commit only one complete command occupying the final nonempty line."""
+        """Commit one complete end-call command, and any finished DTMF line."""
         if self._pending in (END_CALL, END_CALL + "\r"):
             self._commands += 1
+        elif DTMF_LINE.fullmatch(self._pending.strip()):
+            self._remember_dtmf(DTMF_LINE.fullmatch(self._pending.strip()).group(1))
         self._pending = ""
         self.end_call = self._commands == 1 and not self._trailing_text
 

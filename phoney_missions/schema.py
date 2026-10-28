@@ -69,6 +69,7 @@ class MissionPack:
     spoken_goal: str
     account_name: str
     account_number: str
+    billing_zip: str
     lines: tuple[Line, ...]
     identity_env: dict[str, str]
     secret_env: dict[str, str]
@@ -155,6 +156,9 @@ def parse_pack(data: dict) -> MissionPack:
     name = str(identity.get("account_name", "")).strip()
     if not name or len(name) > 80:
         raise MissionSchemaError("identity.account_name must be a short name.")
+    billing_zip = str(identity.get("billing_zip", "")).strip()
+    if billing_zip and not re.fullmatch(r"\d{5}", billing_zip):
+        raise MissionSchemaError("billing_zip must be 5 digits when set.")
     policy = data.get("policy")
     if not isinstance(policy, dict):
         raise MissionSchemaError("policy must be an object.")
@@ -233,6 +237,7 @@ def parse_pack(data: dict) -> MissionPack:
         spoken_goal=str(data.get("spoken_goal", "")).strip()[:300],
         account_name=name,
         account_number=account,
+        billing_zip=billing_zip,
         lines=_lines(identity.get("lines")),
         identity_env=env_names,
         secret_env=secret_env,

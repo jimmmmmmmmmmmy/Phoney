@@ -79,8 +79,10 @@ def runtime_instruction_for(goal: str, playbook=None, environ=None) -> str:
     brief = assemble_brief(pack, environ, include_research=False)
     book = playbook if playbook is not None else playbook_for_goal(goal, environ)
     return (
-        "Trusted mission control. Say at most one short sentence unless you are "
-        "confirming a number or a date. Prefer DTMF over speech when a digit works. "
+        "Trusted mission control. Covered forks already choose a canned line. "
+        "If this turn still reaches you, the fork was not covered: one short sentence, "
+        "no filler, and never invent a PIN, SSN, OTP, or password. "
+        "Prefer DTMF over speech when a digit works. "
         + brief.runtime_text()
         + "\n"
         + playbook_instructions(book)

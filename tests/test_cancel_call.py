@@ -87,6 +87,29 @@ def test_artificial_cancel_and_retention_calls(monkeypatch):
         assert_spoken_budget(line)
 
 
+def test_artificial_high_risk_forks_skip_the_model(monkeypatch):
+    """Covered forks speak canned lines. The fake model is not called and Twilio is not dialed."""
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    pin = asyncio.run(run_artificial_call(scenario="pin-missing"))
+    assert pin.llm_calls == 0 and pin.ended_reason == "agent-end-call"
+    assert any("account holder" in line.lower() for line in pin.spoken)
+    assert pin.calls_created == 1 and all(host == "127.0.0.1" for host in pin.hosts)
+
+    supervisor = asyncio.run(run_artificial_call(scenario="supervisor"))
+    assert supervisor.llm_calls == 0 and supervisor.ended_reason == "agent-end-call"
+    assert any("supervisor" in line.lower() for line in supervisor.spoken)
+    assert any("could not be canceled" in line.lower() for line in supervisor.spoken)
+
+    cheaper = asyncio.run(run_artificial_call(scenario="cheaper-plan"))
+    assert cheaper.llm_calls == 0
+    assert any("no plan change" in line.lower() for line in cheaper.spoken)
+
+    unpair = asyncio.run(run_artificial_call(scenario="unpair-watch"))
+    assert unpair.llm_calls == 0
+    assert any(line.startswith("Unpair") for line in unpair.spoken)
+
+
 def test_cancel_brief_allowlist_and_playbook():
     prompt = cancel_prompt(environ={})
     assert "252027408" in prompt

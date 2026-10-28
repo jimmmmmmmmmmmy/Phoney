@@ -2,23 +2,11 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 from .brevity import assert_spoken_budget, exceeds_budget
-from .ivr_policy import account_wipe, classify_dtmf, playbook_entries
-from .policy import evaluate_retention
 from .research import load_utterances
 from .schema import MissionPack
-
-_CONFIRM = re.compile(
-    r"(?P<label>Apple Watch SE|BYOD mobile|watch|BYOD)?.{0,40}?"
-    r"(?P<digits>\d{3}[-.\s]?\d{3}[-.\s]?\d{4}).{0,80}?"
-    r"(?:confirmation(?: number)?|conf)\s*(?:is\s*)?(?P<code>[A-Za-z0-9-]{3,12}).{0,40}?"
-    r"(?:effective(?: date)?\s*(?:is\s*)?(?P<date>20\d{2}-\d{2}-\d{2}))",
-    re.IGNORECASE,
-)
-_PIN = re.compile(r"\b(pin|passcode|social|ssn|last four)\b", re.IGNORECASE)
 
 
 @dataclass
@@ -39,6 +27,7 @@ class SimState:
     confirmed: dict = field(default_factory=dict)
     accepted: bool = False
     done: bool = False
+    supervisor: bool = False
 
 
 def _bank(pack: MissionPack) -> dict[str, str]:
@@ -67,68 +56,47 @@ def _speak(state_actions: list[Action], text: str, decision: str, kind: str | No
     state_actions.append(Action("speak", speech=speech, decision=decision))
 
 
-def next_actions(pack: MissionPack, state: SimState, remote: str, *, secrets_configured: bool) -> list[Action]:
-    """One remote utterance in, one or two short actions out."""
+def next_actions(pack: MissionPack, state: SimState, remote: str, *, secrets_configured: bool,
+                 secrets: dict | None = None) -> list[Action]:
+    """One remote utterance in. Covered forks are canned, not improvised."""
     if state.done:
         return []
-    bank = _bank(pack)
-    book = playbook_entries(pack)
+    from .tree import ForkState, match_fork
+    provided = dict(secrets or {})
+    if secrets_configured and "pin" not in provided:
+        from .secrets import Secret
+        provided.setdefault("pin", Secret("CANCEL_ACCOUNT_PIN", "0000"))
+        provided.setdefault("ssn_last4", Secret("CANCEL_SSN_LAST4", "0000"))
+    fork = ForkState(
+        notes=[{"kind": "confirmation", **note} if "kind" not in note else note
+               for note in state.confirmed.values()],
+        supervisor=state.supervisor,
+    )
+    plan = match_fork(pack, remote, fork, provided)
     actions: list[Action] = []
-    decision = classify_dtmf(remote, book)
-    if decision.mode == "auto" and decision.digits:
-        actions.append(Action("dtmf", digits=decision.digits, decision="ivr-auto"))
+    if plan is None:
+        _speak(actions, _fill(_bank(pack).get("open-cancel", "I'd like to cancel the line ending in {line_last4}."), pack), "unmatched")
         return actions
-    if decision.mode == "blocked" or account_wipe(remote):
-        _speak(actions, bank.get("ivr-representative", "Representative."), "ivr-wipe")
+    if plan.supervisor:
+        state.supervisor = True
+    if plan.silent:
+        actions.append(Action("silent", decision=plan.decision))
         return actions
-    if decision.mode == "model-only":
-        line = bank.get("ivr-something-else") or bank.get("ivr-cancel") or "Cancel a line."
-        _speak(actions, line, "ivr-model")
+    if plan.digits:
+        actions.append(Action("dtmf", digits=plan.digits, decision=plan.decision))
         return actions
-    if _PIN.search(remote or "") and not secrets_configured:
-        _speak(actions, bank.get("need-holder", "I need the account holder on the line."), "missing-secret")
-        actions.append(Action("hangup", decision="missing-secret"))
+    for speech in plan.speech:
+        kind = "confirmation" if plan.decision == "confirm" and "confirmation" in speech.lower() else None
+        _speak(actions, speech, plan.decision, kind=kind)
+    for note in plan.notes:
+        actions.append(Action("note_confirmation", decision=plan.decision, note=dict(note)))
+        if note.get("kind") == "confirmation":
+            state.confirmed[note["line"]] = note
+        if note.get("kind") == "retention":
+            state.accepted = True
+    if plan.hangup:
+        actions.append(Action("hangup", decision=plan.decision))
         state.done = True
-        return actions
-    offer = evaluate_retention(remote, pack)
-    if offer.is_offer and offer.accept:
-        _speak(actions, bank.get("accept-retention", "I'll accept the monthly credit instead of canceling."), "accept-retention")
-        actions.append(Action("note_confirmation", decision="accept-retention", note={
-            "kind": "retention", "monthly_cents": offer.monthly_cents, "months": offer.months,
-        }))
-        actions.append(Action("hangup", decision="accept-retention"))
-        state.accepted = True
-        state.done = True
-        return actions
-    if offer.is_offer:
-        _speak(actions, bank.get("decline-offer", "I'm not interested in offers."), "decline-retention")
-        _speak(actions, _fill(bank.get("cancel-line", "Please cancel line {line_display}."), pack), "decline-retention")
-        return actions
-    found = _CONFIRM.search(remote or "")
-    if found:
-        digits = re.sub(r"\D", "", found.group("digits"))
-        note = {
-            "kind": "confirmation",
-            "line": digits,
-            "confirmation": found.group("code"),
-            "effective": found.group("date"),
-        }
-        actions.append(Action("note_confirmation", decision="confirm", note=note))
-        state.confirmed[digits] = note
-        readback = _fill(
-            bank.get("readback", "Confirmed. Line {line_display}, confirmation {code}, effective {date}."),
-            pack, line_display=_dash(digits), code=note["confirmation"], date=note["effective"],
-        )
-        _speak(actions, readback, "confirm", kind="confirmation")
-        if all(line.digits in state.confirmed for line in pack.lines):
-            _speak(actions, bank.get("goodbye", "Thank you, goodbye."), "done")
-            actions.append(Action("hangup", decision="done"))
-            state.done = True
-        return actions
-    if re.search(r"\bsomething else\b", remote or "", re.I):
-        _speak(actions, bank.get("ivr-something-else", "Something else."), "ivr-speech")
-        return actions
-    _speak(actions, _fill(bank.get("open-cancel", "I'd like to cancel the line ending in {line_last4}."), pack), "continue-cancel")
     return actions
 
 

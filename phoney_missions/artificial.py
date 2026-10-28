@@ -34,22 +34,28 @@ CANCEL_TURNS = (
     "The Apple Watch SE line 773-988-2659 is cancelled. Your confirmation number is AB12 and the effective date is 2026-11-15.",
     "The BYOD line 312-545-2413 is cancelled. Confirmation number CD34 effective date 2026-11-15.",
 )
-CANCEL_REPLIES = (
-    "I'd like to cancel the line ending in 2659.",
-    "I'm not interested in offers.",
-    "Confirmed. Line 773-988-2659, confirmation AB12, effective 2026-11-15.\n"
-    "[/NOTE confirm:7739882659:AB12:2026-11-15]",
-    "Confirmed. Line 312-545-2413, confirmation CD34, effective 2026-11-15.\n"
-    "[/NOTE confirm:3125452413:CD34:2026-11-15]\nThank you, goodbye.\n[/END CALL]",
-)
+# Covered forks are spoken by the tree, so these scenarios must not call the model.
+CANCEL_REPLIES = ()
 RETENTION_TURNS = (
     "Press 0 to speak to a representative.",
     "I can do $20 per month for 12 months if you keep the lines.",
 )
-RETENTION_REPLIES = (
-    "I'll accept the monthly credit instead of canceling.\n"
-    "[/NOTE retention:2000:12]\nThank you, goodbye.\n[/END CALL]",
+RETENTION_REPLIES = ()
+PIN_TURNS = ("What is your account PIN?",)
+SUPERVISOR_TURNS = (
+    "I can't cancel that line.",
+    "I still can't cancel that line.",
 )
+CHEAPER_TURNS = ("We can move you to a cheaper plan instead.",)
+UNPAIR_TURNS = ("You need to unpair the watch before I can cancel it.",)
+SCENARIOS = {
+    "cancel": (CANCEL_TURNS, CANCEL_REPLIES),
+    "retention": (RETENTION_TURNS, RETENTION_REPLIES),
+    "pin-missing": (PIN_TURNS, ()),
+    "supervisor": (SUPERVISOR_TURNS, ()),
+    "cheaper-plan": (CHEAPER_TURNS, ()),
+    "unpair-watch": (UNPAIR_TURNS, ()),
+}
 
 
 def deepgram_final(payload: dict) -> str:
@@ -105,6 +111,7 @@ class ScriptedMedia:
         self.replies = list(replies)
         self.spoken: list[str] = []
         self.hosts: list[str] = []
+        self.paths: list[str] = []
         self.llm_calls = 0
 
     def transport(self):
@@ -112,6 +119,7 @@ class ScriptedMedia:
 
         def handle(request: httpx.Request):
             media.hosts.append(request.url.host)
+            media.paths.append(request.url.path)
             if request.url.path in {"/health", "/v1/models"}:
                 return httpx.Response(200, json={"ok": True})
             if request.url.path == "/v1/chat/completions":
@@ -159,6 +167,7 @@ class ArtificialResult:
     ended_reason: str = ""
     brief_has_cancel_facts: bool = False
     hosts: list[str] = field(default_factory=list)
+    llm_calls: int = 0
 
     def summary(self) -> str:
         return "\n".join([
@@ -228,10 +237,7 @@ async def _dial(mission: str, tmp: Path, *, unattended: bool):
 async def run_artificial_call(mission: str = "tmobile-cancel", *, scenario: str = "cancel",
                               unattended: bool = True, output_dir: str | None = None) -> ArtificialResult:
     """Run one scripted mission. ``unattended`` is in-memory only; nothing dials out."""
-    if scenario == "retention":
-        turns, replies = RETENTION_TURNS, RETENTION_REPLIES
-    else:
-        turns, replies = CANCEL_TURNS, CANCEL_REPLIES
+    turns, replies = SCENARIOS.get(scenario, SCENARIOS["cancel"])
     tmp = Path(output_dir) if output_dir else Path(os.environ.get("TMPDIR", "/tmp")) / "phoney-artificial"
     tmp.mkdir(parents=True, exist_ok=True)
     saved = {name: os.environ.get(name) for name in ("CI", "GITHUB_ACTIONS")}
@@ -292,6 +298,7 @@ async def run_artificial_call(mission: str = "tmobile-cancel", *, scenario: str 
             ended_reason=session.ended_reason,
             brief_has_cancel_facts=facts,
             hosts=list(media.hosts),
+            llm_calls=media.llm_calls,
         )
     finally:
         for name, value in saved.items():

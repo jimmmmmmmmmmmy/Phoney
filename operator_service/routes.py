@@ -1278,6 +1278,8 @@ class RelayOperatorController:
                 await self.store.invalidate_reply(session_id)
                 if await self._maybe_playbook_dtmf(session):
                     return
+                if self._start_canned_fork(session):
+                    return
                 self._start_dialogue(session)
         finally:
             if self._reply_timers.get(session_id) is asyncio.current_task():
@@ -1407,6 +1409,24 @@ class RelayOperatorController:
             if current():
                 await self._abandon(session_id, "cancel-agent-unavailable")
             return False
+
+    def _start_canned_fork(self, session) -> bool:
+        """Speak, dial, or stay silent from the mission tree. True skips the model."""
+        from phoney_missions.tree import plan_session
+        plan = plan_session(session)
+        if plan is None:
+            return False
+        self.trace(session.id, "canned-fork", decision=plan.decision)
+        if plan.supervisor:
+            session.mission_supervisor = True
+        if plan.silent:
+            return True
+        if plan.digits:
+            self.store.spawn(self._queue_ivr(session.id, plan.digits))
+            return True
+        session.canned_reply = plan.model_text()
+        self._start_dialogue(session)
+        return True
 
     async def _maybe_playbook_dtmf(self, session) -> bool:
         """Send a playbook digit and skip a spoken reply when the menu was explicit."""

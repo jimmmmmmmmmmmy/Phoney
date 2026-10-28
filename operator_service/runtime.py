@@ -458,6 +458,24 @@ class DialogueRun:
         self.trace("announcement-audio-ready", duration_ms=int((time.monotonic()-started)*1000))
         return audio
 
+    async def _emit_canned(self, text: str):
+        """Play one tree-chosen reply. The model is not called."""
+        buffer = SentenceBuffer()
+        commands = ReplyCommandBuffer()
+        spoken = commands.feed(text)
+        for phrase in buffer.feed(spoken):
+            if phrase.strip():
+                await self.phrases.put(phrase)
+        commands.finish()
+        self.pending_dtmf = list(commands.dtmf)
+        self.pending_notes = list(commands.notes)
+        self.end_requested = commands.end_call and not self.pending_dtmf
+        trailing = buffer.flush()
+        if trailing and trailing.strip():
+            await self.phrases.put(trailing)
+        await self.phrases.put(None)
+        self.trace("canned-reply", end_requested=self.end_requested)
+
     async def _produce(self, http, conversation):
         if self.voicemail and self.voicemail_phase == "greeting":
             # A known invitation does not need to wait for Gemini. Keep the
@@ -466,6 +484,11 @@ class DialogueRun:
             self.trace("voicemail-fixed-greeting")
             await self.phrases.put(VOICEMAIL_GREETING)
             await self.phrases.put(None)
+            return
+        canned = getattr(self.session, "canned_reply", "") or ""
+        if canned:
+            self.session.canned_reply = ""
+            await self._emit_canned(canned)
             return
         # Preserve complete sentences in live speech. Voicemail keeps its
         # smaller bound for concise recaps; both paths protect numbers/times.

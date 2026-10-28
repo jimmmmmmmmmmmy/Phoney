@@ -113,13 +113,15 @@ def _authentication_runtime(pack: MissionPack, secrets: list[Secret]) -> str:
     return " ".join(parts)
 
 
-def _research_lines(pack: MissionPack, name: str, lines, secrets: list[Secret]) -> list[str]:
+def _research_lines(pack: MissionPack, name: str, account: str, lines, secrets: list[Secret]) -> list[str]:
     first = lines[0]
     values = {
         "line_last4": first.last4,
         "line_display": first.display,
         "line_label": first.label,
         "account_name": name,
+        "account_number": account,
+        "billing_zip": getattr(pack, "billing_zip", ""),
     }
     spoken = []
     for row in load_utterances(pack):
@@ -129,6 +131,8 @@ def _research_lines(pack: MissionPack, name: str, lines, secrets: list[Secret]) 
             continue
         text = " ".join(text.split())
         if not text or any(secret.leaked_into(text) for secret in secrets):
+            continue
+        if any(token in str(row.get("text", "")) for token in ("{pin}", "{ssn", "{password", "{otp")):
             continue
         spoken.append(text)
     return spoken
@@ -144,13 +148,18 @@ def assemble_brief(pack: MissionPack, environ=None, *, include_research: bool = 
         lines=line_text,
         destination_display=pack.destination_display,
     )
-    parts = [task, _authentication_public(secrets), policy_text(pack)]
+    parts = [
+        task,
+        "Covered forks use the canned lines below. Say one canned line and do not improvise that fork.",
+        _authentication_public(secrets),
+        policy_text(pack),
+    ]
     if pack.brevity == "strict":
         parts.append(brevity_instruction())
     parts.append("Tools: " + " ".join(_TOOL_LINES[tool] for tool in pack.tools if tool in _TOOL_LINES))
     if pack.constraints:
         parts.append("Constraints: " + " ".join(pack.constraints))
-    research = _research_lines(pack, name, lines, secrets) if include_research else []
+    research = _research_lines(pack, name, account, lines, secrets) if include_research else []
     if research:
         listed = " | ".join(research)
         parts.append(

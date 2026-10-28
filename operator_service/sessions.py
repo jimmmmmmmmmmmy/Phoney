@@ -193,6 +193,8 @@ class OperatorSession:
     unattended: bool = False
     mission_id: str = ""
     mission_notes: list = field(default_factory=list, repr=False)
+    mission_supervisor: bool = False
+    canned_reply: str = field(default="", repr=False)
     legs: dict[str, SessionLeg] = field(default_factory=dict, repr=False)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 

@@ -79,11 +79,21 @@ The agent still asks to cancel each named line. It does not assume a phone port 
 
 On this mission, prefer DTMF when the recording just offered a digit for a representative. If the menu asks for the mobile number, send that line's digits rather than a paragraph. Do not press a digit that would cancel every line or the whole account. Say "Something else." or "Cancel a line." only when no safe digit was offered. Each of those lines is one short utterance in `utterances.json`.
 
+## Conversation tree
+
+`CONVERSATION_TREE.md` is the fork map. `utterances.json` is one short sentence
+per spoken leaf. Covered forks are canned. The model is only for an unmatched
+menu. The same public sources above feed that map: T-Mobile's cancel and
+contact pages for timing, EIP, unpair, and the care number; the August 2025
+loyalty writeups for the $10/6 and $20/12 reports; the r/tmobile threads for
+watch lines that survive a phone port and for store or PIN trouble; and the
+call4.me recording for the "something else" and "I don't have one" menu path.
+X is still the TODO above. Do not treat any of this as a legal claim.
+
 ## Spoken lines
 
 `utterances.json` is the agent bank. Each line is one short sentence. The brief
-may list them. The model says at most one per turn. They are curated for this
-agent. They are not official T-Mobile scripts.
+may list the non-secret lines. Covered forks say that line and nothing else.
 
 Opening intent: "I'd like to cancel the line ending in XXXX." and "Cancel the Apple Watch cellular line."
 

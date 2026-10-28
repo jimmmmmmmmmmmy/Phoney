@@ -48,6 +48,16 @@ SUPERVISOR_TURNS = (
 )
 CHEAPER_TURNS = ("We can move you to a cheaper plan instead.",)
 UNPAIR_TURNS = ("You need to unpair the watch before I can cancel it.",)
+DOWNGRADE_TURNS = (
+    "I can give you $20 a month for 12 months if I downgrade your other line.",
+)
+EIP_BLOCK_TURNS = ("You can't cancel the watch because the EIP blocks it.",)
+CALLBACK_TURNS = ("Why don't you think about it and I will call you back?",)
+IVR_ROUTE_TURNS = (
+    "Please enter or say your mobile number, or say I don't have one.",
+    "I still need the 10-digit mobile number, or say I don't have one.",
+    "Are you calling about a payment, tech support, billing, or something else?",
+)
 SCENARIOS = {
     "cancel": (CANCEL_TURNS, CANCEL_REPLIES),
     "retention": (RETENTION_TURNS, RETENTION_REPLIES),
@@ -55,6 +65,10 @@ SCENARIOS = {
     "supervisor": (SUPERVISOR_TURNS, ()),
     "cheaper-plan": (CHEAPER_TURNS, ()),
     "unpair-watch": (UNPAIR_TURNS, ()),
+    "downgrade-trick": (DOWNGRADE_TURNS, ()),
+    "eip-blocks": (EIP_BLOCK_TURNS, ()),
+    "no-callback": (CALLBACK_TURNS, ()),
+    "ivr-route": (IVR_ROUTE_TURNS, ()),
 }
 
 

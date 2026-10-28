@@ -29,6 +29,7 @@ _SECRET_KEYS = ("pin", "ssn_last4", "ssn", "password", "otp")
 class ForkState:
     notes: list[dict] = field(default_factory=list)
     supervisor: bool = False
+    no_number_count: int = 0
 
 
 @dataclass
@@ -132,7 +133,11 @@ def match_fork(pack: MissionPack, remote: str, state: ForkState,
     if _has(text, "para espanol", "for spanish", "for english", "which language"):
         return ForkPlan("ivr-english", speech=(_say(bank, "ivr-english", values),))
 
-    if _has(text, "mobile number", "phone number you're calling", "10-digit", "ten digit"):
+    if _has(text, "mobile number", "phone number you're calling", "10-digit", "ten digit",
+            "i don't have one", "i do not have one"):
+        # call4.me: say "I don't have one" twice before the menu. Digits only after that.
+        if state.no_number_count < 2:
+            return ForkPlan("ivr-no-number", speech=(_say(bank, "ivr-no-number", values),))
         opened = _open_lines(pack, state)
         if opened:
             return ForkPlan("ivr-line-digits", digits=opened[0].digits)
@@ -170,6 +175,12 @@ def match_fork(pack: MissionPack, remote: str, state: ForkState,
     if _has(text, "watch") and _has(text, "already cancel", "already canceled", "port"):
         return ForkPlan("watch-separate", speech=(_say(bank, "watch-separate", values),))
 
+    if _has(text, "downgrade", "other line", "another line", "convert your", "convert the"):
+        return ForkPlan(
+            "decline-downgrade",
+            speech=(_say(bank, "no-other-line", values), _say(bank, "cancel-line", values)),
+        )
+
     if _has(text, "cheaper plan", "cheaper line", "lower plan", "different plan", "change your plan"):
         return ForkPlan("decline-plan", speech=(_say(bank, "decline-plan", values),))
 
@@ -178,6 +189,18 @@ def match_fork(pack: MissionPack, remote: str, state: ForkState,
 
     if _has(text, "multi-line discount", "promotion will", "promo will", "discount will", "lose your discount"):
         return ForkPlan("promo-still-cancel", speech=(_say(bank, "promo-still-cancel", values),))
+
+    if _has(text, "device payment", "installment", "eip", "equipment") and _has(
+            text, "block", "blocks", "can't cancel", "cannot cancel", "won't cancel",
+            "pay it off", "pay off", "have to pay"):
+        speech = (_say(bank, "eip-still-cancel", values),)
+        if state.supervisor:
+            return ForkPlan("partial-close", speech=speech + (_say(bank, "goodbye", values),), hangup=True)
+        return ForkPlan(
+            "eip-blocks",
+            speech=speech + (_say(bank, "supervisor", values),),
+            supervisor=True,
+        )
 
     if _has(text, "device payment", "installment", "eip", "payments will continue"):
         return ForkPlan("eip-ok", speech=(_say(bank, "eip-ok", values),))
@@ -224,6 +247,17 @@ def match_fork(pack: MissionPack, remote: str, state: ForkState,
                                                     _say(bank, "goodbye", values)), hangup=True)
         return ForkPlan("supervisor", speech=(_say(bank, "supervisor", values),), supervisor=True)
 
+    if _has(text, "why are you", "reason for leaving", "why do you want", "what is the reason",
+            "what's the reason", "why cancel"):
+        return ForkPlan("no-reason", speech=(_say(bank, "broken-record", values),))
+
+    if _has(text, "think about it", "think it over", "call you back", "callback", "call back",
+            "sleep on it"):
+        return ForkPlan(
+            "no-callback",
+            speech=(_say(bank, "no-callback", values), _say(bank, "ask-confirm", values)),
+        )
+
     if _has(text, "which line", "what line", "which number", "what number"):
         return ForkPlan("which-line", speech=(_say(bank, "which-line", values),))
 
@@ -241,6 +275,10 @@ def match_fork(pack: MissionPack, remote: str, state: ForkState,
         if "watch" in current.label.lower():
             return ForkPlan("open-watch", speech=(_say(bank, "open-watch", values),))
         return ForkPlan("open-cancel", speech=(_say(bank, "open-cancel", values),))
+
+    if re.search(r"\brepresentative\b", text, re.IGNORECASE) and not re.search(
+            r"\bpress\b", text, re.IGNORECASE):
+        return ForkPlan("ivr-rep-failed", speech=(_say(bank, "ivr-something-else", values),))
 
     if dtmf.mode == "model-only":
         if _has(text, "cancel"):
@@ -281,6 +319,7 @@ def plan_session(session):
     state = ForkState(
         notes=list(getattr(session, "mission_notes", []) or []),
         supervisor=bool(getattr(session, "mission_supervisor", False)),
+        no_number_count=int(getattr(session, "mission_ivr_no_number", 0) or 0),
     )
     latest = next((turn.get("text", "") for turn in reversed(session.turns)
                    if turn.get("speaker") == "remote"), "")

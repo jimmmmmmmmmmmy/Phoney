@@ -23,8 +23,9 @@ python -m phoney_missions run tmobile-cancel --simulate
 `--simulate` feeds scripted remote utterances through a Deepgram-shaped final,
 mock Nemotron, and mock Phonon, and records DTMF on a fake dialer. Covered
 forks in `docs/missions/tmobile-cancel/CONVERSATION_TREE.md` are canned and do
-not call the model. Extra scenarios: `pin-missing`, `supervisor`,
-`cheaper-plan`, and `unpair-watch` in `tests/test_cancel_call.py`.
+not call the model. Each edge cites `docs/missions/tmobile-cancel/SOURCES.md`.
+Extra scenarios include `pin-missing`, `supervisor`, `cheaper-plan`,
+`unpair-watch`, `downgrade-trick`, `eip-blocks`, `no-callback`, and `ivr-route`.
 
 `scripts/mission_run.py` is the same CLI. `run` prepares, refreshes the local
 research cache, prints the plan, and dials only when `PHONEY_ALLOW_LIVE_CALL=1`

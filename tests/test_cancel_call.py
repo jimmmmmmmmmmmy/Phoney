@@ -110,6 +110,31 @@ def test_artificial_high_risk_forks_skip_the_model(monkeypatch):
     assert any(line.startswith("Unpair") for line in unpair.spoken)
 
 
+def test_artificial_research_trick_forks(monkeypatch):
+    """Research-backed traps. Still a fake dialer, and the model stays unused."""
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    trick = asyncio.run(run_artificial_call(scenario="downgrade-trick"))
+    assert trick.llm_calls == 0 and not trick.ended_reason
+    assert not any(note.get("kind") == "retention" for note in trick.notes)
+    assert any("other line" in line.lower() for line in trick.spoken)
+
+    blocked = asyncio.run(run_artificial_call(scenario="eip-blocks"))
+    assert blocked.llm_calls == 0
+    assert any("installment" in line.lower() for line in blocked.spoken)
+    assert any("supervisor" in line.lower() for line in blocked.spoken)
+
+    callback = asyncio.run(run_artificial_call(scenario="no-callback"))
+    assert callback.llm_calls == 0 and not callback.ended_reason
+    assert any("cancel it now" in line.lower() for line in callback.spoken)
+    assert any("confirmation number" in line.lower() for line in callback.spoken)
+
+    ivr = asyncio.run(run_artificial_call(scenario="ivr-route"))
+    assert ivr.llm_calls == 0 and ivr.dtmf_updates == 0
+    assert [line.lower() for line in ivr.spoken[:2]] == ["i don't have one.", "i don't have one."]
+    assert ivr.spoken[-1].lower() == "something else."
+
+
 def test_cancel_brief_allowlist_and_playbook():
     prompt = cancel_prompt(environ={})
     assert "252027408" in prompt

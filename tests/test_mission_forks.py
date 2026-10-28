@@ -18,6 +18,7 @@ REQUIRED = {
     "say-name", "say-pin", "say-ssn", "say-zip", "goodbye", "partial-close",
     "ivr-english", "ivr-no-number", "ivr-something-else", "ivr-cancel",
     "ivr-representative", "wrong-department", "supervisor", "unpair-watch", "watch-separate",
+    "broken-record", "no-other-line", "no-callback", "eip-still-cancel",
 }
 
 
@@ -89,8 +90,25 @@ def test_high_risk_forks_are_canned():
     assert again.hangup and again.decision == "partial-close"
     account = _plan("Please enter your account number.")
     assert account.digits == "252027408"
-    mobile = _plan("Enter or say your mobile number.")
-    assert mobile.digits == "7739882659"
+    mobile = _plan("Enter or say your mobile number, or say I don't have one.")
+    assert mobile.decision == "ivr-no-number" and mobile.speech[0] == "I don't have one."
+    mobile_again = _plan(
+        "I need the 10-digit mobile number, or say I don't have one.",
+        state=ForkState(no_number_count=1))
+    assert mobile_again.decision == "ivr-no-number"
+    mobile_digits = _plan("Enter your mobile number.", state=ForkState(no_number_count=2))
+    assert mobile_digits.digits == "7739882659"
+    trick = _plan("I can give you $20 a month for 12 months if I downgrade your other line.")
+    assert trick.decision == "decline-downgrade" and not trick.hangup and not trick.notes
+    assert any("other line" in line.lower() for line in trick.speech)
+    blocked = _plan("You can't cancel the watch because the EIP blocks it.")
+    assert blocked.decision == "eip-blocks" and blocked.supervisor
+    assert any("installment" in line.lower() for line in blocked.speech)
+    callback = _plan("Why don't you think about it and I will call you back?")
+    assert callback.decision == "no-callback" and not callback.hangup
+    assert any("confirmation number" in line.lower() for line in callback.speech)
+    reason = _plan("Why are you leaving?")
+    assert reason.decision == "no-reason" and "final" in reason.speech[0].lower()
     first = _plan(
         "The Apple Watch SE line 773-988-2659 is cancelled. "
         "Your confirmation number is AB12 and the effective date is 2026-11-15.")

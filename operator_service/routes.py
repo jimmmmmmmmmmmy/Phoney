@@ -1419,6 +1419,8 @@ class RelayOperatorController:
         self.trace(session.id, "canned-fork", decision=plan.decision)
         if plan.supervisor:
             session.mission_supervisor = True
+        if plan.decision == "ivr-no-number":
+            session.mission_ivr_no_number = int(getattr(session, "mission_ivr_no_number", 0) or 0) + 1
         if plan.silent:
             return True
         if plan.digits:

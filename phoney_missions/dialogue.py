@@ -28,6 +28,7 @@ class SimState:
     accepted: bool = False
     done: bool = False
     supervisor: bool = False
+    no_number_count: int = 0
 
 
 def _bank(pack: MissionPack) -> dict[str, str]:
@@ -71,6 +72,7 @@ def next_actions(pack: MissionPack, state: SimState, remote: str, *, secrets_con
         notes=[{"kind": "confirmation", **note} if "kind" not in note else note
                for note in state.confirmed.values()],
         supervisor=state.supervisor,
+        no_number_count=state.no_number_count,
     )
     plan = match_fork(pack, remote, fork, provided)
     actions: list[Action] = []
@@ -79,6 +81,8 @@ def next_actions(pack: MissionPack, state: SimState, remote: str, *, secrets_con
         return actions
     if plan.supervisor:
         state.supervisor = True
+    if plan.decision == "ivr-no-number":
+        state.no_number_count += 1
     if plan.silent:
         actions.append(Action("silent", decision=plan.decision))
         return actions

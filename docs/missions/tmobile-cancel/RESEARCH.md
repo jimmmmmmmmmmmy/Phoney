@@ -79,16 +79,28 @@ The agent still asks to cancel each named line. It does not assume a phone port 
 
 On this mission, prefer DTMF when the recording just offered a digit for a representative. If the menu asks for the mobile number, send that line's digits rather than a paragraph. Do not press a digit that would cancel every line or the whole account. Say "Something else." or "Cancel a line." only when no safe digit was offered. Each of those lines is one short utterance in `utterances.json`.
 
+## Source pack
+
+Full URLs, and which claims are unverified, are in [SOURCES.md](SOURCES.md).
+Official pages are S1 and S2. The October 2026 IVR recording is S3. Community
+and press reports S4–S12 are unverified. X is still the TODO above.
+
+Added from that pack, beyond the links already in this file:
+
+- <https://www.wirelessdealergroup.com/post/t-mobile-cancellation-tactics-anger-customers-aggressive-retention-strategy-makes-service-cancellat> — unverified: broken-record cancel, no callback, ask for the confirmation number, supervisor once.
+- <https://www.androidpolice.com/t-mobile-smartwatch-tablet-line-cancellation-difficulty/> — unverified: watch-line cancel often needs a call and a supervisor.
+- <https://www.phonearena.com/news/t-mobile-customers-spending-hours-trying-to-do-something-that-should-take-minutes_id174462> — unverified: refuse a cheaper-plan conversion.
+- <https://www.phonearena.com/news/reps-have-incentive-to-lie-when-you-cancel-service_id180362> — unverified: do not trust "it's canceled" without a confirmation number. This mission does not port out the whole account.
+- <https://www.reddit.com/r/tmobile/comments/1kgb1j8/retention_offers_for_cancelling_lines/> — unverified: ignore an "never again" scare.
+- <https://www.reddit.com/r/tmobile/comments/1jzsury/tmobile_reps_trick_customers_into_not_canceling/> — unverified: a credit that downgrades another line, and a false EIP-blocks-cancel claim.
+- <https://www.reddit.com/r/tmobile/comments/1ou1009/removing_a_lineshady_retention_department/> — unverified: ask for an end-of-cycle effective date.
+- <https://tmo.report/2023/03/leaked-document-shows-retention-promo-for-customers-thinking-of-leaving-t-mobile/> — unverified older retention-credit report.
+
 ## Conversation tree
 
-`CONVERSATION_TREE.md` is the fork map. `utterances.json` is one short sentence
-per spoken leaf. Covered forks are canned. The model is only for an unmatched
-menu. The same public sources above feed that map: T-Mobile's cancel and
-contact pages for timing, EIP, unpair, and the care number; the August 2025
-loyalty writeups for the $10/6 and $20/12 reports; the r/tmobile threads for
-watch lines that survive a phone port and for store or PIN trouble; and the
-call4.me recording for the "something else" and "I don't have one" menu path.
-X is still the TODO above. Do not treat any of this as a legal claim.
+`CONVERSATION_TREE.md` cites a source on every fork. `utterances.json` is one
+short sentence per spoken leaf. Covered forks are canned. The model is only
+for an unmatched menu. Do not treat community reports as legal claims.
 
 ## Spoken lines
 

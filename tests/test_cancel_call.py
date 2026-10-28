@@ -1,4 +1,8 @@
-"""T-Mobile cancel path: allowlist, DTMF on the existing call, local providers."""
+"""T-Mobile cancel path: allowlist, DTMF on the existing call, local providers.
+
+``test_artificial_cancel_and_retention_calls`` is the full scripted call.
+It uses a fake dialer and mock Phonon/Nemotron. It does not construct Twilio.
+"""
 
 import asyncio
 import json
@@ -18,6 +22,8 @@ from voice_stack.ivr import PlaybookEntry, default_playbook, suggest_dtmf, valid
 from voice_stack.local_providers import audio_to_ulaw, iter_reply_events, open_speech_session
 from voice_stack.settings import VoiceSettings
 
+from phoney_missions.artificial import run_artificial_call
+from phoney_missions.brevity import assert_spoken_budget
 from scripts.cancel_tmobile import describe_plan, live_call_block
 
 
@@ -49,6 +55,36 @@ class _Dialer:
     async def create_leg(self, **kwargs):
         self.created.append(kwargs)
         raise AssertionError("DTMF must not place a call")
+
+
+def test_artificial_cancel_and_retention_calls(monkeypatch):
+    """Scripted remote party, fake media, fake DTMF. No Twilio client and no dial."""
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    attended = asyncio.run(run_artificial_call(unattended=False))
+    assert attended.owner_dialed and attended.press_1 and not attended.unattended
+    assert attended.calls_created == 1
+
+    cancel = asyncio.run(run_artificial_call())
+    assert cancel.unattended and not cancel.owner_dialed and not cancel.press_1
+    assert cancel.calls_created == 1 and cancel.dtmf_updates == 1
+    assert cancel.destination == "+18009378997"
+    assert cancel.brief_has_cancel_facts
+    assert cancel.ended_reason == "agent-end-call"
+    assert {note["line"] for note in cancel.notes if note["kind"] == "confirmation"} == {
+        "7739882659", "3125452413"}
+    assert all(host == "127.0.0.1" for host in cancel.hosts)
+    assert cancel.spoken and all("DTMF" not in line and "NOTE" not in line for line in cancel.spoken)
+    for line in cancel.spoken:
+        assert_spoken_budget(line)
+
+    retention = asyncio.run(run_artificial_call(scenario="retention"))
+    assert retention.unattended and retention.dtmf_updates == 1
+    assert retention.notes[-1]["kind"] == "retention"
+    assert retention.notes[-1]["monthly_cents"] == 2000
+    assert not any(note["kind"] == "confirmation" for note in retention.notes)
+    for line in retention.spoken:
+        assert_spoken_budget(line)
 
 
 def test_cancel_brief_allowlist_and_playbook():

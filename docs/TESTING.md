@@ -6,10 +6,13 @@ Run the complete suite:
 .venv/bin/python -m pytest -q
 ```
 
-The suite contains **108 collected cases across 93 test functions**. Parametrized
-variants count toward the limit. The deployment supervisor runs this same suite,
-not a separate subset. The first local run after consolidation finished in
-15.5 seconds: 93 passed and three PostgreSQL cases skipped.
+The suite contains **121 collected cases**. Parametrized variants count toward
+the limit. The deployment supervisor runs this same suite, not a separate
+subset. Three PostgreSQL cases skip unless `PHONEY_TEST_DATABASE_URL` is set.
+The artificial T-Mobile mission call is
+`pytest tests/test_cancel_call.py::test_artificial_cancel_and_retention_calls`.
+It does not dial Twilio. The same path from the mission CLI is
+`python scripts/mission_run.py run tmobile-cancel --simulate`.
 
 | Area | Cases | Behaviors checked |
 | --- | ---: | --- |

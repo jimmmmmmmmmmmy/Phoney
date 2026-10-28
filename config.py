@@ -70,6 +70,9 @@ class Settings:
     modulate_detection_deadline_seconds: float = 45.0
     modulate_detection_min_confidence: float = 0.80
     modulate_detection_queue_frames: int = 250
+    # Exact "1" in the environment. Either flag alone keeps the owner press-1 gate.
+    phoney_unattended: bool = False
+    phoney_allow_live_call: bool = False
 
     def __post_init__(self):
         if type(self.native_conference_enabled) is not bool:
@@ -256,6 +259,8 @@ class Settings:
                    for path in (self.media_storage_dir, self.transcript_storage_dir,
                                 self.voicemail_storage_dir, self.call_details_storage_dir)):
                 raise ValueError("DETECTION_STORAGE_DIR must differ from other storage directories.")
+        if type(self.phoney_unattended) is not bool or type(self.phoney_allow_live_call) is not bool:
+            raise ValueError("PHONEY_UNATTENDED and PHONEY_ALLOW_LIVE_CALL must be true or false.")
         if self.modulate_detection_enabled:
             if not self.media_capture_enabled:
                 raise ValueError("Enable MEDIA_CAPTURE_ENABLED before live detection.")
@@ -390,4 +395,6 @@ class Settings:
             modulate_detection_deadline_seconds=float(os.getenv("MODULATE_DETECTION_DEADLINE_SECONDS", "45")),
             modulate_detection_min_confidence=float(os.getenv("MODULATE_DETECTION_MIN_CONFIDENCE", "0.80")),
             modulate_detection_queue_frames=int(os.getenv("MODULATE_DETECTION_QUEUE_FRAMES", "250")),
+            phoney_unattended=os.getenv("PHONEY_UNATTENDED", "").strip() == "1",
+            phoney_allow_live_call=os.getenv("PHONEY_ALLOW_LIVE_CALL", "").strip() == "1",
         )

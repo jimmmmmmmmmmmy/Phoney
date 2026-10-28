@@ -35,6 +35,10 @@ MAX_SESSION_TEXT = 100_000
 MAX_MESSAGE = 65_536
 KEEPALIVE_SECONDS = 3.0
 CONNECT_SECONDS = 5.0
+# Streaming STT budgets. 750 ms of silence ends a phrase; 1000 ms is the
+# UtteranceEnd fallback. These are the phone-call defaults.
+ENDPOINTING_MS = 750
+UTTERANCE_END_MS = 1000
 FLUSH_SECONDS = 10.0
 SEND_SECONDS = 3.0
 STORE_SECONDS = 5.0
@@ -443,7 +447,8 @@ class TranscriptionManager:
                 return
             params = {"model": self.model, "encoding": "mulaw", "sample_rate": 8000,
                       "channels": 1, "interim_results": "true", "smart_format": "true",
-                      "endpointing": 750, "utterance_end_ms": 1000, "vad_events": "true"}
+                      "endpointing": ENDPOINTING_MS, "utterance_end_ms": UTTERANCE_END_MS,
+                      "vad_events": "true"}
             url = "wss://api.deepgram.com/v1/listen?" + urlencode(params)
             async with self.connector(url, additional_headers={
                     "Authorization": "Token " + self.settings.deepgram_api_key},

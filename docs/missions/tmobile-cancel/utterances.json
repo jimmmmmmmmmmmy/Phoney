@@ -1,0 +1,22 @@
+{
+  "mission_id": "tmobile-cancel",
+  "brevity": "strict",
+  "lines": [
+    {"id": "open-cancel", "when": "person-opens", "kind": "default", "text": "I'd like to cancel the line ending in {line_last4}."},
+    {"id": "open-watch", "when": "watch-line", "kind": "default", "text": "Cancel the Apple Watch cellular line."},
+    {"id": "decline-offer", "when": "retention-below-policy", "kind": "default", "text": "I'm not interested in offers."},
+    {"id": "cancel-line", "when": "retention-below-policy", "kind": "default", "text": "Please cancel line {line_display}."},
+    {"id": "ask-confirm", "when": "after-cancel", "kind": "default", "text": "What is the confirmation number and effective date?"},
+    {"id": "readback", "when": "confirmation", "kind": "confirmation", "text": "Confirmed. Line {line_display}, confirmation {code}, effective {date}."},
+    {"id": "accept-retention", "when": "retention-meets-policy", "kind": "default", "text": "I'll accept the monthly credit instead of canceling."},
+    {"id": "need-holder", "when": "missing-secret", "kind": "default", "text": "I need the account holder on the line."},
+    {"id": "goodbye", "when": "done", "kind": "default", "text": "Thank you, goodbye."},
+    {"id": "ivr-no-number", "when": "ivr-number-prompt", "kind": "default", "text": "I don't have one."},
+    {"id": "ivr-something-else", "when": "ivr-menu", "kind": "default", "text": "Something else."},
+    {"id": "ivr-cancel", "when": "ivr-intent", "kind": "default", "text": "Cancel a line."},
+    {"id": "ivr-representative", "when": "ivr-wipe", "kind": "default", "text": "Representative."},
+    {"id": "supervisor", "when": "cancel-refused", "kind": "default", "text": "Please transfer me to a supervisor."},
+    {"id": "unpair-watch", "when": "watch-pairing", "kind": "default", "text": "Unpair that watch line before canceling it."},
+    {"id": "watch-separate", "when": "port-claim", "kind": "default", "text": "Please cancel the watch line too."}
+  ]
+}

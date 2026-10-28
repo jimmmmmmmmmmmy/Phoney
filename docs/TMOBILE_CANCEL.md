@@ -1,5 +1,26 @@
 # Cancel two T-Mobile lines from the Mac
 
+The reusable mission is `tmobile-cancel`. From the repo:
+
+```sh
+python -m phoney_missions check tmobile-cancel
+python scripts/mission_run.py prep tmobile-cancel
+```
+
+Artificial run, no Twilio dial:
+
+```sh
+pytest tests/test_cancel_call.py::test_artificial_cancel_and_retention_calls -q
+python scripts/mission_run.py run tmobile-cancel --simulate
+```
+
+`check`, `prep`, `research`, and `report` do not dial. `place-call` still
+requires `PHONEY_ALLOW_LIVE_CALL=1`, a loopback Phoney, and refuses `CI`.
+Set `PHONEY_UNATTENDED=1` as well only when the owner phone should not ring.
+See [phone missions](PHONE_MISSIONS.md) and the
+[post-#1 audit](ARCHITECTURE_AUDIT_PHONE_MISSIONS.md). Public tactics live in
+[docs/missions/tmobile-cancel](missions/tmobile-cancel/RESEARCH.md).
+
 Phoney places this call with Twilio. Deepgram still transcribes. When
 `VOICE_TTS_PROVIDER=phonon` and `AGENT_LLM_PROVIDER=nemotron`, speech comes from
 local Phonon 40m and replies come from local Nemotron. ElevenLabs and Gemini

@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import os
 import threading
 import time
 import inspect
@@ -39,9 +40,14 @@ from twilio.http.http_client import TwilioHttpClient
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse
 
-from voice_stack.cancel_agent import (CANCEL_AGENT_KIND, CANCEL_PROFILE,
-                                     cancel_prompt, cancel_snapshot_voice_id, is_cancel_goal)
+from voice_stack.cancel_agent import CANCEL_AGENT_KIND, CANCEL_PROFILE, cancel_snapshot_voice_id
 from voice_stack.ivr import load_playbook, suggest_dtmf
+from voice_stack.latency import REPLY_SETTLE_FINAL_SECONDS, REPLY_SETTLE_LEGACY_SECONDS
+from phoney_missions.bridge import (MISSION_AGENT_KIND, mission_id_for_goal, mission_title,
+                                   playbook_for_goal, public_prompt_for)
+from phoney_missions.gate import unattended_dial_permitted
+from phoney_missions.ivr_policy import account_wipe
+from phoney_missions.schema import MissionSchemaError
 from webhooks import require_sid, twilio_validator, valid_media_signature
 
 from .audio import CallRouter
@@ -68,6 +74,16 @@ STATUS_FETCH_SECONDS = 12.0
 RECONNECT_PAUSE_SECONDS = 8
 ACCEPT_DIGIT = "1"
 ACCEPT_PROMPT = "Press 1 to connect."
+
+
+def _parse_mission_note(payload: str) -> dict | None:
+    """``confirm:10digits:CODE:YYYY-MM-DD`` or ``retention:CENTS:MONTHS``."""
+    parts = payload.split(":")
+    if len(parts) == 4 and parts[0] == "confirm" and parts[1].isdigit() and len(parts[1]) == 10:
+        return {"kind": "confirmation", "line": parts[1], "confirmation": parts[2], "effective": parts[3]}
+    if len(parts) == 3 and parts[0] == "retention" and parts[1].isdigit():
+        return {"kind": "retention", "monthly_cents": int(parts[1]), "months": parts[2]}
+    return None
 def leg_twiml(public_base: str, session_id: str, role: str, generation: int, token: str,
               *, digits: str | None = None, prompt: str | None = None) -> str:
     """Inline stream TwiML for one leg, with a recovery redirect when it ends.
@@ -638,14 +654,44 @@ class RelayOperatorController:
 
     # ----------------------------------------------------------------- call flow
 
+    def _mission_gate_env(self) -> dict:
+        env = {
+            "PHONEY_UNATTENDED": "1" if getattr(self.settings, "phoney_unattended", False) else "",
+            "PHONEY_ALLOW_LIVE_CALL": "1" if getattr(self.settings, "phoney_allow_live_call", False) else "",
+        }
+        for name in ("CI", "GITHUB_ACTIONS"):
+            if os.environ.get(name):
+                env[name] = os.environ[name]
+        return env
+
+    def _mission_dial_mode(self, to, goal) -> str:
+        """``unattended`` skips press 1. Anything else rings the owner."""
+        mission = mission_id_for_goal(goal)
+        if not mission:
+            return "owner"
+        try:
+            from phoney_missions.schema import load_pack
+            pack = load_pack(mission)
+        except MissionSchemaError:
+            raise OperatorRejected("unknown-mission") from None
+        if pack.destination_e164 != str(to or "").strip():
+            raise OperatorRejected("mission-destination-mismatch")
+        permitted, _reason = unattended_dial_permitted(self._mission_gate_env(), mission=True)
+        return "unattended" if permitted else "attended"
+
     async def start_outbound(self, to, goal, idempotency_key, *, browser_allowed=True,
                              browser_requested=False):
         """Reserve the session, let the API answer, then dial in a tracked task."""
+        mode = self._mission_dial_mode(to, goal)
         session, reused = await self.store.reserve_outbound(
             to, goal, idempotency_key, voice_id=self.voice_id, browser_allowed=browser_allowed,
             browser_requested=browser_requested)
         if not reused and not session.browser_audio:
-            self.store.spawn(self._dial_owner(session.id))
+            if mode == "unattended":
+                session.mission_id = mission_id_for_goal(goal) or ""
+                self.store.spawn(self._dial_unattended_remote(session.id))
+            else:
+                self.store.spawn(self._dial_owner(session.id))
         return session, reused
 
     async def start_inbound(self, call_sid, caller, call_token=""):
@@ -700,6 +746,17 @@ class RelayOperatorController:
                           leg.generation, leg.token,
                           prompt=ACCEPT_PROMPT if session.direction == "outbound" else None)
         await self._dial(session_id, OWNER, leg.destination, twiml)
+
+    async def _dial_unattended_remote(self, session_id: str):
+        """Dial the destination without ringing the owner. Missions only."""
+        session = self.store.find(session_id)
+        if session is None:
+            return
+        mission_id = getattr(session, "mission_id", "") or mission_id_for_goal(session.goal) or ""
+        if not await self.store.begin_unattended_remote(session_id, mission_id):
+            return
+        self.trace(session_id, "mission-unattended-dial", mission=mission_id)
+        await self._dial_remote(session_id)
 
     async def _dial_remote(self, session_id: str):
         session = self.store.sessions.get(session_id)
@@ -1199,7 +1256,9 @@ class RelayOperatorController:
                     and session.agent_snapshot is not None):
                 if speech_final is True:
                     self.trace(session_id, "caller-turn-ended", boundary_ms=turn_end_ms)
-                self._schedule_reply(session_id, delay=0.1 if speech_final is True else 0.3)
+                self._schedule_reply(
+                    session_id,
+                    delay=REPLY_SETTLE_FINAL_SECONDS if speech_final is True else REPLY_SETTLE_LEGACY_SECONDS)
         elif speaker == REMOTE and session.voicemail:
             vm = self._voicemail_agents.get(session_id)
             if vm is not None:
@@ -1268,22 +1327,38 @@ class RelayOperatorController:
             self._ivr_playbook = load_playbook()
         return self._ivr_playbook
 
-    def _maybe_cancel_takeover(self, session_id):
-        """Start the T-Mobile cancel agent once, after the destination answers.
+    def ivr_playbook_for(self, session):
+        mission = getattr(session, "mission_id", "") or mission_id_for_goal(getattr(session, "goal", ""))
+        if not mission:
+            return self.ivr_playbook()
+        try:
+            return playbook_for_goal(session.goal)
+        except MissionSchemaError:
+            return self.ivr_playbook()
 
-        The owner still has to press 1 before the remote leg is dialed. This
-        does not speak over the first menu; it listens until T-Mobile talks.
+    def _mission_legs_ready(self, session) -> bool:
+        router = self.router(session.id)
+        if getattr(session, "unattended", False):
+            return router.attached(REMOTE)
+        return all(router.attached(role) for role in ROLES)
+
+    def _maybe_cancel_takeover(self, session_id):
+        """Start a phone mission once, after the destination answers.
+
+        Attended missions still wait for owner press 1 before the remote leg
+        is dialed. Unattended missions have no owner leg. The agent listens
+        until the destination talks.
         """
         session = self.store.find(session_id)
+        mission = mission_id_for_goal(session.goal) if session is not None else None
         if (session is None or session.direction != "outbound" or session.native_conference
-                or not is_cancel_goal(session.goal) or session_id in self._cancel_consumed
+                or not mission or session_id in self._cancel_consumed
                 or session.phase != CONNECTED or session.mode != HUMAN):
             return
         if not self.delegate_ready:
             self.trace(session_id, "cancel-agent-skipped", reason="voice-not-ready")
             return
-        router = self.router(session_id)
-        if not all(router.attached(role) for role in ROLES):
+        if not self._mission_legs_ready(session):
             return
         self._cancel_consumed.add(session_id)
         request_id = self._takeover_requests.get(session_id, 0) + 1
@@ -1305,13 +1380,14 @@ class RelayOperatorController:
                     voice_id = ""
             if not voice_id:
                 raise OperatorRejected("voice-not-ready")
+            mission = mission_id_for_goal(session.goal) or "mission"
             snapshot = AgentSnapshot(
-                "internal-cancel-tmobile", "T-Mobile cancel", cancel_prompt(), 1,
+                "internal-" + mission, mission_title(session.goal), public_prompt_for(session.goal), 1,
                 None, voice_id, None)
             if not current():
                 return False
             router = self.router(session_id)
-            if session.phase != CONNECTED or not all(router.attached(role) for role in ROLES):
+            if session.phase != CONNECTED or not self._mission_legs_ready(session):
                 raise OperatorRejected("call-not-connected")
             await self.store.select_profile(session_id, CANCEL_PROFILE, mode=AGENT)
             if not current():
@@ -1320,7 +1396,8 @@ class RelayOperatorController:
             session.agent_snapshot = snapshot
             session.agent_name = snapshot.name
             session.voice_id = snapshot.voice_id
-            session.agent_kind = CANCEL_AGENT_KIND
+            session.agent_kind = MISSION_AGENT_KIND
+            session.mission_id = mission
             self._accepted_takeovers[session_id] = request_id
             self._agent_reply_counts[session_id] = 0
             self.trace(session_id, "cancel-agent-listening", agent_revision=snapshot.revision)
@@ -1333,16 +1410,37 @@ class RelayOperatorController:
 
     async def _maybe_playbook_dtmf(self, session) -> bool:
         """Send a playbook digit and skip a spoken reply when the menu was explicit."""
-        if getattr(session, "agent_kind", "") != CANCEL_AGENT_KIND:
+        if getattr(session, "agent_kind", "") not in {CANCEL_AGENT_KIND, MISSION_AGENT_KIND}:
             return False
         latest = next((turn.get("text", "") for turn in reversed(session.turns)
                        if turn.get("speaker") == REMOTE), "")
-        digits = suggest_dtmf(latest, self.ivr_playbook())
+        if account_wipe(latest):
+            self.trace(session.id, "dtmf-blocked", reason="account-wipe")
+            return False
+        digits = suggest_dtmf(latest, self.ivr_playbook_for(session))
         if not digits:
             return False
         self.trace(session.id, "ivr-playbook-dtmf", count=len(digits))
         await self._queue_ivr(session.id, digits)
         return True
+
+    def record_mission_note(self, session_id: str, payload: str) -> None:
+        """Store a confirmation or retention note. Drop anything that contains a secret."""
+        session = self.store.find(session_id)
+        if session is None or not isinstance(payload, str):
+            return
+        from phoney_missions.secrets import Secret
+        note = _parse_mission_note(payload)
+        if note is None:
+            self.trace(session_id, "mission-note-rejected")
+            return
+        blob = " ".join(str(value) for value in note.values())
+        for name in ("CANCEL_ACCOUNT_PIN", "CANCEL_SSN_LAST4"):
+            if Secret(name, os.environ.get(name, "")).leaked_into(blob):
+                self.trace(session_id, "mission-note-rejected", reason="secret")
+                return
+        session.mission_notes.append(note)
+        self.trace(session_id, "mission-note", kind=str(note.get("kind", ""))[:40])
 
     async def send_ivr(self, session_id: str, digits: str):
         """Send digits on the live remote call. Raises when the call cannot play them."""

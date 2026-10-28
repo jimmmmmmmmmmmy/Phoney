@@ -40,7 +40,7 @@ END_CALL = "[/END CALL]"
 
 # The fixed half of the instruction. A selected mode appends its own goal and
 # boundaries after this text rather than replacing the delegate rules.
-from .ivr import DTMF_LINE
+from .ivr import DTMF_LINE, NOTE_LINE
 from .prompts import SHARED_PHONE_INSTRUCTION, reply_progress_instruction
 
 DELEGATE_INSTRUCTION = SHARED_PHONE_INSTRUCTION
@@ -415,7 +415,8 @@ def _held_marker(pending: str) -> str | None:
         return "commit-end"
     end_hold = END_CALL.startswith(pending) or pending == END_CALL + "\r"
     dtmf_open = "[/DTMF"
-    if end_hold and dtmf_open.startswith(pending):
+    note_open = "[/NOTE"
+    if end_hold and (dtmf_open.startswith(pending) or note_open.startswith(pending)):
         return "either"
     if end_hold:
         return "end"
@@ -426,6 +427,13 @@ def _held_marker(pending: str) -> str | None:
             return "commit-dtmf"
         if pending.endswith("\n"):
             return "drop-dtmf"
+    if note_open.startswith(pending) or pending.startswith("[/NOTE"):
+        if "\n" not in pending and len(pending) < 200:
+            return "note"
+        if NOTE_LINE.fullmatch(pending.strip()):
+            return "commit-note"
+        if pending.endswith("\n"):
+            return "drop-note"
     return None
 
 
@@ -443,6 +451,7 @@ class ReplyCommandBuffer:
     def __init__(self):
         self.end_call = False
         self.dtmf: list[str] = []
+        self.notes: list[str] = []
         self._pending = ""
         self._ordinary = False
         self._line = ""
@@ -453,6 +462,10 @@ class ReplyCommandBuffer:
     def _remember_dtmf(self, digits: str) -> None:
         if len(self.dtmf) < 3:
             self.dtmf.append(digits)
+
+    def _remember_note(self, payload: str) -> None:
+        if len(self.notes) < 6:
+            self.notes.append(payload)
 
     def feed(self, text: str) -> str:
         if not isinstance(text, str):
@@ -474,9 +487,13 @@ class ReplyCommandBuffer:
                     match = DTMF_LINE.fullmatch(candidate.strip())
                     self._remember_dtmf(match.group(1))
                     self._pending = ""
-                elif kind == "drop-dtmf":
+                elif kind == "commit-note":
+                    match = NOTE_LINE.fullmatch(candidate.strip())
+                    self._remember_note(match.group(1))
                     self._pending = ""
-                elif kind in {"end", "dtmf", "either"}:
+                elif kind in {"drop-dtmf", "drop-note"}:
+                    self._pending = ""
+                elif kind in {"end", "dtmf", "note", "either"}:
                     self._pending = candidate
                 else:
                     output.append(candidate)
@@ -499,6 +516,8 @@ class ReplyCommandBuffer:
             self._commands += 1
         elif DTMF_LINE.fullmatch(self._pending.strip()):
             self._remember_dtmf(DTMF_LINE.fullmatch(self._pending.strip()).group(1))
+        elif NOTE_LINE.fullmatch(self._pending.strip()):
+            self._remember_note(NOTE_LINE.fullmatch(self._pending.strip()).group(1))
         self._pending = ""
         self.end_call = self._commands == 1 and not self._trailing_text
 

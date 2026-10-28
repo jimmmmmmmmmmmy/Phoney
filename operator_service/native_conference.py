@@ -22,6 +22,7 @@ from twilio.base.exceptions import TwilioRestException
 from webhooks import require_sid, valid_media_signature
 
 from .browser_voice import browser_voice_identity
+from phoney_missions.bridge import mission_id_for_goal
 from voice_stack.audio import FRAME_MS, iter_frames
 from .codecs import decode_payload
 from .audio import CallRouter, MAX_BAD_MESSAGES, MAX_MESSAGE_BYTES
@@ -247,9 +248,17 @@ class NativeConferenceMixin:
 
     async def start_outbound(self, to, goal, idempotency_key, *, browser_allowed=True,
                              browser_requested=False):
+        mode = self._mission_dial_mode(to, goal)
         session, reused = await self.store.reserve_outbound(to, goal, idempotency_key,
             voice_id=self.voice_id, browser_allowed=browser_allowed, browser_requested=browser_requested)
         if not reused:
+            if mode == "unattended" and not session.browser_audio:
+                # Unattended missions stay on the two-leg relay. The native
+                # conference pilot still requires the owner accept menu.
+                session.native_conference = False
+                session.mission_id = mission_id_for_goal(goal) or ""
+                self.store.spawn(self._dial_unattended_remote(session.id))
+                return session, reused
             session.native_conference = bool(getattr(self.settings,
                 "browser_voice_enabled" if session.browser_audio else "native_conference_enabled", False))
             if session.native_conference and session.browser_audio:

@@ -1,0 +1,80 @@
+{
+  "id": "tmobile-cancel",
+  "version": 1,
+  "title": "T-Mobile cancel or lasting bill cut",
+  "destination": {"e164": "+18009378997", "display": "1-800-937-8997"},
+  "goal_key": "mission:tmobile-cancel",
+  "aliases": [
+    "cancel-tmobile",
+    "Cancel only the two named T-Mobile lines, confirm each one, and leave every other line active."
+  ],
+  "spoken_goal": "Cancel the named lines, or accept a lasting bill cut that meets policy.",
+  "identity": {
+    "account_name": "James",
+    "account_number": "252027408",
+    "lines": [
+      {"digits": "7739882659", "label": "Apple Watch SE"},
+      {"digits": "3125452413", "label": "BYOD mobile"}
+    ],
+    "env": {
+      "account_name": "CANCEL_ACCOUNT_NAME",
+      "account_number": "CANCEL_ACCOUNT_NUMBER",
+      "lines": "CANCEL_LINES"
+    }
+  },
+  "secrets": {
+    "pin": {"env": "CANCEL_ACCOUNT_PIN"},
+    "ssn_last4": {"env": "CANCEL_SSN_LAST4"}
+  },
+  "constraints": [
+    "Do not cancel any line other than the named lines, including Beata's.",
+    "Never invent a PIN, passcode, or SSN.",
+    "Never collect or log an account password."
+  ],
+  "brevity": "strict",
+  "policy": {
+    "prefer": "cancel_lines",
+    "retention": {
+      "accept_if": "lasting_bill_cut",
+      "min_monthly_reduction_cents": 2000,
+      "min_months": 12,
+      "decline_one_time_credits": true
+    },
+    "forbidden": ["cancel_other_lines", "invent_secrets", "whole_account_cancel", "log_password"]
+  },
+  "tools": ["speak", "dtmf", "hangup", "note_confirmation"],
+  "brief_template": "You are calling {destination_display} for {account_name}, account number {account_number}. Act only on: {lines}. Do not cancel any other line on the account. Other household lines, including Beata's, must stay active. A menu is not the representative.",
+  "ivr": {
+    "entries": [
+      {
+        "id": "representative",
+        "phrases": ["representative", "customer care", "speak to an agent", "speak with a representative", "speak to a representative", "operator"],
+        "auto": true,
+        "priority": 0
+      },
+      {
+        "id": "something-else",
+        "phrases": ["something else"],
+        "auto": false,
+        "priority": 1
+      },
+      {
+        "id": "account-changes",
+        "phrases": ["account change", "account changes", "change a line", "manage line", "manage your line", "make a change"],
+        "auto": false,
+        "priority": 2
+      },
+      {
+        "id": "cancel-line",
+        "phrases": ["cancel a line", "cancel the line", "disconnect a line", "cancel service", "disconnect service"],
+        "auto": false,
+        "priority": 3
+      }
+    ]
+  },
+  "research": {
+    "document": "docs/missions/tmobile-cancel/RESEARCH.md",
+    "utterances": "docs/missions/tmobile-cancel/utterances.json",
+    "x_refresh_after": "2026-10-29T00:00:00Z"
+  }
+}

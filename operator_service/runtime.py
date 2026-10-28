@@ -16,7 +16,10 @@ import httpx
 
 from voice_stack.agent import (Conversation, GeminiError, ReplyCommandBuffer, SentenceBuffer)
 from voice_stack.audio import FRAME_BYTES, iter_frames
-from voice_stack.cancel_agent import CANCEL_AGENT_KIND, CANCEL_SPOKEN_GOAL, cancel_runtime_instruction
+from voice_stack.cancel_agent import CANCEL_AGENT_KIND
+from phoney_missions.bridge import MISSION_AGENT_KIND, brevity_for_goal, runtime_instruction_for, spoken_goal_for
+from phoney_missions.brevity import fit_spoken_phrase
+from phoney_missions.ivr_policy import account_wipe
 from voice_stack.local_providers import LocalProviderError, iter_reply_events, open_speech_session, synthesize_ulaw
 from voice_stack.tts import SpeechSession, TTSError, speech
 from voice_stack.prompts import (VOICEMAIL_GREETING,
@@ -154,6 +157,7 @@ class DialogueRun:
         self.phrases_ended = False
         self.synthesis_sequence = 0
         self.pending_dtmf = []
+        self.pending_notes = []
         self.voicemail_phase = getattr(session, "voicemail_phase", "greeting")
         self.voicemail = getattr(session, "voicemail", False)
         self.bounded_replies = getattr(session, "agent_kind", "manual") == "ai-detected"
@@ -191,11 +195,11 @@ class DialogueRun:
             instruction = (voicemail_phase_instruction(self.voicemail_phase) if self.voicemail
                            else three_reply_phase_instruction(self.reply_number) if self.bounded_replies else "")
             goal = self.session.goal
-            if getattr(self.session, "agent_kind", "") == CANCEL_AGENT_KIND:
-                goal = CANCEL_SPOKEN_GOAL
-                loader = getattr(self.controller, "ivr_playbook", None)
-                instruction = cancel_runtime_instruction(
-                    playbook=loader() if loader is not None else None)
+            if getattr(self.session, "agent_kind", "") in {CANCEL_AGENT_KIND, MISSION_AGENT_KIND}:
+                goal = spoken_goal_for(self.session.goal)
+                loader = getattr(self.controller, "ivr_playbook_for", None)
+                book = loader(self.session) if loader is not None else None
+                instruction = runtime_instruction_for(self.session.goal, playbook=book)
             conversation = Conversation.handoff(context,
                 goal=goal, boundaries=self.snapshot.prompt,
                 agent_reply_number=self.reply_number, announcement_provided=not self.voicemail,
@@ -208,9 +212,21 @@ class DialogueRun:
                 self.producer = asyncio.create_task(self._produce(http, conversation))
                 await self._deliver_phrases(http)
                 await self.producer
+                for note in self.pending_notes:
+                    if not self.current():
+                        break
+                    recorder = getattr(self.controller, "record_mission_note", None)
+                    if recorder is not None:
+                        recorder(self.session.id, note)
+                latest_remote = next(
+                    (text for speaker, text in reversed(self.context) if speaker == "remote"), "")
                 for digits in self.pending_dtmf:
                     if not self.current():
                         break
+                    if (getattr(self.session, "agent_kind", "") in {CANCEL_AGENT_KIND, MISSION_AGENT_KIND}
+                            and account_wipe(latest_remote)):
+                        self.trace("dtmf-blocked", reason="account-wipe")
+                        continue
                     await self.controller._queue_ivr(self.session.id, digits)
                 if self.pending_dtmf:
                     self.end_requested = False
@@ -380,7 +396,7 @@ class DialogueRun:
         self.stage = "first-phrase"
         first = await self._next_phrase()
         if first is None:
-            if not (self.pending_dtmf or self.end_requested or self.end_deferred):
+            if not (self.pending_dtmf or self.pending_notes or self.end_requested or self.end_deferred):
                 raise ValueError("Empty agent reply")
             return None, None, None
         self.stage = "first-audio"
@@ -442,6 +458,24 @@ class DialogueRun:
         self.trace("announcement-audio-ready", duration_ms=int((time.monotonic()-started)*1000))
         return audio
 
+    async def _emit_canned(self, text: str):
+        """Play one tree-chosen reply. The model is not called."""
+        buffer = SentenceBuffer()
+        commands = ReplyCommandBuffer()
+        spoken = commands.feed(text)
+        for phrase in buffer.feed(spoken):
+            if phrase.strip():
+                await self.phrases.put(phrase)
+        commands.finish()
+        self.pending_dtmf = list(commands.dtmf)
+        self.pending_notes = list(commands.notes)
+        self.end_requested = commands.end_call and not self.pending_dtmf
+        trailing = buffer.flush()
+        if trailing and trailing.strip():
+            await self.phrases.put(trailing)
+        await self.phrases.put(None)
+        self.trace("canned-reply", end_requested=self.end_requested)
+
     async def _produce(self, http, conversation):
         if self.voicemail and self.voicemail_phase == "greeting":
             # A known invitation does not need to wait for Gemini. Keep the
@@ -450,6 +484,11 @@ class DialogueRun:
             self.trace("voicemail-fixed-greeting")
             await self.phrases.put(VOICEMAIL_GREETING)
             await self.phrases.put(None)
+            return
+        canned = getattr(self.session, "canned_reply", "") or ""
+        if canned:
+            self.session.canned_reply = ""
+            await self._emit_canned(canned)
             return
         # Preserve complete sentences in live speech. Voicemail keeps its
         # smaller bound for concise recaps; both paths protect numbers/times.
@@ -512,6 +551,7 @@ class DialogueRun:
             return
         commands.finish()
         self.pending_dtmf = list(commands.dtmf)
+        self.pending_notes = list(commands.notes)
         self.end_requested = commands.end_call and not self.pending_dtmf
         trailing = buffer.flush()
         if trailing:
@@ -531,7 +571,8 @@ class DialogueRun:
             return None
         # Prepare short adjacent sentences together for continuous prosody.
         # Long responses retain streaming and the next-phrase prefetch limit.
-        if (not self.voicemail and self.voice.elevenlabs_model.startswith(("eleven_v3", "eleven_v4"))
+        if (not self._strict_brevity() and not self.voicemail
+                and self.voice.elevenlabs_model.startswith(("eleven_v3", "eleven_v4"))
                 and len(phrase) < COALESCE_CHARS):
             if not self.producer.done():
                 await asyncio.wait((self.producer,), timeout=COALESCE_SECONDS)
@@ -544,7 +585,28 @@ class DialogueRun:
                     self.held_phrase = following
                     break
                 phrase += " " + following
+        if self._strict_brevity():
+            phrase = fit_spoken_phrase(phrase)
+        if getattr(self.session, "agent_kind", "") in {CANCEL_AGENT_KIND, MISSION_AGENT_KIND}:
+            phrase = self._hold_cover(phrase)
         return phrase
+
+    def _hold_cover(self, phrase: str) -> str:
+        from phoney_missions.persona import hold_cover
+        fallback = "Please cancel that line."
+        try:
+            from phoney_missions.bridge import load_for_goal
+            pack = load_for_goal(self.session.goal)
+            if pack.lines:
+                fallback = f"Please cancel line {pack.lines[0].display}."
+        except Exception:
+            pass
+        return hold_cover(phrase, fallback)
+
+    def _strict_brevity(self) -> bool:
+        if getattr(self.session, "agent_kind", "") not in {CANCEL_AGENT_KIND, MISSION_AGENT_KIND}:
+            return False
+        return brevity_for_goal(getattr(self.session, "goal", "")) == "strict"
 
     async def _next_raw_phrase(self):
         # A producer exception must wake a consumer waiting on an empty queue.

@@ -190,6 +190,12 @@ class OperatorSession:
     remote_dtmf_pending: bool = False
     dtmf_sends: int = 0
     agent_snapshot: object = field(default=None, repr=False)
+    unattended: bool = False
+    mission_id: str = ""
+    mission_notes: list = field(default_factory=list, repr=False)
+    mission_supervisor: bool = False
+    mission_ivr_no_number: int = 0
+    canned_reply: str = field(default="", repr=False)
     legs: dict[str, SessionLeg] = field(default_factory=dict, repr=False)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
@@ -210,7 +216,10 @@ class OperatorSession:
                 "goal": self.goal[:MAX_GOAL_CHARS], "phase": self.phase, "mode": self.mode,
                 "profile": self.profile, "reply_epoch": self.reply_epoch,
                 "canonical_call_sid": self.canonical_call_sid, "agent_name": self.agent_name,
-                "agent_kind": self.agent_kind, "voicemail": self.voicemail,
+                "agent_kind": self.agent_kind, "unattended": self.unattended,
+                "mission_id": self.mission_id,
+                "mission_notes": [dict(note) for note in self.mission_notes[-20:]],
+                "voicemail": self.voicemail,
                 "voicemail_phase": self.voicemail_phase, "voicemail_fallback": self.voicemail_fallback,
                 "created_at": self.created_at, "elapsed_ms": int((now - self.created) * 1000),
                 "setup_deadline_ms": (int((self.deadline - self.created) * 1000)
@@ -507,6 +516,26 @@ class OperatorSessions:
                 return False
             session.phase = REMOTE_SETUP
             self._cancel(session_id, "owner_accept")
+            self._arm(session_id, "remote_setup", "remote-unavailable")
+            return True
+
+    async def begin_unattended_remote(self, session_id, mission_id: str) -> bool:
+        """Dial the destination from RESERVED. The owner phone is not rung."""
+        async with self._lock:
+            session = self._require(session_id)
+            if (session.browser_audio or session.phase != RESERVED or not mission_id
+                    or not session.legs[REMOTE].usable()):
+                return False
+            owner = session.legs[OWNER]
+            owner.ended = True
+            owner.state = LEG_ENDED
+            owner.token = ""
+            owner.token_used = True
+            owner.uncertain = False
+            session.unattended = True
+            session.mission_id = str(mission_id)[:80]
+            session.phase = REMOTE_SETUP
+            self._cancel(session_id, "owner_ring")
             self._arm(session_id, "remote_setup", "remote-unavailable")
             return True
 

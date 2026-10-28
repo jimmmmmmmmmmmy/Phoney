@@ -1,4 +1,8 @@
-"""T-Mobile cancel path: allowlist, DTMF on the existing call, local providers."""
+"""T-Mobile cancel path: allowlist, DTMF on the existing call, local providers.
+
+``test_artificial_cancel_and_retention_calls`` is the full scripted call.
+It uses a fake dialer and mock Phonon/Nemotron. It does not construct Twilio.
+"""
 
 import asyncio
 import json
@@ -18,6 +22,8 @@ from voice_stack.ivr import PlaybookEntry, default_playbook, suggest_dtmf, valid
 from voice_stack.local_providers import audio_to_ulaw, iter_reply_events, open_speech_session
 from voice_stack.settings import VoiceSettings
 
+from phoney_missions.artificial import run_artificial_call
+from phoney_missions.brevity import assert_spoken_budget
 from scripts.cancel_tmobile import describe_plan, live_call_block
 
 
@@ -51,12 +57,101 @@ class _Dialer:
         raise AssertionError("DTMF must not place a call")
 
 
+def test_artificial_cancel_and_retention_calls(monkeypatch):
+    """Scripted remote party, fake media, fake DTMF. No Twilio client and no dial."""
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    attended = asyncio.run(run_artificial_call(unattended=False))
+    assert attended.owner_dialed and attended.press_1 and not attended.unattended
+    assert attended.calls_created == 1
+
+    cancel = asyncio.run(run_artificial_call())
+    assert cancel.unattended and not cancel.owner_dialed and not cancel.press_1
+    assert cancel.calls_created == 1 and cancel.dtmf_updates == 1
+    assert cancel.destination == "+18009378997"
+    assert cancel.brief_has_cancel_facts
+    assert cancel.ended_reason == "agent-end-call"
+    assert {note["line"] for note in cancel.notes if note["kind"] == "confirmation"} == {
+        "7739882659", "3125452413"}
+    assert all(host == "127.0.0.1" for host in cancel.hosts)
+    assert cancel.spoken and all("DTMF" not in line and "NOTE" not in line for line in cancel.spoken)
+    for line in cancel.spoken:
+        assert_spoken_budget(line)
+
+    retention = asyncio.run(run_artificial_call(scenario="retention"))
+    assert retention.unattended and retention.dtmf_updates == 1
+    assert retention.notes[-1]["kind"] == "retention"
+    assert retention.notes[-1]["monthly_cents"] == 2000
+    assert not any(note["kind"] == "confirmation" for note in retention.notes)
+    for line in retention.spoken:
+        assert_spoken_budget(line)
+
+
+def test_artificial_high_risk_forks_skip_the_model(monkeypatch):
+    """Covered forks speak canned lines. The fake model is not called and Twilio is not dialed."""
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    pin = asyncio.run(run_artificial_call(scenario="pin-missing"))
+    assert pin.llm_calls == 0 and pin.ended_reason == "agent-end-call"
+    assert any("call back" in line.lower() for line in pin.spoken)
+    assert not any("account holder" in line.lower() for line in pin.spoken)
+    assert pin.notes and pin.notes[0]["kind"] == "blocked"
+    assert pin.calls_created == 1 and all(host == "127.0.0.1" for host in pin.hosts)
+
+    supervisor = asyncio.run(run_artificial_call(scenario="supervisor"))
+    assert supervisor.llm_calls == 0 and supervisor.ended_reason == "agent-end-call"
+    assert any("supervisor" in line.lower() for line in supervisor.spoken)
+    assert any("could not be canceled" in line.lower() for line in supervisor.spoken)
+
+    cheaper = asyncio.run(run_artificial_call(scenario="cheaper-plan"))
+    assert cheaper.llm_calls == 0
+    assert any("no plan change" in line.lower() for line in cheaper.spoken)
+
+    unpair = asyncio.run(run_artificial_call(scenario="unpair-watch"))
+    assert unpair.llm_calls == 0
+    assert any(line.startswith("Unpair") for line in unpair.spoken)
+
+
+def test_artificial_research_trick_forks(monkeypatch):
+    """Research-backed traps. Still a fake dialer, and the model stays unused."""
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    trick = asyncio.run(run_artificial_call(scenario="downgrade-trick"))
+    assert trick.llm_calls == 0 and not trick.ended_reason
+    assert not any(note.get("kind") == "retention" for note in trick.notes)
+    assert any("other line" in line.lower() for line in trick.spoken)
+
+    blocked = asyncio.run(run_artificial_call(scenario="eip-blocks"))
+    assert blocked.llm_calls == 0
+    assert any("installment" in line.lower() for line in blocked.spoken)
+    assert any("supervisor" in line.lower() for line in blocked.spoken)
+
+    callback = asyncio.run(run_artificial_call(scenario="no-callback"))
+    assert callback.llm_calls == 0 and not callback.ended_reason
+    assert any("cancel it now" in line.lower() for line in callback.spoken)
+    assert any("confirmation number" in line.lower() for line in callback.spoken)
+
+    ivr = asyncio.run(run_artificial_call(scenario="ivr-route"))
+    assert ivr.llm_calls == 0
+    assert any('digits="7739882659"' in twiml for twiml in ivr.dtmf_markup)
+    assert ivr.spoken[-1].lower() == "something else."
+
+    reveal = asyncio.run(run_artificial_call(scenario="reveal"))
+    assert reveal.llm_calls == 0 and reveal.cover_held
+    assert any("James Liu" in line for line in reveal.spoken)
+    otp = asyncio.run(run_artificial_call(scenario="otp"))
+    assert otp.ended_reason == "agent-end-call" and otp.notes[0]["reason"] == "verification"
+    assert any("call back" in line.lower() for line in otp.spoken)
+
+
 def test_cancel_brief_allowlist_and_playbook():
     prompt = cancel_prompt(environ={})
     assert "252027408" in prompt
     assert "773-988-2659" in prompt and "312-545-2413" in prompt
     assert "Beata" in prompt
-    assert "need the account holder" in prompt
+    assert "James Liu" in prompt
+    assert "first person" in prompt
+    assert "account holder on the line" not in prompt
     assert "PIN 1234" not in prompt and "SSN last four 1234" not in prompt
     assert len(CANCEL_GOAL_KEY) < 300
     store = OperatorSessions(_settings())

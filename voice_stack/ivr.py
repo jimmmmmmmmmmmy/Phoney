@@ -21,6 +21,7 @@ log = logging.getLogger("uvicorn.error")
 DTMF_CHARS = frozenset("0123456789ABCD*#wW")
 MAX_DTMF_CHARS = 32
 DTMF_LINE = re.compile(r"\[/DTMF ([0-9A-D*#wW]{1,32})\]\Z")
+NOTE_LINE = re.compile(r"\[/NOTE ([A-Za-z0-9:._-]{1,160})\]\Z")
 
 _PRESS = re.compile(
     r"\bpress\s+(?:the\s+)?(\d|star|pound|zero|oh|one|two|three|four|five|six|seven|eight|nine)\b"

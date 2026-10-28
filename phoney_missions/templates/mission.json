@@ -1,0 +1,38 @@
+{
+  "id": "example-mission",
+  "version": 1,
+  "title": "Example phone mission",
+  "destination": {"e164": "+15555550123", "display": "555-555-0123"},
+  "goal_key": "mission:example-mission",
+  "aliases": [],
+  "spoken_goal": "Complete the named task in one short sentence at a time.",
+  "identity": {
+    "account_name": "Account holder",
+    "account_number": "100000",
+    "lines": [{"digits": "2025550100", "label": "Example line"}]
+  },
+  "secrets": {
+    "pin": {"env": "MISSION_PIN"},
+    "ssn_last4": {"env": "MISSION_SSN_LAST4"}
+  },
+  "constraints": ["Never invent a secret.", "Never log a password."],
+  "brevity": "strict",
+  "policy": {
+    "prefer": "cancel_lines",
+    "retention": {
+      "accept_if": "lasting_bill_cut",
+      "min_monthly_reduction_cents": 1500,
+      "min_months": 12,
+      "decline_one_time_credits": true
+    },
+    "forbidden": ["whole_account_cancel", "log_password"]
+  },
+  "tools": ["speak", "dtmf", "hangup", "note_confirmation"],
+  "brief_template": "Complete the call for {account_name}, account {account_number}, lines {lines}, at {destination_display}.",
+  "ivr": {
+    "entries": [
+      {"id": "representative", "phrases": ["representative"], "auto": true, "priority": 0}
+    ]
+  },
+  "research": {}
+}

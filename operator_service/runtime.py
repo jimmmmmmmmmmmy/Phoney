@@ -14,9 +14,10 @@ import time
 
 import httpx
 
-from voice_stack.agent import (Conversation, GeminiError, ReplyCommandBuffer, SentenceBuffer,
-                               reply_events_with_retry as reply_events)
+from voice_stack.agent import (Conversation, GeminiError, ReplyCommandBuffer, SentenceBuffer)
 from voice_stack.audio import FRAME_BYTES, iter_frames
+from voice_stack.cancel_agent import CANCEL_AGENT_KIND, CANCEL_SPOKEN_GOAL, cancel_runtime_instruction
+from voice_stack.local_providers import LocalProviderError, iter_reply_events, open_speech_session, synthesize_ulaw
 from voice_stack.tts import SpeechSession, TTSError, speech
 from voice_stack.prompts import (VOICEMAIL_GREETING,
                                  three_reply_phase_instruction, voicemail_phase_instruction)
@@ -49,7 +50,8 @@ async def cached_static_audio(controller, snapshot, text):
     when the last waiter leaves, unfinished synthesis is canceled as well.
     """
     voice = controller.voice
-    key = (snapshot.voice_id, voice.elevenlabs_model, voice.delivery.cache_key, text)
+    key = (getattr(voice, "tts_provider", "elevenlabs"), snapshot.voice_id,
+           voice.elevenlabs_model, voice.delivery.cache_key, text)
     cache = controller.announcement_cache
     if key in cache:
         return cache[key]
@@ -59,10 +61,15 @@ async def cached_static_audio(controller, snapshot, text):
         async def prepare():
             async with asyncio.timeout(PREPARATION_SECONDS):
                 async with httpx.AsyncClient(transport=controller.provider_transport) as http:
-                    audio = await speech(http, voice.elevenlabs_api_key, snapshot.voice_id,
-                        text, model=voice.elevenlabs_model, output_format="ulaw_8000",
-                        delivery=voice.delivery,
-                        timeout=min(voice.request_timeout, PREPARATION_SECONDS))
+                    if getattr(voice, "tts_provider", "elevenlabs") == "phonon":
+                        audio = await synthesize_ulaw(
+                            http, voice, snapshot.voice_id, text,
+                            timeout=min(voice.request_timeout, PREPARATION_SECONDS))
+                    else:
+                        audio = await speech(http, voice.elevenlabs_api_key, snapshot.voice_id,
+                            text, model=voice.elevenlabs_model, output_format="ulaw_8000",
+                            delivery=voice.delivery,
+                            timeout=min(voice.request_timeout, PREPARATION_SECONDS))
             if not audio or len(audio) > MAX_AUDIO_BYTES:
                 raise ValueError("Invalid voicemail greeting audio")
             if len(cache) >= 16:
@@ -146,6 +153,7 @@ class DialogueRun:
         self.held_phrase = None
         self.phrases_ended = False
         self.synthesis_sequence = 0
+        self.pending_dtmf = []
         self.voicemail_phase = getattr(session, "voicemail_phase", "greeting")
         self.voicemail = getattr(session, "voicemail", False)
         self.bounded_replies = getattr(session, "agent_kind", "manual") == "ai-detected"
@@ -163,9 +171,12 @@ class DialogueRun:
                 and self.session.mode in (PREPARING, ANNOUNCING, AGENT))
 
     async def run(self):
+        active_model = (self.voice.nemotron_model
+                        if getattr(self.voice, "llm_provider", "gemini") == "nemotron"
+                        else self.voice.gemini_model)
         self.trace("generation-started", announce=self.announce, agent_id=self.snapshot.id,
                    agent_revision=self.snapshot.revision, agent_reply_number=self.reply_number,
-                   model=self.voice.gemini_model)
+                   model=active_model)
         try:
             async with asyncio.timeout(PREPARATION_SECONDS):
                 turns = (await maybe_await(self.controller.context_getter(self.session))
@@ -179,8 +190,14 @@ class DialogueRun:
                 re.split(r"(?<=[.!?])\s+", latest_caller.strip())[-1], re.I))
             instruction = (voicemail_phase_instruction(self.voicemail_phase) if self.voicemail
                            else three_reply_phase_instruction(self.reply_number) if self.bounded_replies else "")
+            goal = self.session.goal
+            if getattr(self.session, "agent_kind", "") == CANCEL_AGENT_KIND:
+                goal = CANCEL_SPOKEN_GOAL
+                loader = getattr(self.controller, "ivr_playbook", None)
+                instruction = cancel_runtime_instruction(
+                    playbook=loader() if loader is not None else None)
             conversation = Conversation.handoff(context,
-                goal=self.session.goal, boundaries=self.snapshot.prompt,
+                goal=goal, boundaries=self.snapshot.prompt,
                 agent_reply_number=self.reply_number, announcement_provided=not self.voicemail,
                 runtime_instruction=instruction)
             if not conversation.contents:
@@ -191,6 +208,12 @@ class DialogueRun:
                 self.producer = asyncio.create_task(self._produce(http, conversation))
                 await self._deliver_phrases(http)
                 await self.producer
+                for digits in self.pending_dtmf:
+                    if not self.current():
+                        break
+                    await self.controller._queue_ivr(self.session.id, digits)
+                if self.pending_dtmf:
+                    self.end_requested = False
                 self.completed = True
                 if (self.confirmed and self.current()
                         and self.takeover_request == self.controller._takeover_requests.get(self.session.id, 0)):
@@ -241,6 +264,8 @@ class DialogueRun:
                     "generativelanguage.googleapis.com": "gemini",
                     "api.elevenlabs.io": "elevenlabs",
                 }.get(exc.request.url.host, "unknown")
+            elif isinstance(exc, LocalProviderError):
+                fields["provider"] = exc.provider
             elif isinstance(exc, TTSError):
                 fields["provider"] = "elevenlabs"
                 if exc.http_status is not None:
@@ -273,9 +298,14 @@ class DialogueRun:
 
     async def _deliver_phrases(self, http):
         """Prepare one next phrase while the current one plays, never ahead of it."""
-        async with SpeechSession(http, self.voice.elevenlabs_api_key, self.snapshot.voice_id,
+        if getattr(self.voice, "tts_provider", "elevenlabs") == "phonon":
+            opener = open_speech_session(http, self.voice, self.snapshot.voice_id)
+        else:
+            opener = SpeechSession(
+                http, self.voice.elevenlabs_api_key, self.snapshot.voice_id,
                 model=self.voice.elevenlabs_model, output_format="ulaw_8000",
-                timeout=self.voice.request_timeout, delivery=self.voice.delivery) as synthesis:
+                timeout=self.voice.request_timeout, delivery=self.voice.delivery)
+        async with opener as synthesis:
             self.synthesis = synthesis
             try:
                 if self.announce:
@@ -350,7 +380,7 @@ class DialogueRun:
         self.stage = "first-phrase"
         first = await self._next_phrase()
         if first is None:
-            if not (self.end_requested or self.end_deferred):
+            if not (self.pending_dtmf or self.end_requested or self.end_deferred):
                 raise ValueError("Empty agent reply")
             return None, None, None
         self.stage = "first-audio"
@@ -432,7 +462,7 @@ class DialogueRun:
         # silence with a brief same-voice acknowledgement instead of a restart.
         first_text_seconds = VOICEMAIL_FIRST_TEXT_SECONDS if self.voicemail else FIRST_TEXT_SECONDS
         try:
-            async for event in reply_events(http, self.voice.gemini_api_key,
+            async for event in iter_reply_events(http, self.voice,
                     conversation.system, deepcopy(conversation.contents),
                     model=self.voice.gemini_model, max_output_tokens=self.voice.max_reply_tokens,
                     timeout=self.voice.request_timeout, first_text_timeout=first_text_seconds,
@@ -481,7 +511,8 @@ class DialogueRun:
             await self.phrases.put(None)
             return
         commands.finish()
-        self.end_requested = commands.end_call
+        self.pending_dtmf = list(commands.dtmf)
+        self.end_requested = commands.end_call and not self.pending_dtmf
         trailing = buffer.flush()
         if trailing:
             await self.phrases.put(trailing)
